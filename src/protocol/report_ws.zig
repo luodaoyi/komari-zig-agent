@@ -123,20 +123,17 @@ fn readerLoop(allocator: std.mem.Allocator, conn: *OpenSslWs, cfg: config.Config
 }
 
 fn handleServerMessage(allocator: std.mem.Allocator, conn: *OpenSslWs, cfg: config.Config, msg: ServerMessage) !void {
-    _ = cfg;
     switch (msg.kind) {
         .ping => {
             const value = ping.measure(allocator, msg.ping_type, msg.ping_target);
-            const finished = "2026-05-02T00:00:00Z";
+            const finished = try task.utcNow(allocator);
+            defer allocator.free(finished);
             const payload = try ping.allocPingResultJson(allocator, msg.ping_task_id, msg.ping_type, value, finished);
             defer allocator.free(payload);
             try conn.writeText(payload);
         },
         .exec => {
-            const result = try task.runCommandDetailed(allocator, msg.command);
-            defer result.deinit(allocator);
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.print("Exec task {s} finished with code {d}, {d} bytes\n", .{ msg.task_id, result.exit_code, result.output.len });
+            try task.uploadExecResult(allocator, cfg, msg.task_id, msg.command);
         },
         .terminal => {
             var stdout = std.fs.File.stdout().deprecatedWriter();
