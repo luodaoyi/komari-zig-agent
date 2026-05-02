@@ -81,6 +81,23 @@ pub fn postJsonRead(allocator: std.mem.Allocator, url: []const u8, payload: []co
     }
 }
 
+pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+    var response_writer = std.Io.Writer.Allocating.init(allocator);
+    defer response_writer.deinit();
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .headers = .{ .user_agent = .{ .override = "komari-zig-agent" } },
+        .response_writer = &response_writer.writer,
+        .keep_alive = false,
+    });
+    const code = @intFromEnum(result.status);
+    if (code < 200 or code >= 300) return error.HttpStatusNotOk;
+    return response_writer.toOwnedSlice();
+}
+
 pub fn trimEndpoint(endpoint: []const u8) []const u8 {
     return std.mem.trimRight(u8, endpoint, "/");
 }

@@ -1,10 +1,113 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const http = @import("protocol/http.zig");
+const version = @import("version.zig");
+
 pub const repo = "komari-monitor/komari-agent";
 
-pub fn parseVersionPrefixless(version: []const u8) []const u8 {
-    if (version.len > 0 and (version[0] == 'v' or version[0] == 'V')) return version[1..];
-    return version;
+pub fn parseVersionPrefixless(value: []const u8) []const u8 {
+    if (value.len > 0 and (value[0] == 'v' or value[0] == 'V')) return value[1..];
+    return value;
 }
 
-pub fn checkAndUpdate(_: std.mem.Allocator) !void {}
-pub fn startBackground(_: std.mem.Allocator) void {}
+pub fn assetName(allocator: std.mem.Allocator) ![]const u8 {
+    const os = switch (builtin.os.tag) {
+        .linux => "linux",
+        .freebsd => "freebsd",
+        .macos => "darwin",
+        else => "linux",
+    };
+    const arch = switch (builtin.cpu.arch) {
+        .x86_64 => "amd64",
+        .aarch64 => "arm64",
+        .x86 => "386",
+        .arm => "arm",
+        else => @tagName(builtin.cpu.arch),
+    };
+    return std.fmt.allocPrint(allocator, "komari-agent-{s}-{s}", .{ os, arch });
+}
+
+pub fn newerThan(current_raw: []const u8, latest_raw: []const u8) bool {
+    const current = parseVersionPrefixless(current_raw);
+    const latest = parseVersionPrefixless(latest_raw);
+    return compareVersion(latest, current) > 0;
+}
+
+pub fn checkAndUpdate(allocator: std.mem.Allocator) !void {
+    const release = http.getRead(allocator, "https://api.github.com/repos/komari-monitor/komari-agent/releases/latest") catch return;
+    defer allocator.free(release);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const tag = stringField(parsed.value.object, "tag_name") orelse return;
+    if (!newerThan(version.current, tag)) return;
+
+    const wanted = try assetName(allocator);
+    defer allocator.free(wanted);
+    const url = findAssetUrl(parsed.value.object, wanted) orelse return;
+    try downloadAndReplace(allocator, url);
+}
+
+pub fn startBackground(allocator: std.mem.Allocator) void {
+    const thread = std.Thread.spawn(.{}, updateLoop, .{allocator}) catch return;
+    thread.detach();
+}
+
+fn updateLoop(allocator: std.mem.Allocator) void {
+    while (true) {
+        std.Thread.sleep(6 * 60 * 60 * std.time.ns_per_s);
+        checkAndUpdate(allocator) catch {};
+    }
+}
+
+fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8) !void {
+    const body = try http.getRead(allocator, url);
+    defer allocator.free(body);
+    const exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe);
+    const tmp = try std.fmt.allocPrint(allocator, "{s}.update", .{exe});
+    defer allocator.free(tmp);
+    {
+        var file = try std.fs.createFileAbsolute(tmp, .{ .truncate = true, .mode = 0o755 });
+        defer file.close();
+        try file.writeAll(body);
+    }
+    try std.fs.renameAbsolute(tmp, exe);
+    std.process.exit(42);
+}
+
+fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    if (object.get(name)) |value| {
+        if (value == .string) return value.string;
+    }
+    return null;
+}
+
+fn findAssetUrl(object: std.json.ObjectMap, wanted: []const u8) ?[]const u8 {
+    const assets = object.get("assets") orelse return null;
+    if (assets != .array) return null;
+    for (assets.array.items) |asset| {
+        if (asset != .object) continue;
+        const name = stringField(asset.object, "name") orelse continue;
+        if (std.mem.eql(u8, name, wanted)) return stringField(asset.object, "browser_download_url");
+    }
+    return null;
+}
+
+fn compareVersion(a_raw: []const u8, b_raw: []const u8) i32 {
+    var ait = std.mem.splitScalar(u8, a_raw, '.');
+    var bit = std.mem.splitScalar(u8, b_raw, '.');
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        const av = parseVersionPart(ait.next() orelse "0");
+        const bv = parseVersionPart(bit.next() orelse "0");
+        if (av > bv) return 1;
+        if (av < bv) return -1;
+    }
+    return 0;
+}
+
+fn parseVersionPart(part: []const u8) u64 {
+    const end = std.mem.indexOfAny(u8, part, "-+") orelse part.len;
+    return std.fmt.parseInt(u64, part[0..end], 10) catch 0;
+}
