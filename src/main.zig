@@ -47,7 +47,9 @@ pub fn main() !void {
         update.startBackground(allocator);
     }
 
-    const info = try provider.basicInfo(allocator);
+    var info = try provider.basicInfo(allocator);
+    if (cfg.custom_ipv4.len != 0) info.ipv4 = cfg.custom_ipv4;
+    if (cfg.custom_ipv6.len != 0) info.ipv6 = cfg.custom_ipv6;
     const info_json = try basic_info.allocBasicInfoJson(allocator, info, true);
     defer allocator.free(info_json);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});

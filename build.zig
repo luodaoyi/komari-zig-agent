@@ -32,6 +32,8 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/protocol_json_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/http_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/dns_idna_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/linux_basic_info_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/disk_filter_test.zig", target, optimize, opts, version_module);
 }
 
 fn addTest(
@@ -74,6 +76,11 @@ fn addTest(
     }));
     tests.root_module.addImport("idna", b.createModule(.{
         .root_source_file = b.path("src/idna.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    tests.root_module.addImport("platform_linux", b.createModule(.{
+        .root_source_file = b.path("src/platform/linux.zig"),
         .target = target,
         .optimize = optimize,
     }));
