@@ -764,6 +764,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    var df_map = diskUsageMapFromDf(allocator) catch std.StringHashMap(common.DiskInfo).init(allocator);
 
     if (include_mountpoints.len != 0) {
         var total = common.DiskInfo{};
@@ -771,7 +772,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
         while (mounts.next()) |raw_mount| {
             const mountpoint = std.mem.trim(u8, raw_mount, " \t\r\n");
             if (mountpoint.len == 0) continue;
-            const usage = diskUsageFromDf(allocator, mountpoint) catch continue;
+            const usage = df_map.get(mountpoint) orelse (diskUsageFromDf(allocator, mountpoint) catch continue);
             total.total += usage.total;
             total.used += usage.used;
         }
@@ -796,7 +797,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
         const fstype = fields.next() orelse continue;
         if (!isPhysicalMount(mountpoint, fstype, device)) continue;
 
-        const usage = diskUsageFromDf(allocator, mountpoint) catch continue;
+        const usage = df_map.get(mountpoint) orelse (diskUsageFromDf(allocator, mountpoint) catch continue);
         const key = diskDeviceKey(device, fstype);
         const existing = by_device.get(key);
         if (existing == null or usage.total > existing.?.total) {
@@ -874,6 +875,34 @@ pub fn isPhysicalMount(mountpoint_raw: []const u8, fstype_raw: []const u8, devic
 
 fn startsWithIgnoreCase(value: []const u8, prefix: []const u8) bool {
     return value.len >= prefix.len and std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
+}
+
+fn diskUsageMapFromDf(allocator: std.mem.Allocator) !std.StringHashMap(common.DiskInfo) {
+    const output = try commandOutput(allocator, &.{ "df", "-P", "-B1" });
+    defer allocator.free(output);
+    return parseDfOutput(allocator, output);
+}
+
+pub fn parseDfOutput(allocator: std.mem.Allocator, output: []const u8) !std.StringHashMap(common.DiskInfo) {
+    var map = std.StringHashMap(common.DiskInfo).init(allocator);
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    _ = lines.next();
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        _ = fields.next() orelse continue;
+        const total_text = fields.next() orelse continue;
+        const used_text = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const mountpoint = std.mem.trim(u8, fields.rest(), " \t");
+        if (mountpoint.len == 0) continue;
+        const total = std.fmt.parseInt(u64, total_text, 10) catch continue;
+        const used = std.fmt.parseInt(u64, used_text, 10) catch continue;
+        try map.put(try allocator.dupe(u8, mountpoint), .{ .total = total, .used = used });
+    }
+    return map;
 }
 
 fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common.DiskInfo {

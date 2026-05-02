@@ -31,7 +31,7 @@ pub const Client = struct {
     pub fn shouldRetry(self: Client, attempt: u32, err: ?anyerror, status: ?u16) bool {
         if (attempt >= self.max_retries) return false;
         if (err != null) return true;
-        if (status) |code| return code < 200 or code >= 400;
+        if (status) |code| return code != 200;
         return false;
     }
 };
@@ -43,6 +43,8 @@ pub const ProxyEnv = struct {
     http_proxy_lower: ?[]const u8 = null,
     https_proxy_lower: ?[]const u8 = null,
     all_proxy_lower: ?[]const u8 = null,
+    no_proxy: ?[]const u8 = null,
+    no_proxy_lower: ?[]const u8 = null,
 };
 
 pub const RawConnection = struct {
@@ -78,7 +80,7 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
     defer client.deinit();
     var proxy_arena = std.heap.ArenaAllocator.init(allocator);
     defer proxy_arena.deinit();
-    try client.initDefaultProxies(proxy_arena.allocator());
+    try initDefaultProxiesForUrl(allocator, &client, proxy_arena.allocator(), ascii_url);
 
     var extra: [3]std.http.Header = undefined;
     const extra_headers = postHeaders(cfg, authorization, &extra);
@@ -104,7 +106,7 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
             return err;
         };
         const code = @intFromEnum(result.status);
-        if (code >= 200 and code < 300) return response_writer.toOwnedSlice();
+        if (code == 200) return response_writer.toOwnedSlice();
         if (attempt < max_retries) {
             std.Thread.sleep(2 * std.time.ns_per_s);
             continue;
@@ -121,7 +123,7 @@ pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
     defer client.deinit();
     var proxy_arena = std.heap.ArenaAllocator.init(allocator);
     defer proxy_arena.deinit();
-    try client.initDefaultProxies(proxy_arena.allocator());
+    try initDefaultProxiesForUrl(allocator, &client, proxy_arena.allocator(), ascii_url);
     var response_writer = std.Io.Writer.Allocating.init(allocator);
     defer response_writer.deinit();
     const result = try client.fetch(.{
@@ -132,7 +134,7 @@ pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
         .keep_alive = false,
     });
     const code = @intFromEnum(result.status);
-    if (code < 200 or code >= 300) return error.HttpStatusNotOk;
+    if (code != 200) return error.HttpStatusNotOk;
     return response_writer.toOwnedSlice();
 }
 
@@ -260,6 +262,25 @@ pub fn proxyEnvForScheme(scheme: []const u8, env: ProxyEnv) ?[]const u8 {
     return null;
 }
 
+pub fn proxyEnvForRequest(scheme: []const u8, host: []const u8, port: u16, env: ProxyEnv) ?[]const u8 {
+    if (noProxyMatchesEnv(host, port, env)) return null;
+    return proxyEnvForScheme(scheme, env);
+}
+
+pub fn initDefaultProxiesForUrl(
+    allocator: std.mem.Allocator,
+    client: *std.http.Client,
+    proxy_allocator: std.mem.Allocator,
+    url: []const u8,
+) !void {
+    const uri = try std.Uri.parse(url);
+    const host = try uriHost(allocator, uri);
+    defer allocator.free(host);
+    const port: u16 = uri.port orelse defaultPort(uri.scheme);
+    if (try noProxyMatchesProcess(allocator, host, port)) return;
+    try client.initDefaultProxies(proxy_allocator);
+}
+
 pub fn connectRawHttp(
     allocator: std.mem.Allocator,
     scheme: []const u8,
@@ -270,7 +291,7 @@ pub fn connectRawHttp(
     custom_dns: []const u8,
     family: raw_conn.AddressFamily,
 ) !RawConnection {
-    const proxy_url = try proxyFromProcess(allocator, scheme);
+    const proxy_url = try proxyFromProcess(allocator, scheme, host, port);
     defer if (proxy_url) |value| allocator.free(value);
     if (proxy_url) |value| {
         const proxy = try parseProxyUrl(allocator, value);
@@ -350,7 +371,7 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
             return err;
         };
         errdefer allocator.free(response.body);
-        if (response.status >= 200 and response.status < 300) {
+        if (response.status == 200) {
             return response.body;
         }
         allocator.free(response.body);
@@ -488,7 +509,8 @@ fn firstNonEmpty(values: []const ?[]const u8) ?[]const u8 {
     return null;
 }
 
-fn proxyFromProcess(allocator: std.mem.Allocator, scheme: []const u8) !?[]const u8 {
+fn proxyFromProcess(allocator: std.mem.Allocator, scheme: []const u8, host: []const u8, port: u16) !?[]const u8 {
+    if (try noProxyMatchesProcess(allocator, host, port)) return null;
     const names: []const []const u8 = if (std.ascii.eqlIgnoreCase(scheme, "https") or std.ascii.eqlIgnoreCase(scheme, "wss"))
         &.{ "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy" }
     else if (std.ascii.eqlIgnoreCase(scheme, "http") or std.ascii.eqlIgnoreCase(scheme, "ws"))
@@ -504,6 +526,152 @@ fn proxyFromProcess(allocator: std.mem.Allocator, scheme: []const u8) !?[]const 
         allocator.free(value);
     }
     return null;
+}
+
+fn noProxyMatchesProcess(allocator: std.mem.Allocator, host: []const u8, port: u16) !bool {
+    if (isAlwaysDirectHost(host)) return true;
+    const names = [_][]const u8{ "NO_PROXY", "no_proxy" };
+    for (&names) |name| {
+        const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => continue,
+            else => |e| return e,
+        };
+        defer allocator.free(value);
+        if (value.len != 0 and noProxyMatches(value, host, port)) return true;
+    }
+    return false;
+}
+
+fn noProxyMatchesEnv(host: []const u8, port: u16, env: ProxyEnv) bool {
+    if (isAlwaysDirectHost(host)) return true;
+    if (env.no_proxy) |value| if (noProxyMatches(value, host, port)) return true;
+    if (env.no_proxy_lower) |value| if (noProxyMatches(value, host, port)) return true;
+    return false;
+}
+
+fn noProxyMatches(value: []const u8, host_raw: []const u8, port: u16) bool {
+    const host = std.mem.trim(u8, host_raw, "[]");
+    var entries = std.mem.splitScalar(u8, value, ',');
+    while (entries.next()) |raw_entry| {
+        const entry = std.mem.trim(u8, raw_entry, " \t\r\n");
+        if (entry.len == 0) continue;
+        if (std.mem.eql(u8, entry, "*")) return true;
+        if (cidrNoProxyMatches(entry, host)) return true;
+        const token = splitNoProxyEntry(entry);
+        if (token.port) |expected_port| {
+            if (expected_port != port) continue;
+        }
+        if (hostMatchesNoProxy(host, token.host)) return true;
+    }
+    return false;
+}
+
+const NoProxyEntry = struct {
+    host: []const u8,
+    port: ?u16 = null,
+};
+
+fn splitNoProxyEntry(entry: []const u8) NoProxyEntry {
+    if (entry.len == 0) return .{ .host = entry };
+    if (entry[0] == '[') {
+        const close = std.mem.indexOfScalar(u8, entry, ']') orelse return .{ .host = entry };
+        const host = entry[1..close];
+        if (close + 2 < entry.len and entry[close + 1] == ':') {
+            const port = std.fmt.parseInt(u16, entry[close + 2 ..], 10) catch return .{ .host = host };
+            return .{ .host = host, .port = port };
+        }
+        return .{ .host = host };
+    }
+    const colon = std.mem.lastIndexOfScalar(u8, entry, ':') orelse return .{ .host = entry };
+    if (std.mem.indexOfScalar(u8, entry, ':') != colon) return .{ .host = entry };
+    const port_text = entry[colon + 1 ..];
+    if (port_text.len == 0) return .{ .host = entry };
+    for (port_text) |b| {
+        if (!std.ascii.isDigit(b)) return .{ .host = entry };
+    }
+    const parsed_port = std.fmt.parseInt(u16, port_text, 10) catch return .{ .host = entry };
+    return .{ .host = entry[0..colon], .port = parsed_port };
+}
+
+fn hostMatchesNoProxy(host: []const u8, token_raw: []const u8) bool {
+    var token = std.mem.trimRight(u8, token_raw, ".");
+    if (token.len == 0) return false;
+    if (std.mem.indexOfScalar(u8, token, ':') != null) {
+        return std.ascii.eqlIgnoreCase(host, token);
+    }
+    if (std.mem.startsWith(u8, token, "*.")) token = token[1..];
+    const match_host = token[0] != '.';
+    const domain = if (match_host) token else token[1..];
+    if (domain.len == 0) return false;
+    if (match_host and std.ascii.eqlIgnoreCase(host, domain)) return true;
+    if (host.len <= domain.len) return false;
+    const suffix_start = host.len - domain.len;
+    if (host[suffix_start - 1] != '.') return false;
+    return std.ascii.eqlIgnoreCase(host[suffix_start..], domain);
+}
+
+fn isAlwaysDirectHost(host_raw: []const u8) bool {
+    const host = std.mem.trim(u8, host_raw, "[]");
+    if (std.ascii.eqlIgnoreCase(host, "localhost")) return true;
+    if (std.mem.startsWith(u8, host, "127.")) return true;
+    if (std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "0:0:0:0:0:0:0:1")) return true;
+    return false;
+}
+
+const IpBytes = struct {
+    bytes: [16]u8,
+    len: u8,
+};
+
+fn cidrNoProxyMatches(cidr: []const u8, host: []const u8) bool {
+    const slash = std.mem.indexOfScalar(u8, cidr, '/') orelse return false;
+    const base_text = cidr[0..slash];
+    const prefix_text = cidr[slash + 1 ..];
+    if (prefix_text.len == 0) return false;
+    const prefix = std.fmt.parseInt(u8, prefix_text, 10) catch return false;
+    const base = parseIpBytes(base_text) orelse return false;
+    const target = parseIpBytes(std.mem.trim(u8, host, "[]")) orelse return false;
+    if (base.len != target.len) return false;
+    if (prefix > base.len * 8) return false;
+    return prefixMatches(base.bytes[0..base.len], target.bytes[0..target.len], prefix);
+}
+
+fn parseIpBytes(value: []const u8) ?IpBytes {
+    if (parseIpv4Bytes(value)) |bytes| {
+        var out: [16]u8 = [_]u8{0} ** 16;
+        @memcpy(out[0..4], &bytes);
+        return .{ .bytes = out, .len = 4 };
+    }
+    const parsed = std.net.Address.parseIp6(value, 0) catch return null;
+    return .{ .bytes = parsed.in6.sa.addr, .len = 16 };
+}
+
+fn parseIpv4Bytes(value: []const u8) ?[4]u8 {
+    var out: [4]u8 = undefined;
+    var count: usize = 0;
+    var parts = std.mem.splitScalar(u8, value, '.');
+    while (parts.next()) |part| {
+        if (count >= 4 or part.len == 0) return null;
+        out[count] = std.fmt.parseInt(u8, part, 10) catch return null;
+        count += 1;
+    }
+    if (count != 4) return null;
+    return out;
+}
+
+fn prefixMatches(base: []const u8, target: []const u8, prefix: u8) bool {
+    const full_bytes = prefix / 8;
+    const rest_bits = prefix % 8;
+    if (!std.mem.eql(u8, base[0..full_bytes], target[0..full_bytes])) return false;
+    if (rest_bits == 0) return true;
+    const shift: u3 = @intCast(8 - rest_bits);
+    const mask: u8 = @as(u8, 0xff) << shift;
+    return (base[full_bytes] & mask) == (target[full_bytes] & mask);
+}
+
+fn defaultPort(scheme: []const u8) u16 {
+    if (std.ascii.eqlIgnoreCase(scheme, "https") or std.ascii.eqlIgnoreCase(scheme, "wss")) return 443;
+    return 80;
 }
 
 fn parseProxyUrl(allocator: std.mem.Allocator, value: []const u8) !ProxyTarget {
@@ -560,5 +728,5 @@ fn sendConnectTunnel(allocator: std.mem.Allocator, conn: *raw_conn.RawConn, host
     try conn.flush();
     const response = try readHttpResponse(allocator, conn.reader());
     defer allocator.free(response.body);
-    if (response.status < 200 or response.status >= 300) return error.ProxyConnectFailed;
+    if (response.status != 200) return error.ProxyConnectFailed;
 }

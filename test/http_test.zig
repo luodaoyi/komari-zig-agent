@@ -66,6 +66,7 @@ test "http client shell keeps timeout tls and retry settings" {
     try std.testing.expect(client.shouldRetry(0, error.TemporaryNetworkFailure, null));
     try std.testing.expect(!client.shouldRetry(3, error.TemporaryNetworkFailure, null));
     try std.testing.expect(client.shouldRetry(0, null, 500));
+    try std.testing.expect(client.shouldRetry(0, null, 204));
     try std.testing.expect(!client.shouldRetry(0, null, 200));
 }
 
@@ -96,4 +97,35 @@ test "proxy environment accepts lowercase and all proxy fallback" {
         http.proxyEnvForScheme("https", .{ .all_proxy = "http://all-proxy.example:8080" }).?,
     );
     try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForScheme("https", .{}));
+}
+
+test "proxy environment honors no proxy hosts" {
+    const env = http.ProxyEnv{
+        .http_proxy = "http://proxy.example:8080",
+        .no_proxy = ".internal.example,api.example.com:8443,[2001:db8::1],10.0.0.0/8,fd00::/8",
+    };
+
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "localhost", 80, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "127.0.0.1", 80, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "::1", 80, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("https", "node.internal.example", 443, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("https", "api.example.com", 8443, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "2001:db8::1", 80, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "10.9.8.7", 80, env));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "fd00::1234", 80, env));
+    try std.testing.expectEqualStrings(
+        "http://proxy.example:8080",
+        http.proxyEnvForRequest("http", "internal.example", 80, env).?,
+    );
+    try std.testing.expectEqualStrings(
+        "http://proxy.example:8080",
+        http.proxyEnvForRequest("http", "api.example.com", 443, env).?,
+    );
+}
+
+test "proxy environment wildcard bypasses all proxy use" {
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForRequest("http", "example.com", 80, .{
+        .http_proxy = "http://proxy.example:8080",
+        .no_proxy_lower = "*",
+    }));
 }

@@ -116,9 +116,8 @@ pub fn parseRegisterResponse(allocator: std.mem.Allocator, bytes: []const u8) !A
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
     defer parsed.deinit();
     const object = parsed.value.object;
-    if (object.get("status")) |status| {
-        if (status == .string and !std.mem.eql(u8, status.string, "success")) return error.AutoDiscoveryFailed;
-    }
+    const status = object.get("status") orelse return error.AutoDiscoveryBadResponse;
+    if (status != .string or !std.mem.eql(u8, status.string, "success")) return error.AutoDiscoveryFailed;
     const data = object.get("data") orelse return error.AutoDiscoveryBadResponse;
     if (data != .object) return error.AutoDiscoveryBadResponse;
     return .{

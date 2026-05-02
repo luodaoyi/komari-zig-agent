@@ -16,3 +16,19 @@ test "zfs device key deduplicates datasets by pool" {
     try std.testing.expectEqualStrings("tank", linux.diskDeviceKey("tank/data", "zfs"));
     try std.testing.expectEqualStrings("/dev/sda1", linux.diskDeviceKey("/dev/sda1", "ext4"));
 }
+
+test "df output parser indexes mountpoint usage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const map = try linux.parseDfOutput(arena.allocator(),
+        \\Filesystem     1B-blocks    Used Available Use% Mounted on
+        \\/dev/sda1      1000         400  600       40% /
+        \\/dev/sdb1      9000         1000 8000      12% /data
+    );
+
+    try std.testing.expectEqual(@as(u64, 1000), map.get("/").?.total);
+    try std.testing.expectEqual(@as(u64, 400), map.get("/").?.used);
+    try std.testing.expectEqual(@as(u64, 9000), map.get("/data").?.total);
+    try std.testing.expectEqual(@as(u64, 1000), map.get("/data").?.used);
+}

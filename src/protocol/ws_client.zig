@@ -127,7 +127,7 @@ pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cl
     errdefer http_client.deinit();
     var proxy_arena = std.heap.ArenaAllocator.init(allocator);
     errdefer proxy_arena.deinit();
-    try http_client.initDefaultProxies(proxy_arena.allocator());
+    try http.initDefaultProxiesForUrl(allocator, &http_client, proxy_arena.allocator(), ascii_url);
 
     const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
     var extra: [6]std.http.Header = undefined;

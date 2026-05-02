@@ -18,3 +18,21 @@ test "corrupt stored auto discovery config is ignored" {
 
     try std.testing.expectEqual(@as(?autodiscovery.AutoDiscoveryConfig, null), try autodiscovery.parseStoredConfig(arena.allocator(), "{not-json"));
 }
+
+test "register response requires success status" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const parsed = try autodiscovery.parseRegisterResponse(arena.allocator(),
+        \\{"status":"success","data":{"uuid":"u1","token":"tok1"}}
+    );
+    try std.testing.expectEqualStrings("u1", parsed.uuid);
+    try std.testing.expectEqualStrings("tok1", parsed.token);
+
+    try std.testing.expectError(error.AutoDiscoveryBadResponse, autodiscovery.parseRegisterResponse(arena.allocator(),
+        \\{"data":{"uuid":"u1","token":"tok1"}}
+    ));
+    try std.testing.expectError(error.AutoDiscoveryFailed, autodiscovery.parseRegisterResponse(arena.allocator(),
+        \\{"status":"error","data":{"uuid":"u1","token":"tok1"}}
+    ));
+}
