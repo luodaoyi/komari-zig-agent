@@ -37,6 +37,11 @@ pub fn main() !void {
     const info_json = try basic_info.allocBasicInfoJson(allocator, info, true);
     defer allocator.free(info_json);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
+    basic_info.upload(allocator, cfg, info) catch |err| {
+        try stdout.print("Basic info upload failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    try stdout.writeAll("Basic info uploaded successfully\n");
 
     const report_json = try report_ws.runOnce(allocator, cfg);
     defer allocator.free(report_json);
