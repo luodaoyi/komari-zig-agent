@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common.zig");
+const netstatic = @import("report_netstatic");
 
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuStat = null;
@@ -48,6 +49,7 @@ pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
         .connections = try connectionsInfo(),
         .uptime = try uptime(),
         .process = try processCount(),
+        .gpu_json = if (options.enable_gpu) detailedGpuJson(std.heap.page_allocator) catch "" else "",
     };
 }
 
@@ -142,6 +144,85 @@ fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
         allocator.free(line);
     } else |_| {}
     return allocator.dupe(u8, "");
+}
+
+fn detailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
+    if (nvidiaDetailedGpuJson(allocator)) |json| return json else |_| {}
+    if (amdDetailedGpuJson(allocator)) |json| return json else |_| {}
+    return error.NoGpuDetails;
+}
+
+fn nvidiaDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
+    const output = try commandOutput(allocator, &.{ "nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits" });
+    defer allocator.free(output);
+    var detail: std.ArrayList(u8) = .empty;
+    defer detail.deinit(allocator);
+    var count: u64 = 0;
+    var usage_sum: f64 = 0;
+    try detail.append(allocator, '[');
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, ',');
+        const name = std.mem.trim(u8, fields.next() orelse "", " \t");
+        const mem_total = (std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0) * 1024 * 1024;
+        const mem_used = (std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0) * 1024 * 1024;
+        const util = std.fmt.parseFloat(f64, std.mem.trim(u8, fields.next() orelse "0", " \t")) catch 0;
+        const temp = std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0;
+        if (count != 0) try detail.append(allocator, ',');
+        try detail.writer(allocator).print("{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
+        usage_sum += util;
+        count += 1;
+    }
+    try detail.append(allocator, ']');
+    if (count == 0) return error.NoGpuDetails;
+    return std.fmt.allocPrint(allocator, "{{\"count\":{d},\"average_usage\":{d},\"detailed_info\":{s}}}", .{ count, usage_sum / @as(f64, @floatFromInt(count)), detail.items });
+}
+
+fn amdDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
+    const output = try commandOutput(allocator, &.{ "rocm-smi", "--showproductname", "--showuse", "--showmeminfo", "vram", "--showtemp", "--json" });
+    defer allocator.free(output);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, output, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.NoGpuDetails;
+    var detail: std.ArrayList(u8) = .empty;
+    defer detail.deinit(allocator);
+    var count: u64 = 0;
+    var usage_sum: f64 = 0;
+    try detail.append(allocator, '[');
+    var it = parsed.value.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .object) continue;
+        const obj = entry.value_ptr.object;
+        const name = jsonString(obj.get("Card series")) orelse jsonString(obj.get("Card model")) orelse entry.key_ptr.*;
+        const util = parsePercent(jsonString(obj.get("GPU use (%)")) orelse "0");
+        const mem_total = parseMiB(jsonString(obj.get("VRAM Total Memory (B)")) orelse jsonString(obj.get("VRAM Total Used Memory (B)")) orelse "0");
+        const mem_used = parseMiB(jsonString(obj.get("VRAM Total Used Memory (B)")) orelse "0");
+        const temp = @as(u64, @intFromFloat(parsePercent(jsonString(obj.get("Temperature (Sensor edge) (C)")) orelse "0")));
+        if (count != 0) try detail.append(allocator, ',');
+        try detail.writer(allocator).print("{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
+        usage_sum += util;
+        count += 1;
+    }
+    try detail.append(allocator, ']');
+    if (count == 0) return error.NoGpuDetails;
+    return std.fmt.allocPrint(allocator, "{{\"count\":{d},\"average_usage\":{d},\"detailed_info\":{s}}}", .{ count, usage_sum / @as(f64, @floatFromInt(count)), detail.items });
+}
+
+fn jsonString(value: ?std.json.Value) ?[]const u8 {
+    const v = value orelse return null;
+    return if (v == .string) v.string else null;
+}
+
+fn parsePercent(value: []const u8) f64 {
+    const trimmed = std.mem.trim(u8, value, " %\t\r\nC");
+    return std.fmt.parseFloat(f64, trimmed) catch 0;
+}
+
+fn parseMiB(value: []const u8) u64 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    return std.fmt.parseInt(u64, trimmed, 10) catch 0;
 }
 
 fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
@@ -366,6 +447,11 @@ fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
         .total_down = current.totalDown,
         .timestamp_ms = now,
     };
+    if (options.month_rotate != 0) {
+        const totals = netstatic.applyMonthlyTotals(std.heap.page_allocator, current.totalUp, current.totalDown, options.month_rotate);
+        current.totalUp = totals.up;
+        current.totalDown = totals.down;
+    }
     return current;
 }
 

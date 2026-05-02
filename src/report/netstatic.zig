@@ -11,6 +11,84 @@ pub const NetStaticConfig = struct {
 pub fn startOrContinue() !void {}
 pub fn stop() !void {}
 
+pub const Store = struct {
+    reset: i64 = 0,
+    up: u64 = 0,
+    down: u64 = 0,
+};
+
+pub const Totals = struct {
+    up: u64,
+    down: u64,
+};
+
+pub fn applyMonthlyTotals(allocator: std.mem.Allocator, total_up: u64, total_down: u64, reset_day: i32) Totals {
+    if (reset_day < 1 or reset_day > 31) return .{ .up = total_up, .down = total_down };
+    const reset = lastResetDate(reset_day, std.time.timestamp());
+    var store = readStore(allocator) catch Store{};
+    if (store.reset != reset or total_up < store.up or total_down < store.down) {
+        store = .{ .reset = reset, .up = total_up, .down = total_down };
+        writeStore(allocator, store) catch {};
+    }
+    return .{
+        .up = if (total_up >= store.up) total_up - store.up else 0,
+        .down = if (total_down >= store.down) total_down - store.down else 0,
+    };
+}
+
+pub fn parseStore(bytes: []const u8) !Store {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, bytes, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    return .{
+        .reset = jsonInt(obj.get("reset")) orelse 0,
+        .up = @intCast(jsonInt(obj.get("up")) orelse 0),
+        .down = @intCast(jsonInt(obj.get("down")) orelse 0),
+    };
+}
+
+pub fn allocStoreJson(allocator: std.mem.Allocator, store: Store) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{{\"reset\":{d},\"up\":{d},\"down\":{d}}}", .{ store.reset, store.up, store.down });
+}
+
+fn jsonInt(value: ?std.json.Value) ?i64 {
+    const v = value orelse return null;
+    return switch (v) {
+        .integer => |n| n,
+        .float => |n| @intFromFloat(n),
+        else => null,
+    };
+}
+
+fn readStore(allocator: std.mem.Allocator) !Store {
+    const path = storePath();
+    const bytes = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch |err| switch (err) {
+        error.FileNotFound => return Store{},
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return parseStore(bytes);
+}
+
+fn writeStore(allocator: std.mem.Allocator, store: Store) !void {
+    const path = storePath();
+    if (std.fs.path.dirname(path)) |dir| std.fs.cwd().makePath(dir) catch {};
+    const bytes = try allocStoreJson(allocator, store);
+    defer allocator.free(bytes);
+    var file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch {
+        var fallback = try std.fs.cwd().createFile(".komari-netstatic.json", .{ .truncate = true });
+        defer fallback.close();
+        try fallback.writeAll(bytes);
+        return;
+    };
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
+fn storePath() []const u8 {
+    return if (@import("builtin").os.tag == .windows) ".komari-netstatic.json" else "/var/lib/komari-agent/netstatic.json";
+}
+
 pub fn lastResetDate(reset_day: i32, now: i64) i64 {
     if (reset_day < 1 or reset_day > 31) return now;
     const current = civilFromTimestamp(now);

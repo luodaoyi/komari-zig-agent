@@ -20,9 +20,21 @@ jobs:
           - os: linux
             arch: arm64
             target: aarch64-linux-musl
+          - os: linux
+            arch: 386
+            target: x86-linux-musl
+          - os: linux
+            arch: arm
+            target: arm-linux-musleabihf
           - os: freebsd
             arch: amd64
             target: x86_64-freebsd
+          - os: freebsd
+            arch: arm64
+            target: aarch64-freebsd
+          - os: freebsd
+            arch: 386
+            target: x86-freebsd
           - os: darwin
             arch: amd64
             target: x86_64-macos

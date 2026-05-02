@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const http = @import("protocol/http.zig");
 const version = @import("version.zig");
 
-pub const repo = "komari-monitor/komari-agent";
+pub const repo = "luodaoyi/komari-zig-agent";
 
 pub fn parseVersionPrefixless(value: []const u8) []const u8 {
     if (value.len > 0 and (value[0] == 'v' or value[0] == 'V')) return value[1..];
@@ -35,7 +35,8 @@ pub fn newerThan(current_raw: []const u8, latest_raw: []const u8) bool {
 
 pub fn checkAndUpdate(allocator: std.mem.Allocator) !void {
     if (!isNumericVersion(version.current)) return;
-    const release = http.getRead(allocator, "https://api.github.com/repos/komari-monitor/komari-agent/releases/latest") catch return;
+    const release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
+    const release = http.getRead(allocator, release_url) catch return;
     defer allocator.free(release);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
     defer parsed.deinit();

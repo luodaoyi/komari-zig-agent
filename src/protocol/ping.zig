@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const builtin = @import("builtin");
 
 pub const TcpTarget = struct {
     host: []const u8,
@@ -19,10 +20,87 @@ pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type
 }
 
 pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8) i64 {
-    if (std.mem.eql(u8, ping_type, "tcp")) return tcpPing(allocator, target) catch -1;
-    if (std.mem.eql(u8, ping_type, "http")) return httpPing(allocator, target) catch -1;
-    if (std.mem.eql(u8, ping_type, "icmp")) return -1;
+    var best: i64 = -1;
+    var attempt: u8 = 0;
+    while (attempt < 3) : (attempt += 1) {
+        const value = blk: {
+            if (std.mem.eql(u8, ping_type, "tcp")) break :blk tcpPing(allocator, target) catch -1;
+            if (std.mem.eql(u8, ping_type, "http")) break :blk httpPing(allocator, target) catch -1;
+            if (std.mem.eql(u8, ping_type, "icmp")) break :blk icmpPing(allocator, target) catch -1;
+            break :blk -1;
+        };
+        if (value >= 0 and (best < 0 or value < best)) best = value;
+        if (value >= 0 and value <= 1000) return value;
+    }
+    return best;
+}
+
+pub fn icmpChecksum(bytes: []const u8) u16 {
+    var sum: u32 = 0;
+    var i: usize = 0;
+    while (i + 1 < bytes.len) : (i += 2) {
+        sum += (@as(u32, bytes[i]) << 8) | bytes[i + 1];
+    }
+    if (i < bytes.len) sum += @as(u32, bytes[i]) << 8;
+    while ((sum >> 16) != 0) sum = (sum & 0xffff) + (sum >> 16);
+    return @as(u16, @intCast(~sum & 0xffff));
+}
+
+fn icmpPing(allocator: std.mem.Allocator, target: []const u8) !i64 {
+    if (builtin.os.tag == .windows) return error.Unsupported;
+    var list = try std.net.getAddressList(allocator, target, 0);
+    defer list.deinit();
+    for (list.addrs) |addr| {
+        if (addr.any.family != std.posix.AF.INET) continue;
+        return icmpPingAddress(addr) catch |err| switch (err) {
+            error.AccessDenied => continue,
+            else => continue,
+        };
+    }
     return -1;
+}
+
+fn icmpPingAddress(addr: std.net.Address) !i64 {
+    const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
+    const sock = std.posix.socket(std.posix.AF.INET, flags, std.posix.IPPROTO.ICMP) catch |err| switch (err) {
+        error.AccessDenied => try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMP),
+        else => return err,
+    };
+    defer std.posix.close(sock);
+
+    var packet: [16]u8 = .{0} ** 16;
+    packet[0] = 8;
+    packet[1] = 0;
+    const ident: u16 = @truncate(@as(u64, @intCast(std.time.milliTimestamp())) & 0xffff);
+    const seq: u16 = 1;
+    std.mem.writeInt(u16, packet[4..6], ident, .big);
+    std.mem.writeInt(u16, packet[6..8], seq, .big);
+    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))), .big);
+    const csum = icmpChecksum(&packet);
+    std.mem.writeInt(u16, packet[2..4], csum, .big);
+
+    const start = std.time.milliTimestamp();
+    _ = try std.posix.sendto(sock, &packet, 0, &addr.any, addr.getOsSockLen());
+    var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
+    while (std.time.milliTimestamp() - start < 3000) {
+        const left: i32 = @intCast(@max(1, 3000 - (std.time.milliTimestamp() - start)));
+        const ready = try std.posix.poll(&fds, left);
+        if (ready == 0) return error.Timeout;
+        var buf: [1500]u8 = undefined;
+        const n = try std.posix.recvfrom(sock, &buf, 0, null, null);
+        if (isEchoReply(buf[0..n], ident, seq)) return std.time.milliTimestamp() - start;
+    }
+    return error.Timeout;
+}
+
+fn isEchoReply(bytes: []const u8, ident: u16, seq: u16) bool {
+    var off: usize = 0;
+    if (bytes.len >= 20 and (bytes[0] >> 4) == 4) off = (bytes[0] & 0x0f) * 4;
+    if (bytes.len < off + 8) return false;
+    if (bytes[off] != 0 or bytes[off + 1] != 0) return false;
+    const got_ident = (@as(u16, bytes[off + 4]) << 8) | bytes[off + 5];
+    const got_seq = (@as(u16, bytes[off + 6]) << 8) | bytes[off + 7];
+    return (got_ident == ident or got_ident == 0) and got_seq == seq;
 }
 
 pub fn parseTcpTarget(target: []const u8) !TcpTarget {

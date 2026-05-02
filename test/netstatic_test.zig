@@ -24,3 +24,12 @@ test "last reset date rolls impossible day to next month first day" {
     const expected = try netstatic.utcTimestamp(2026, 3, 1);
     try std.testing.expectEqual(expected, netstatic.lastResetDate(31, now));
 }
+
+test "store json round trips baseline counters" {
+    const json = try netstatic.allocStoreJson(std.testing.allocator, .{ .reset = 123, .up = 456, .down = 789 });
+    defer std.testing.allocator.free(json);
+    const parsed = try netstatic.parseStore(json);
+    try std.testing.expectEqual(@as(i64, 123), parsed.reset);
+    try std.testing.expectEqual(@as(u64, 456), parsed.up);
+    try std.testing.expectEqual(@as(u64, 789), parsed.down);
+}

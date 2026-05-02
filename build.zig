@@ -17,6 +17,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", opts);
+    exe.root_module.addImport("report_netstatic", b.createModule(.{
+        .root_source_file = b.path("src/report/netstatic.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
     b.installArtifact(exe);
 
     const version_module = b.createModule(.{
@@ -85,11 +90,18 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     }));
-    tests.root_module.addImport("platform_linux", b.createModule(.{
+    const report_netstatic = b.createModule(.{
+        .root_source_file = b.path("src/report/netstatic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const platform_linux = b.createModule(.{
         .root_source_file = b.path("src/platform/linux.zig"),
         .target = target,
         .optimize = optimize,
-    }));
+    });
+    platform_linux.addImport("report_netstatic", report_netstatic);
+    tests.root_module.addImport("platform_linux", platform_linux);
     tests.root_module.addImport("protocol_task", b.createModule(.{
         .root_source_file = b.path("src/protocol/task.zig"),
         .target = target,
@@ -105,11 +117,7 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     }));
-    tests.root_module.addImport("report_netstatic", b.createModule(.{
-        .root_source_file = b.path("src/report/netstatic.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
+    tests.root_module.addImport("report_netstatic", report_netstatic);
 
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);

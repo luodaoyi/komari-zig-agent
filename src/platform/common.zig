@@ -31,6 +31,7 @@ pub const SnapshotOptions = struct {
     exclude_nics: []const u8 = "",
     include_mountpoints: []const u8 = "",
     month_rotate: i32 = 0,
+    enable_gpu: bool = false,
 };
 
 pub const NetworkInfo = struct {
@@ -68,5 +69,6 @@ pub const Snapshot = struct {
     connections: ConnectionInfo = .{},
     uptime: u64 = 0,
     process: u64 = 0,
+    gpu_json: []const u8 = "",
     message: []const u8 = "",
 };

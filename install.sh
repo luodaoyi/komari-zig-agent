@@ -54,7 +54,7 @@ if [ -n "$install_version" ]; then
 else
   release_path="latest/download"
 fi
-url="https://github.com/komari-monitor/komari-agent/releases/$release_path/$asset"
+url="https://github.com/luodaoyi/komari-zig-agent/releases/$release_path/$asset"
 if [ -n "$github_proxy" ]; then
   url="$github_proxy/$url"
 fi
