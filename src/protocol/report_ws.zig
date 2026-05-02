@@ -3,6 +3,8 @@ const config = @import("../config.zig");
 const http = @import("http.zig");
 const provider = @import("../platform/provider.zig");
 const report = @import("../report/report.zig");
+const ping = @import("ping.zig");
+const task = @import("task.zig");
 pub const ws_message = @import("ws_message.zig");
 
 pub const ServerMessageKind = ws_message.ServerMessageKind;
@@ -21,12 +23,13 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config) !void {
         try stdout.print("WebSocket connect failed: {s}; generating reports locally\n", .{@errorName(err)});
         break :blk null;
     };
-    defer if (ws) |*conn| conn.close(allocator);
+    if (ws) |conn| startReader(allocator, conn, cfg);
+    defer if (ws) |conn| conn.close(allocator);
 
     while (true) {
         const payload = try runOnce(allocator, cfg);
         defer allocator.free(payload);
-        if (ws) |*conn| {
+        if (ws) |conn| {
             conn.writeText(payload) catch |err| {
                 try stdout.print("WebSocket write failed: {s}\n", .{@errorName(err)});
                 conn.close(allocator);
@@ -46,6 +49,7 @@ const WsTarget = struct {
 
 const OpenSslWs = struct {
     child: std.process.Child,
+    write_mutex: std.Thread.Mutex = .{},
 
     fn close(self: *OpenSslWs, allocator: std.mem.Allocator) void {
         _ = allocator;
@@ -56,13 +60,15 @@ const OpenSslWs = struct {
     }
 
     fn writeText(self: *OpenSslWs, payload: []const u8) !void {
+        self.write_mutex.lock();
+        defer self.write_mutex.unlock();
         const stdin = self.child.stdin orelse return error.WebSocketClosed;
         var writer = stdin.deprecatedWriter();
         try writeMaskedTextFrame(&writer, payload);
     }
 };
 
-fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !OpenSslWs {
+fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*OpenSslWs {
     const url = try http.reportWsUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
     const target = try parseWssUrl(url);
@@ -75,8 +81,12 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !OpenSslWs 
     child.stderr_behavior = .Ignore;
     try child.spawn();
 
-    var conn = OpenSslWs{ .child = child };
-    errdefer conn.close(allocator);
+    const conn = try allocator.create(OpenSslWs);
+    conn.* = .{ .child = child };
+    errdefer {
+        conn.close(allocator);
+        allocator.destroy(conn);
+    }
 
     var writer = conn.child.stdin.?.deprecatedWriter();
     try writer.print(
@@ -86,6 +96,54 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !OpenSslWs 
 
     try readHandshake(conn.child.stdout.?);
     return conn;
+}
+
+fn startReader(allocator: std.mem.Allocator, conn: *OpenSslWs, cfg: config.Config) void {
+    const thread = std.Thread.spawn(.{}, readerLoop, .{ allocator, conn, cfg }) catch return;
+    thread.detach();
+}
+
+fn readerLoop(allocator: std.mem.Allocator, conn: *OpenSslWs, cfg: config.Config) void {
+    var stdout = std.fs.File.stdout().deprecatedWriter();
+    while (true) {
+        const payload = readTextFrame(allocator, conn.child.stdout orelse return) catch |err| {
+            stdout.print("WebSocket read failed: {s}\n", .{@errorName(err)}) catch {};
+            return;
+        };
+        defer allocator.free(payload);
+        const msg = parseServerMessage(allocator, payload) catch |err| {
+            stdout.print("Bad ws message: {s}\n", .{@errorName(err)}) catch {};
+            continue;
+        };
+        defer msg.deinit(allocator);
+        handleServerMessage(allocator, conn, cfg, msg) catch |err| {
+            stdout.print("WS task failed: {s}\n", .{@errorName(err)}) catch {};
+        };
+    }
+}
+
+fn handleServerMessage(allocator: std.mem.Allocator, conn: *OpenSslWs, cfg: config.Config, msg: ServerMessage) !void {
+    _ = cfg;
+    switch (msg.kind) {
+        .ping => {
+            const value = ping.measure(allocator, msg.ping_type, msg.ping_target);
+            const finished = "2026-05-02T00:00:00Z";
+            const payload = try ping.allocPingResultJson(allocator, msg.ping_task_id, msg.ping_type, value, finished);
+            defer allocator.free(payload);
+            try conn.writeText(payload);
+        },
+        .exec => {
+            const result = try task.runCommandDetailed(allocator, msg.command);
+            defer result.deinit(allocator);
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.print("Exec task {s} finished with code {d}, {d} bytes\n", .{ msg.task_id, result.exit_code, result.output.len });
+        },
+        .terminal => {
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.print("Terminal request {s} received; terminal bridge not ready\n", .{msg.request_id});
+        },
+        .unknown => {},
+    }
 }
 
 fn parseWssUrl(url: []const u8) !WsTarget {
@@ -113,6 +171,36 @@ fn readHandshake(file: std.fs.File) !void {
         if (std.mem.eql(u8, &window, "\r\n\r\n")) return;
     }
     return error.WebSocketHandshakeTooLarge;
+}
+
+fn readTextFrame(allocator: std.mem.Allocator, file: std.fs.File) ![]const u8 {
+    var reader = file.deprecatedReader();
+    const b0 = try reader.readByte();
+    const opcode = b0 & 0x0f;
+    const b1 = try reader.readByte();
+    const masked = (b1 & 0x80) != 0;
+    var len: u64 = b1 & 0x7f;
+    if (len == 126) {
+        const hi = try reader.readByte();
+        const lo = try reader.readByte();
+        len = (@as(u64, hi) << 8) | lo;
+    } else if (len == 127) {
+        return error.WebSocketPayloadTooLarge;
+    }
+    var mask: [4]u8 = .{ 0, 0, 0, 0 };
+    if (masked) {
+        for (&mask) |*m| m.* = try reader.readByte();
+    }
+    if (opcode == 0x8) return error.WebSocketClosed;
+    if (opcode == 0x9 or opcode == 0xA) return allocator.dupe(u8, "");
+    if (opcode != 0x1) return error.UnsupportedWebSocketFrame;
+    const payload = try allocator.alloc(u8, @intCast(len));
+    errdefer allocator.free(payload);
+    try reader.readNoEof(payload);
+    if (masked) {
+        for (payload, 0..) |*b, i| b.* ^= mask[i % 4];
+    }
+    return payload;
 }
 
 fn writeMaskedTextFrame(writer: anytype, payload: []const u8) !void {
