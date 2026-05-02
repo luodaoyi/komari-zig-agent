@@ -34,6 +34,7 @@ pub fn newerThan(current_raw: []const u8, latest_raw: []const u8) bool {
 }
 
 pub fn checkAndUpdate(allocator: std.mem.Allocator) !void {
+    if (!isNumericVersion(version.current)) return;
     const release = http.getRead(allocator, "https://api.github.com/repos/komari-monitor/komari-agent/releases/latest") catch return;
     defer allocator.free(release);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
@@ -105,6 +106,12 @@ fn compareVersion(a_raw: []const u8, b_raw: []const u8) i32 {
         if (av < bv) return -1;
     }
     return 0;
+}
+
+fn isNumericVersion(value_raw: []const u8) bool {
+    const value = parseVersionPrefixless(value_raw);
+    if (value.len == 0) return false;
+    return value[0] >= '0' and value[0] <= '9';
 }
 
 fn parseVersionPart(part: []const u8) u64 {
