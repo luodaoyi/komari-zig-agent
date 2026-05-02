@@ -14,6 +14,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .unwind_tables = .none,
+            .omit_frame_pointer = true,
         }),
     });
     exe.root_module.addOptions("build_options", opts);
@@ -27,16 +29,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/idna.zig"),
         .target = target,
         .optimize = optimize,
+        .unwind_tables = .none,
+        .omit_frame_pointer = true,
     }));
     exe.root_module.addImport("dns", b.createModule(.{
         .root_source_file = b.path("src/dns.zig"),
         .target = target,
         .optimize = optimize,
+        .unwind_tables = .none,
+        .omit_frame_pointer = true,
     }));
     exe.root_module.addImport("report_netstatic", b.createModule(.{
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
         .optimize = optimize,
+        .unwind_tables = .none,
+        .omit_frame_pointer = true,
     }));
     b.installArtifact(exe);
 

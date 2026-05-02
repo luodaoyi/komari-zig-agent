@@ -15,15 +15,17 @@ var shutdown_requested = std.atomic.Value(bool).init(false);
 var netstatic_active = std.atomic.Value(bool).init(false);
 
 pub fn main() !void {
-    const allocator = std.heap.smp_allocator;
+    const allocator = std.heap.page_allocator;
+    var config_arena = std.heap.ArenaAllocator.init(allocator);
+    defer config_arena.deinit();
+    const config_allocator = config_arena.allocator();
     installSignalHandlers();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try std.process.argsAlloc(config_allocator);
 
-    var cfg = try config.parseArgs(allocator, args);
-    try cfg.loadEnv(allocator);
-    if (cfg.config_file.len != 0) try cfg.loadJsonFile(allocator, cfg.config_file);
+    var cfg = try config.parseArgs(config_allocator, args);
+    try cfg.loadEnv(config_allocator);
+    if (cfg.config_file.len != 0) try cfg.loadJsonFile(config_allocator, cfg.config_file);
 
     if (cfg.command == .list_disk) {
         const disks = try provider.diskList(allocator);
@@ -38,7 +40,7 @@ pub fn main() !void {
         return;
     }
 
-    try autodiscovery.applyExistingToken(allocator, &cfg);
+    try autodiscovery.applyExistingToken(config_allocator, &cfg);
 
     var stdout = std.fs.File.stdout().deprecatedWriter();
     try stdout.print("Komari Agent {s}\nGithub Repo: {s}\n", .{ version.current, update.repo });
