@@ -12,7 +12,10 @@ function Build-One($os, $arch, $target) {
 Build-One linux amd64 x86_64-linux-musl
 Build-One linux arm64 aarch64-linux-musl
 Build-One linux 386 x86-linux-musl
-Build-One linux arm arm-linux-musleabihf
+Build-One linux arm arm-linux-musleabi
+Build-One linux mips mips-linux-musl
+Build-One linux mipsel mipsel-linux-musl
+Build-One linux riscv64 riscv64-linux-musl
 Build-One freebsd amd64 x86_64-freebsd
 Build-One freebsd arm64 aarch64-freebsd
 Build-One freebsd 386 x86-freebsd

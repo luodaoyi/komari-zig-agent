@@ -67,6 +67,15 @@ case "$arch" in
   armv6*|armv7*)
     case "$os_name" in linux|freebsd) arch="arm" ;; *) log_error "32-bit ARM not supported on $os_name"; exit 1 ;; esac
     ;;
+  mips)
+    [ "$os_name" = "linux" ] && arch="mips" || { log_error "MIPS not supported on $os_name"; exit 1; }
+    ;;
+  mipsel)
+    [ "$os_name" = "linux" ] && arch="mipsel" || { log_error "MIPS little-endian not supported on $os_name"; exit 1; }
+    ;;
+  riscv64)
+    [ "$os_name" = "linux" ] && arch="riscv64" || { log_error "RISC-V not supported on $os_name"; exit 1; }
+    ;;
   *) log_error "Unsupported architecture: $arch"; exit 1 ;;
 esac
 
@@ -88,6 +97,8 @@ install_dependencies() {
     yum install -y curl
   elif command -v apk >/dev/null 2>&1; then
     apk add curl
+  elif command -v opkg >/dev/null 2>&1; then
+    opkg update && opkg install curl
   elif command -v pkg >/dev/null 2>&1; then
     pkg install -y curl
   elif command -v brew >/dev/null 2>&1; then

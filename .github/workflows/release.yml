@@ -1,14 +1,23 @@
-name: Release Binaries
+name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  ZIG_VERSION: 0.15.2
+
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -21,11 +30,20 @@ jobs:
             arch: arm64
             target: aarch64-linux-musl
           - os: linux
-            arch: 386
+            arch: "386"
             target: x86-linux-musl
           - os: linux
             arch: arm
-            target: arm-linux-musleabihf
+            target: arm-linux-musleabi
+          - os: linux
+            arch: mips
+            target: mips-linux-musl
+          - os: linux
+            arch: mipsel
+            target: mipsel-linux-musl
+          - os: linux
+            arch: riscv64
+            target: riscv64-linux-musl
           - os: freebsd
             arch: amd64
             target: x86_64-freebsd
@@ -33,8 +51,11 @@ jobs:
             arch: arm64
             target: aarch64-freebsd
           - os: freebsd
-            arch: 386
+            arch: "386"
             target: x86-freebsd
+          - os: freebsd
+            arch: arm
+            target: arm-freebsd
           - os: darwin
             arch: amd64
             target: x86_64-macos
@@ -43,11 +64,58 @@ jobs:
             target: aarch64-macos
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - name: Resolve tag
+        id: tag
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Zig
+        run: |
+          set -eu
+          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          set -eu
+          zig build -Doptimize=ReleaseSmall -Dversion=${{ steps.tag.outputs.tag }} -Dtarget=${{ matrix.target }}
+          mkdir -p dist
+          cp zig-out/bin/komari-agent dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
         with:
-          version: 0.15.2
-      - run: zig build -Doptimize=ReleaseSmall -Dversion=${{ github.event.release.tag_name }} -Dtarget=${{ matrix.target }}
-      - run: cp zig-out/bin/komari-agent komari-agent-${{ matrix.os }}-${{ matrix.arch }}
-      - run: gh release upload ${{ github.event.release.tag_name }} komari-agent-${{ matrix.os }}-${{ matrix.arch }} --repo ${{ github.repository }}
+          name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" dist/komari-agent-* --clobber

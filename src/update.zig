@@ -4,7 +4,7 @@ const config = @import("config.zig");
 const http = @import("protocol/http.zig");
 const version = @import("version.zig");
 
-pub const repo = "luodaoyi/komari-zig-agent";
+pub const repo = version.repo;
 
 pub fn parseVersionPrefixless(value: []const u8) []const u8 {
     if (value.len > 0 and (value[0] == 'v' or value[0] == 'V')) return value[1..];
