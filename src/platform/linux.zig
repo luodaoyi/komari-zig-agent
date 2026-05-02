@@ -525,6 +525,7 @@ fn parseMiB(value: []const u8) u64 {
 }
 
 fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
+    try ensureExecutable(allocator, argv[0]);
     var child = std.process.Child.init(argv, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
@@ -566,6 +567,7 @@ fn stripCidr(allocator: std.mem.Allocator, cidr: []const u8) ![]const u8 {
 }
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
+    try ensureExecutable(allocator, argv[0]);
     var child = std.process.Child.init(argv, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
@@ -575,6 +577,26 @@ fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]cons
     const term = try child.wait();
     if (term != .Exited or term.Exited != 0) return error.CommandFailed;
     return stdout;
+}
+
+fn ensureExecutable(allocator: std.mem.Allocator, exe: []const u8) !void {
+    if (std.mem.indexOfScalar(u8, exe, '/')) |_| {
+        const stat = std.fs.cwd().statFile(exe) catch return error.FileNotFound;
+        if (stat.kind != .file) return error.FileNotFound;
+        return;
+    }
+
+    const path = std.process.getEnvVarOwned(allocator, "PATH") catch try allocator.dupe(u8, "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    defer allocator.free(path);
+    var dirs = std.mem.splitScalar(u8, path, ':');
+    while (dirs.next()) |dir| {
+        if (dir.len == 0) continue;
+        const full = try std.fs.path.join(allocator, &.{ dir, exe });
+        defer allocator.free(full);
+        const stat = std.fs.cwd().statFile(full) catch continue;
+        if (stat.kind == .file) return;
+    }
+    return error.FileNotFound;
 }
 
 pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
