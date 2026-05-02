@@ -2,11 +2,17 @@ const std = @import("std");
 const common = @import("common.zig");
 
 var previous_network: ?NetworkSample = null;
+var previous_cpu: ?CpuStat = null;
 
 const NetworkSample = struct {
     total_up: u64,
     total_down: u64,
     timestamp_ms: i64,
+};
+
+pub const CpuStat = struct {
+    idle: u64,
+    total: u64,
 };
 
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
@@ -33,12 +39,13 @@ pub fn snapshot() !common.Snapshot {
     const mem = try memInfo();
     const swap = try swapInfo();
     return .{
-        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(try std.Thread.getCpuCount()), .usage = 0.001 },
+        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(try std.Thread.getCpuCount()), .usage = try cpuUsage() },
         .ram = mem,
         .swap = swap,
         .load = try loadInfo(),
         .disk = try diskInfo(),
         .network = try networkInfo(),
+        .connections = try connectionsInfo(),
         .uptime = try uptime(),
         .process = try processCount(),
     };
@@ -343,6 +350,69 @@ fn networkInfo() !common.NetworkInfo {
         .timestamp_ms = now,
     };
     return current;
+}
+
+fn cpuUsage() !f64 {
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/stat", 64 * 1024) catch return 0.001;
+    defer std.heap.page_allocator.free(bytes);
+    const current = parseCpuStat(bytes) orelse return 0.001;
+    defer previous_cpu = current;
+    if (previous_cpu) |previous| {
+        const usage = cpuUsagePercent(previous, current);
+        return if (usage <= 0.001) 0.001 else usage;
+    }
+    return 0.001;
+}
+
+pub fn parseCpuStat(bytes: []const u8) ?CpuStat {
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    const line = lines.next() orelse return null;
+    var fields = std.mem.tokenizeAny(u8, line, " \t");
+    const label = fields.next() orelse return null;
+    if (!std.mem.eql(u8, label, "cpu")) return null;
+
+    var values: [10]u64 = .{0} ** 10;
+    var count: usize = 0;
+    while (fields.next()) |field| {
+        if (count >= values.len) break;
+        values[count] = std.fmt.parseInt(u64, field, 10) catch 0;
+        count += 1;
+    }
+    if (count < 4) return null;
+    var total: u64 = 0;
+    for (values[0..count]) |value| total += value;
+    return .{ .idle = values[3] + if (count > 4) values[4] else 0, .total = total };
+}
+
+pub fn cpuUsagePercent(previous: CpuStat, current: CpuStat) f64 {
+    if (current.total <= previous.total or current.idle < previous.idle) return 0.001;
+    const total_delta = current.total - previous.total;
+    const idle_delta = current.idle - previous.idle;
+    if (total_delta == 0 or total_delta < idle_delta) return 0.001;
+    return (@as(f64, @floatFromInt(total_delta - idle_delta)) / @as(f64, @floatFromInt(total_delta))) * 100.0;
+}
+
+fn connectionsInfo() !common.ConnectionInfo {
+    return .{
+        .tcp = countProcNetFile("/proc/net/tcp") + countProcNetFile("/proc/net/tcp6"),
+        .udp = countProcNetFile("/proc/net/udp") + countProcNetFile("/proc/net/udp6"),
+    };
+}
+
+fn countProcNetFile(path: []const u8) u64 {
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return 0;
+    defer std.heap.page_allocator.free(bytes);
+    return countProcNetConnections(bytes);
+}
+
+pub fn countProcNetConnections(bytes: []const u8) u64 {
+    var count: u64 = 0;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (std.mem.trim(u8, line, " \t\r").len != 0) count += 1;
+    }
+    return count;
 }
 
 fn perSecond(current: u64, previous: u64, elapsed_ms: u64) u64 {

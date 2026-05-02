@@ -35,6 +35,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/linux_basic_info_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/disk_filter_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/network_filter_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module);
 }
 
 fn addTest(
