@@ -74,7 +74,7 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
     };
     defer session.close();
 
-    const out_thread = try std.Thread.spawn(.{}, pipeShellOutputToWs, .{ session.output, ws });
+    const out_thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, pipeShellOutputToWs, .{ session.output, ws });
     out_thread.detach();
 
     while (true) {

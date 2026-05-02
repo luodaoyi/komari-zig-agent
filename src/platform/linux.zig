@@ -889,10 +889,8 @@ fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
 }
 
 fn sampleNetworkCounters(options: common.SnapshotOptions) !common.NetworkInfo {
-    const path = try procPath(std.heap.page_allocator, options.host_proc, "net/dev");
-    defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return .{};
-    defer std.heap.page_allocator.free(bytes);
+    var buf: [64 * 1024]u8 = undefined;
+    const bytes = readSmallProcFile(options.host_proc, "net/dev", &buf) orelse return .{};
     return parseProcNetDev(bytes, options.include_nics, options.exclude_nics);
 }
 
@@ -948,9 +946,7 @@ fn connectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
 fn countProcNetFile(host_proc: []const u8, suffix: []const u8) u64 {
     const path = procPath(std.heap.page_allocator, host_proc, suffix) catch return 0;
     defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return 0;
-    defer std.heap.page_allocator.free(bytes);
-    return countProcNetConnections(bytes);
+    return countProcNetConnectionsFile(path);
 }
 
 pub fn countProcNetConnections(bytes: []const u8) u64 {
@@ -960,6 +956,33 @@ pub fn countProcNetConnections(bytes: []const u8) u64 {
     while (lines.next()) |line| {
         if (std.mem.trim(u8, line, " \t\r").len != 0) count += 1;
     }
+    return count;
+}
+
+fn countProcNetConnectionsFile(path: []const u8) u64 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return 0;
+    defer file.close();
+    var buf: [8192]u8 = undefined;
+    var count: u64 = 0;
+    var in_header = true;
+    var line_has_content = false;
+    while (true) {
+        const n = file.read(&buf) catch return count;
+        if (n == 0) break;
+        for (buf[0..n]) |b| {
+            if (in_header) {
+                if (b == '\n') in_header = false;
+                continue;
+            }
+            if (b == '\n') {
+                if (line_has_content) count += 1;
+                line_has_content = false;
+            } else if (b != ' ' and b != '\t' and b != '\r') {
+                line_has_content = true;
+            }
+        }
+    }
+    if (!in_header and line_has_content) count += 1;
     return count;
 }
 

@@ -54,7 +54,7 @@ pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
 }
 
 pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{}, updateLoop, .{ allocator, cfg }) catch return;
+    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, updateLoop, .{ allocator, cfg }) catch return;
     thread.detach();
 }
 

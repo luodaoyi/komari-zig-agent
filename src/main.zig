@@ -133,7 +133,7 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
 }
 
 fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{}, basicInfoLoop, .{ allocator, cfg }) catch return;
+    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, basicInfoLoop, .{ allocator, cfg }) catch return;
     thread.detach();
 }
 

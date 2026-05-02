@@ -52,9 +52,9 @@ pub fn startOrContinue() !void {
     rt.stop_requested = false;
     rt.mutex.unlock();
 
-    const sampler = try std.Thread.spawn(.{}, sampleLoop, .{rt});
+    const sampler = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, sampleLoop, .{rt});
     sampler.detach();
-    const saver = try std.Thread.spawn(.{}, saveLoop, .{rt});
+    const saver = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, saveLoop, .{rt});
     saver.detach();
 }
 

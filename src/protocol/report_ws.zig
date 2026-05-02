@@ -105,7 +105,7 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
 }
 
 fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{}, readerLoop, .{ allocator, conn, cfg }) catch return;
+    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, readerLoop, .{ allocator, conn, cfg }) catch return;
     thread.detach();
 }
 
@@ -132,16 +132,16 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
     switch (msg.kind) {
         .ping => {
             const args = try PingTaskArgs.init(allocator, conn, cfg, msg);
-            const thread = try std.Thread.spawn(.{}, runPingTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, runPingTask, .{ allocator, args });
             thread.detach();
         },
         .exec => {
             const args = try ExecTaskArgs.init(allocator, cfg, msg);
-            const thread = try std.Thread.spawn(.{}, runExecTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, runExecTask, .{ allocator, args });
             thread.detach();
         },
         .terminal => {
-            const thread = try std.Thread.spawn(.{}, terminal.startSession, .{ allocator, cfg, msg.request_id });
+            const thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, terminal.startSession, .{ allocator, cfg, msg.request_id });
             thread.detach();
         },
         .unknown => {},
