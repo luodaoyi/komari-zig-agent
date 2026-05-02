@@ -37,13 +37,24 @@ pub fn reconnectSleepSeconds(value: i32) u64 {
 pub fn loop(allocator: std.mem.Allocator, cfg: config.Config) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
     while (true) {
-        var ws = connectReportWs(allocator, cfg) catch |err| blk: {
+        var ws = connectReportWsWithRetries(allocator, cfg) catch |err| blk: {
             try stdout.print("WebSocket connect failed: {s}; retrying later\n", .{@errorName(err)});
             break :blk null;
         };
         if (ws) |conn| startReader(allocator, conn, cfg);
+        var last_heartbeat = std.time.timestamp();
 
         while (ws != null) {
+            const now = std.time.timestamp();
+            if (now - last_heartbeat >= 30) {
+                ws.?.writePing() catch |err| {
+                    try stdout.print("Failed to send heartbeat: {s}\n", .{@errorName(err)});
+                    ws.?.close(allocator);
+                    ws = null;
+                    break;
+                };
+                last_heartbeat = now;
+            }
             const payload = try runOnce(allocator, cfg);
             defer allocator.free(payload);
             ws.?.writeText(payload) catch |err| {
@@ -69,6 +80,18 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client
     const url = try http.reportWsUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
     return ws_client.connect(allocator, url, cfg);
+}
+
+fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client.Client {
+    var retry: i32 = 0;
+    while (retry <= cfg.max_retries) : (retry += 1) {
+        return connectReportWs(allocator, cfg) catch |err| {
+            if (retry >= cfg.max_retries) return err;
+            std.Thread.sleep(reconnectSleepSeconds(cfg.reconnect_interval) * std.time.ns_per_s);
+            continue;
+        };
+    }
+    return error.WebSocketHandshakeFailed;
 }
 
 fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
@@ -98,15 +121,14 @@ fn readerLoop(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config
 fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config, msg: ServerMessage) !void {
     switch (msg.kind) {
         .ping => {
-            const value = ping.measure(allocator, msg.ping_type, msg.ping_target, cfg.custom_dns);
-            const finished = try task.utcNow(allocator);
-            defer allocator.free(finished);
-            const payload = try ping.allocPingResultJson(allocator, msg.ping_task_id, msg.ping_type, value, finished);
-            defer allocator.free(payload);
-            try conn.writeText(payload);
+            const args = try PingTaskArgs.init(allocator, conn, cfg, msg);
+            const thread = try std.Thread.spawn(.{}, runPingTask, .{ allocator, args });
+            thread.detach();
         },
         .exec => {
-            try task.uploadExecResult(allocator, cfg, msg.task_id, msg.command);
+            const args = try ExecTaskArgs.init(allocator, cfg, msg);
+            const thread = try std.Thread.spawn(.{}, runExecTask, .{ allocator, args });
+            thread.detach();
         },
         .terminal => {
             const thread = try std.Thread.spawn(.{}, terminal.startSession, .{ allocator, cfg, msg.request_id });
@@ -114,4 +136,61 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
         },
         .unknown => {},
     }
+}
+
+const PingTaskArgs = struct {
+    conn: *ws_client.Client,
+    cfg: config.Config,
+    ping_task_id: u64,
+    ping_type: []const u8,
+    ping_target: []const u8,
+
+    fn init(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config, msg: ServerMessage) !PingTaskArgs {
+        return .{
+            .conn = conn,
+            .cfg = cfg,
+            .ping_task_id = msg.ping_task_id,
+            .ping_type = try allocator.dupe(u8, msg.ping_type),
+            .ping_target = try allocator.dupe(u8, msg.ping_target),
+        };
+    }
+
+    fn deinit(self: PingTaskArgs, allocator: std.mem.Allocator) void {
+        allocator.free(self.ping_type);
+        allocator.free(self.ping_target);
+    }
+};
+
+fn runPingTask(allocator: std.mem.Allocator, args: PingTaskArgs) void {
+    defer args.deinit(allocator);
+    const value = ping.measure(allocator, args.ping_type, args.ping_target, args.cfg.custom_dns);
+    const finished = task.utcNow(allocator) catch return;
+    defer allocator.free(finished);
+    const payload = ping.allocPingResultJson(allocator, args.ping_task_id, args.ping_type, value, finished) catch return;
+    defer allocator.free(payload);
+    args.conn.writeText(payload) catch {};
+}
+
+const ExecTaskArgs = struct {
+    cfg: config.Config,
+    task_id: []const u8,
+    command: []const u8,
+
+    fn init(allocator: std.mem.Allocator, cfg: config.Config, msg: ServerMessage) !ExecTaskArgs {
+        return .{
+            .cfg = cfg,
+            .task_id = try allocator.dupe(u8, msg.task_id),
+            .command = try allocator.dupe(u8, msg.command),
+        };
+    }
+
+    fn deinit(self: ExecTaskArgs, allocator: std.mem.Allocator) void {
+        allocator.free(self.task_id);
+        allocator.free(self.command);
+    }
+};
+
+fn runExecTask(allocator: std.mem.Allocator, args: ExecTaskArgs) void {
+    defer args.deinit(allocator);
+    task.uploadExecResult(allocator, args.cfg, args.task_id, args.command) catch {};
 }

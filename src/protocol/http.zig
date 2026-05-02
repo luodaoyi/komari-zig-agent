@@ -113,6 +113,12 @@ pub fn getReadCfg(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !
     return getRead(allocator, ascii_url);
 }
 
+pub fn getReadCfgFamily(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8) ![]u8 {
+    const ascii_url = try idna.convertUrlToAscii(allocator, url);
+    defer allocator.free(ascii_url);
+    return requestReadWithFamily(allocator, ascii_url, "GET", "", "", cfg, family, user_agent);
+}
+
 pub fn trimEndpoint(endpoint: []const u8) []const u8 {
     return std.mem.trimRight(u8, endpoint, "/");
 }
@@ -208,6 +214,10 @@ fn proxyFromEnv() ?[]const u8 {
 }
 
 fn requestRead(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype) ![]u8 {
+    return requestReadWithFamily(allocator, url, method, payload, content_type, cfg, .any, "komari-zig-agent");
+}
+
+fn requestReadWithFamily(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8) ![]u8 {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -219,7 +229,7 @@ fn requestRead(allocator: std.mem.Allocator, url: []const u8, method: []const u8
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        var conn = raw_conn.RawConn.connect(allocator, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns) catch |err| {
+        var conn = raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family) catch |err| {
             if (attempt < max_retries) {
                 std.Thread.sleep(2 * std.time.ns_per_s);
                 continue;
@@ -229,7 +239,7 @@ fn requestRead(allocator: std.mem.Allocator, url: []const u8, method: []const u8
         defer conn.close();
         var req = std.Io.Writer.Allocating.init(allocator);
         defer req.deinit();
-        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n", .{ method, path, host });
+        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, path, host, user_agent });
         if (payload.len != 0) {
             try req.writer.print("Content-Type: {s}\r\nContent-Length: {d}\r\n", .{ content_type, payload.len });
         }

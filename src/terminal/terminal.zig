@@ -7,16 +7,23 @@ pub const Input = union(enum) {
     input: []const u8,
     resize: struct { cols: u16, rows: u16 },
     raw: []const u8,
+
+    pub fn deinit(self: Input, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .input => |bytes| allocator.free(bytes),
+            .resize, .raw => {},
+        }
+    }
 };
 
-pub fn parseInput(bytes: []const u8) Input {
-    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, bytes, .{}) catch return .{ .raw = bytes };
+pub fn parseInput(allocator: std.mem.Allocator, bytes: []const u8) Input {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return .{ .raw = bytes };
     defer parsed.deinit();
     const obj = parsed.value.object;
     const typ = obj.get("type") orelse return .{ .raw = bytes };
     if (typ != .string) return .{ .raw = bytes };
     if (std.mem.eql(u8, typ.string, "input")) {
-        if (obj.get("input")) |v| if (v == .string) return .{ .input = v.string };
+        if (obj.get("input")) |v| if (v == .string) return .{ .input = allocator.dupe(u8, v.string) catch return .{ .raw = bytes } };
     }
     if (std.mem.eql(u8, typ.string, "resize")) {
         const cols = if (obj.get("cols")) |v| if (v == .integer) @as(u16, @intCast(v.integer)) else 0 else 0;
@@ -46,13 +53,22 @@ pub fn startDisabledMessage() []const u8 {
 }
 
 pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []const u8) !void {
-    if (cfg.disable_web_ssh) return;
     const url = try http.terminalWsUrl(allocator, cfg.endpoint, cfg.token, request_id);
     defer allocator.free(url);
     const ws = try ws_client.connect(allocator, url, cfg);
     defer ws.close(allocator);
 
-    var session = try ShellSession.start(allocator);
+    if (cfg.disable_web_ssh) {
+        try ws.writeText(startDisabledMessage());
+        return;
+    }
+
+    var session = ShellSession.start(allocator) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "Error: {s}\r\n", .{@errorName(err)});
+        defer allocator.free(message);
+        try ws.writeText(message);
+        return;
+    };
     defer session.close();
 
     const out_thread = try std.Thread.spawn(.{}, pipeShellOutputToWs, .{ session.output, ws });
@@ -63,7 +79,8 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
         defer allocator.free(frame.payload);
         if (frame.opcode == 0x8) return;
         if (frame.opcode != 0x1 and frame.opcode != 0x2) continue;
-        const input = parseInput(frame.payload);
+        const input = parseInput(allocator, frame.payload);
+        defer input.deinit(allocator);
         if (isCloseInput(input)) return;
         switch (input) {
             .input => |bytes| try session.input.writeAll(bytes),
@@ -130,14 +147,27 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     defer allocator.free(slave_path_raw);
     const slave_path = try allocator.dupeZ(u8, slave_path_raw);
     defer allocator.free(slave_path);
-    const shell = try allocator.dupeZ(u8, shellPath());
+    const shell_path = try shellPathAlloc(allocator);
+    defer allocator.free(shell_path);
+    const shell = try allocator.dupeZ(u8, shell_path);
     defer allocator.free(shell);
+    const shell_base_raw = std.fs.path.basename(shell_path);
+    const shell_base = try allocator.dupeZ(u8, shell_base_raw);
+    defer allocator.free(shell_base);
     const prelude = try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"");
     defer allocator.free(prelude);
-    var argv = [_:null]?[*:0]const u8{ shell.ptr, "-c", prelude.ptr, shell.ptr };
+    var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch try allocator.dupe(u8, "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+    defer allocator.free(path_env);
+    const path_kv_raw = try std.fmt.allocPrint(allocator, "PATH={s}", .{path_env});
+    defer allocator.free(path_kv_raw);
+    const path_kv = try allocator.dupeZ(u8, path_kv_raw);
+    defer allocator.free(path_kv);
     const env = [_:null]?[*:0]const u8{
         "TERM=xterm-256color",
         "LANG=C.UTF-8",
+        "LC_ALL=C.UTF-8",
+        path_kv.ptr,
     };
 
     const pid = try std.posix.fork();
@@ -154,6 +184,8 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     }
 
     const pty_file = std.fs.File{ .handle = master };
+    var initial_size = std.posix.winsize{ .row = 24, .col = 80, .xpixel = 0, .ypixel = 0 };
+    _ = std.posix.system.ioctl(master, std.posix.T.IOCSWINSZ, @intFromPtr(&initial_size));
     return .{ .input = pty_file, .output = pty_file, .pid = pid };
 }
 
@@ -180,11 +212,49 @@ fn shellPath() []const u8 {
     return "/bin/sh";
 }
 
+fn shellPathAlloc(allocator: std.mem.Allocator) ![]const u8 {
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+        defer allocator.free(home);
+        if (passwdShellForHome(allocator, home)) |shell| {
+            if (isExecutable(shell)) return shell;
+            allocator.free(shell);
+        } else |_| {}
+    } else |_| {}
+
+    const candidates = [_][]const u8{ "/bin/zsh", "/usr/bin/zsh", "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh" };
+    for (&candidates) |candidate| {
+        if (isExecutable(candidate)) return allocator.dupe(u8, candidate);
+    }
+    return error.NoSupportedShell;
+}
+
+fn passwdShellForHome(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, "/etc/passwd", 1024 * 1024);
+    defer allocator.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, home) == null) continue;
+        var fields = std.mem.splitScalar(u8, line, ':');
+        var idx: usize = 0;
+        while (fields.next()) |field| : (idx += 1) {
+            if (idx == 6 and field.len != 0) return allocator.dupe(u8, std.mem.trim(u8, field, " \t\r\n"));
+        }
+    }
+    return error.NoSupportedShell;
+}
+
+fn isExecutable(path: []const u8) bool {
+    const file = std.fs.cwd().openFile(path, .{}) catch return false;
+    file.close();
+    return true;
+}
+
 fn terminalEnv(allocator: std.mem.Allocator) !*std.process.EnvMap {
     var env = try allocator.create(std.process.EnvMap);
     env.* = std.process.EnvMap.init(allocator);
     try env.put("TERM", "xterm-256color");
     try env.put("LANG", "C.UTF-8");
+    try env.put("LC_ALL", "C.UTF-8");
     return env;
 }
 

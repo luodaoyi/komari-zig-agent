@@ -48,6 +48,7 @@ pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !Co
 }
 
 pub fn uploadExecResult(allocator: std.mem.Allocator, cfg: anytype, task_id: []const u8, command: []const u8) !void {
+    if (task_id.len == 0) return;
     const result = if (cfg.disable_web_ssh)
         CommandResult{ .output = try allocator.dupe(u8, "Remote control is disabled."), .exit_code = -1 }
     else

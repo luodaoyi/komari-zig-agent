@@ -2,7 +2,9 @@ const std = @import("std");
 const config = @import("config.zig");
 const autodiscovery = @import("protocol/autodiscovery.zig");
 const basic_info = @import("protocol/basic_info.zig");
+const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
+const ip = @import("protocol/ip.zig");
 const report_ws = @import("protocol/report_ws.zig");
 const update = @import("update.zig");
 const version = @import("version.zig");
@@ -48,8 +50,7 @@ pub fn main() !void {
     }
 
     var info = try provider.basicInfo(allocator);
-    if (cfg.custom_ipv4.len != 0) info.ipv4 = cfg.custom_ipv4;
-    if (cfg.custom_ipv6.len != 0) info.ipv6 = cfg.custom_ipv6;
+    try applyIpConfig(allocator, cfg, &info);
     const info_json = try basic_info.allocBasicInfoJson(allocator, info, true);
     defer allocator.free(info_json);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
@@ -77,8 +78,18 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     while (true) {
         std.Thread.sleep(mins * 60 * std.time.ns_per_s);
         var info = provider.basicInfo(allocator) catch continue;
-        if (cfg.custom_ipv4.len != 0) info.ipv4 = cfg.custom_ipv4;
-        if (cfg.custom_ipv6.len != 0) info.ipv6 = cfg.custom_ipv6;
+        applyIpConfig(allocator, cfg, &info) catch {};
         basic_info.upload(allocator, cfg, info) catch {};
     }
+}
+
+fn applyIpConfig(allocator: std.mem.Allocator, cfg: config.Config, info: *common.BasicInfo) !void {
+    if (cfg.get_ip_addr_from_nic) {
+        if (cfg.custom_ipv4.len != 0) info.ipv4 = cfg.custom_ipv4;
+        if (cfg.custom_ipv6.len != 0) info.ipv6 = cfg.custom_ipv6;
+        return;
+    }
+
+    info.ipv4 = if (cfg.custom_ipv4.len != 0) cfg.custom_ipv4 else try ip.getIPv4Address(allocator, cfg);
+    info.ipv6 = if (cfg.custom_ipv6.len != 0) cfg.custom_ipv6 else try ip.getIPv6Address(allocator, cfg);
 }

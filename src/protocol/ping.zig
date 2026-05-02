@@ -21,7 +21,11 @@ pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type
 }
 
 pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8) i64 {
-    var best: i64 = -1;
+    const high_latency_threshold: i64 = 1000;
+    const first = measureOnce(allocator, ping_type, target, custom_dns);
+    if (first < 0) return -1;
+    if (first <= high_latency_threshold) return first;
+    var latency = first;
     var attempt: u8 = 0;
     while (attempt < 3) : (attempt += 1) {
         const value = blk: {
@@ -30,10 +34,18 @@ pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []co
             if (std.mem.eql(u8, ping_type, "icmp")) break :blk icmpPing(allocator, target, custom_dns) catch -1;
             break :blk -1;
         };
-        if (value >= 0 and (best < 0 or value < best)) best = value;
-        if (value >= 0 and value <= 1000) return value;
+        if (value < 0) return -1;
+        latency = value;
+        if (latency <= high_latency_threshold) return latency;
     }
-    return best;
+    return -1;
+}
+
+fn measureOnce(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8) i64 {
+    if (std.mem.eql(u8, ping_type, "tcp")) return tcpPing(allocator, target, custom_dns) catch -1;
+    if (std.mem.eql(u8, ping_type, "http")) return httpPing(allocator, target, custom_dns) catch -1;
+    if (std.mem.eql(u8, ping_type, "icmp")) return icmpPing(allocator, target, custom_dns) catch -1;
+    return -1;
 }
 
 pub fn icmpChecksum(bytes: []const u8) u16 {

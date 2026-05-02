@@ -39,6 +39,10 @@ pub const Client = struct {
         try self.writeFrame(0x2, payload);
     }
 
+    pub fn writePing(self: *Client) !void {
+        try self.writeFrame(0x9, "");
+    }
+
     pub fn writeFrame(self: *Client, opcode: u8, payload: []const u8) !void {
         self.write_mutex.lock();
         defer self.write_mutex.unlock();

@@ -174,7 +174,16 @@ fn sysctlInt(name: []const u8) !u64 {
 }
 
 fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
-    return commandFirstLine(allocator, &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" }, "");
+    const out = commandOutput(allocator, &.{ "pciconf", "-lv" }) catch return allocator.dupe(u8, "Unknown");
+    defer allocator.free(out);
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
+        if (std.mem.indexOf(u8, line, "VGA") != null or std.mem.indexOf(u8, line, "Display") != null) {
+            return allocator.dupe(u8, line);
+        }
+    }
+    return allocator.dupe(u8, "Unknown");
 }
 
 fn commandJoin(allocator: std.mem.Allocator, argv: []const []const u8, fallback: []const u8) ![]const u8 {

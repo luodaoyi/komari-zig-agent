@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/task_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/netstatic_test.zig", target, optimize, opts, version_module);
 }
@@ -129,6 +130,14 @@ fn addTest(
     });
     protocol_ping.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_ping", protocol_ping);
+    const protocol_ip = b.createModule(.{
+        .root_source_file = b.path("src/protocol/ip.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    protocol_ip.addImport("idna", idna_module);
+    protocol_ip.addImport("dns", dns_module);
+    tests.root_module.addImport("protocol_ip", protocol_ip);
     tests.root_module.addImport("protocol_ws_message", b.createModule(.{
         .root_source_file = b.path("src/protocol/ws_message.zig"),
         .target = target,

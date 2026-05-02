@@ -2,6 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const dns = @import("dns");
 
+pub const AddressFamily = enum {
+    any,
+    ipv4,
+    ipv6,
+};
+
 pub const RawConn = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
@@ -23,10 +29,23 @@ pub const RawConn = struct {
         ignore_unsafe_cert: bool,
         custom_dns: []const u8,
     ) !*RawConn {
+        return connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, .any);
+    }
+
+    pub fn connectWithFamily(
+        allocator: std.mem.Allocator,
+        host: []const u8,
+        port: u16,
+        use_tls: bool,
+        ignore_unsafe_cert: bool,
+        custom_dns: []const u8,
+        family: AddressFamily,
+    ) !*RawConn {
         const addrs = try dns.resolveHost(allocator, host, port, custom_dns);
         defer allocator.free(addrs);
         var last_err: ?anyerror = null;
         for (addrs) |addr| {
+            if (!familyMatches(addr, family)) continue;
             const stream = connectAddress(addr) catch |err| {
                 last_err = err;
                 continue;
@@ -100,6 +119,14 @@ pub const RawConn = struct {
         try self.stream_writer.interface.flush();
     }
 };
+
+fn familyMatches(addr: std.net.Address, family: AddressFamily) bool {
+    return switch (family) {
+        .any => true,
+        .ipv4 => addr.any.family == std.posix.AF.INET,
+        .ipv6 => addr.any.family == std.posix.AF.INET6,
+    };
+}
 
 fn connectAddress(addr: std.net.Address) !std.net.Stream {
     const flags = std.posix.SOCK.STREAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;

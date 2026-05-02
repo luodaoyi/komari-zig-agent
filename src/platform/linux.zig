@@ -85,9 +85,132 @@ fn trimOsReleaseValue(value: []const u8) []const u8 {
 }
 
 fn osName(allocator: std.mem.Allocator) ![]const u8 {
+    if (try detectAndroid(allocator)) |name| return name;
+    if (try detectProxmoxVE(allocator)) |name| return name;
+    if (try detectSynology(allocator)) |name| return name;
+    if (try detectFnOS(allocator)) |name| return name;
+
     const bytes = std.fs.cwd().readFileAlloc(allocator, "/etc/os-release", 64 * 1024) catch return allocator.dupe(u8, "Linux");
     defer allocator.free(bytes);
     return parseOsReleaseName(allocator, bytes);
+}
+
+fn detectFnOS(allocator: std.mem.Allocator) !?[]const u8 {
+    if (fileExists("/usr/trim/BUILD_VERSION")) {
+        const version = try readFirstLine(allocator, "/usr/trim/BUILD_VERSION");
+        defer allocator.free(version);
+        const trimmed = std.mem.trim(u8, version, " \t\r\n");
+        if (trimmed.len != 0) return try std.fmt.allocPrint(allocator, "fnOS {s}", .{trimmed});
+    }
+    if (dirExists("/usr/trim")) return try allocator.dupe(u8, "fnOS");
+    return null;
+}
+
+fn detectSynology(allocator: std.mem.Allocator) !?[]const u8 {
+    const files = [_][]const u8{ "/etc/synoinfo.conf", "/etc.defaults/synoinfo.conf" };
+    for (&files) |path| {
+        if (!fileExists(path)) continue;
+        if (try parseSynologyInfo(allocator, path)) |name| return name;
+    }
+    if (dirExists("/usr/syno")) return try allocator.dupe(u8, "Synology DSM");
+    return null;
+}
+
+fn parseSynologyInfo(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024) catch return null;
+    defer allocator.free(bytes);
+    var unique: []const u8 = "";
+    var udc: []const u8 = "";
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
+        if (std.mem.startsWith(u8, line, "unique=")) unique = std.mem.trim(u8, line["unique=".len..], "\"");
+        if (std.mem.startsWith(u8, line, "udc_check_state=")) udc = std.mem.trim(u8, line["udc_check_state=".len..], "\"");
+    }
+    if (unique.len == 0 or std.mem.indexOf(u8, unique, "synology_") == null) return null;
+    const last = std.mem.lastIndexOfScalar(u8, unique, '_') orelse return null;
+    const model_raw = unique[last + 1 ..];
+    if (model_raw.len == 0) return null;
+    const model = try std.ascii.allocUpperString(allocator, model_raw);
+    defer allocator.free(model);
+    if (udc.len != 0) return try std.fmt.allocPrint(allocator, "Synology {s} DSM {s}", .{ model, udc });
+    return try std.fmt.allocPrint(allocator, "Synology {s} DSM", .{model});
+}
+
+fn detectProxmoxVE(allocator: std.mem.Allocator) !?[]const u8 {
+    const output = commandOutput(allocator, &.{"pveversion"}) catch return null;
+    defer allocator.free(output);
+    var version: []const u8 = "";
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
+        if (!std.mem.startsWith(u8, line, "pve-manager/")) continue;
+        const rest = line["pve-manager/".len..];
+        const end = std.mem.indexOfAny(u8, rest, "~ \t\r\n") orelse rest.len;
+        version = rest[0..end];
+        break;
+    }
+    const codename = try osReleaseField(allocator, "VERSION_CODENAME");
+    defer allocator.free(codename);
+    if (version.len != 0 and codename.len != 0) return try std.fmt.allocPrint(allocator, "Proxmox VE {s} ({s})", .{ version, codename });
+    if (version.len != 0) return try std.fmt.allocPrint(allocator, "Proxmox VE {s}", .{version});
+    return try allocator.dupe(u8, "Proxmox VE");
+}
+
+fn osReleaseField(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, "/etc/os-release", 64 * 1024) catch return allocator.dupe(u8, "");
+    defer allocator.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, key) or line.len <= key.len or line[key.len] != '=') continue;
+        return allocator.dupe(u8, trimOsReleaseValue(line[key.len + 1 ..]));
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn detectAndroid(allocator: std.mem.Allocator) !?[]const u8 {
+    const version = commandOutputFirstLine(allocator, &.{ "getprop", "ro.build.version.release" }) catch "";
+    if (version.len != 0) {
+        defer allocator.free(version);
+        const model = commandOutputFirstLine(allocator, &.{ "getprop", "ro.product.model" }) catch try allocator.dupe(u8, "");
+        defer allocator.free(model);
+        const brand = commandOutputFirstLine(allocator, &.{ "getprop", "ro.product.brand" }) catch try allocator.dupe(u8, "");
+        defer allocator.free(brand);
+        if (model.len != 0) {
+            if (brand.len != 0 and !std.mem.eql(u8, brand, model)) return try std.fmt.allocPrint(allocator, "Android {s} ({s} {s})", .{ version, brand, model });
+            return try std.fmt.allocPrint(allocator, "Android {s} ({s})", .{ version, model });
+        }
+        return try std.fmt.allocPrint(allocator, "Android {s}", .{version});
+    }
+    if (fileExists("/system/build.prop")) return try readAndroidBuildProp(allocator);
+    var count: u8 = 0;
+    const dirs = [_][]const u8{ "/system/app", "/system/priv-app", "/data/app", "/sdcard" };
+    for (&dirs) |path| {
+        if (dirExists(path)) count += 1;
+    }
+    if (count >= 2) return try allocator.dupe(u8, "Android");
+    return null;
+}
+
+fn readAndroidBuildProp(allocator: std.mem.Allocator) ![]const u8 {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, "/system/build.prop", 64 * 1024) catch return allocator.dupe(u8, "Android");
+    defer allocator.free(bytes);
+    var version: []const u8 = "";
+    var model: []const u8 = "";
+    var brand: []const u8 = "";
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
+        if (std.mem.startsWith(u8, line, "ro.build.version.release=")) version = line["ro.build.version.release=".len..];
+        if (std.mem.startsWith(u8, line, "ro.product.model=")) model = line["ro.product.model=".len..];
+        if (std.mem.startsWith(u8, line, "ro.product.brand=")) brand = line["ro.product.brand=".len..];
+    }
+    if (version.len == 0) return allocator.dupe(u8, "Android");
+    if (model.len != 0) {
+        if (brand.len != 0 and !std.mem.eql(u8, brand, model)) return std.fmt.allocPrint(allocator, "Android {s} ({s} {s})", .{ version, brand, model });
+        return std.fmt.allocPrint(allocator, "Android {s} ({s})", .{ version, model });
+    }
+    return std.fmt.allocPrint(allocator, "Android {s}", .{version});
 }
 
 pub fn detectContainerFromCgroup(bytes: []const u8) []const u8 {
@@ -108,8 +231,12 @@ pub fn detectContainerFromCgroup(bytes: []const u8) []const u8 {
 }
 
 fn virtualization(allocator: std.mem.Allocator) ![]const u8 {
+    if (commandOutputFirstLine(allocator, &.{"systemd-detect-virt"})) |virt| {
+        if (virt.len != 0) return virt;
+        allocator.free(virt);
+    } else |_| {}
     if (fileExists("/.dockerenv")) return allocator.dupe(u8, "docker");
-    if (fileExists("/run/.containerenv")) return allocator.dupe(u8, "container");
+    const has_containerenv = fileExists("/run/.containerenv");
 
     const cgroup = std.fs.cwd().readFileAlloc(allocator, "/proc/self/cgroup", 256 * 1024) catch "";
     if (cgroup.len != 0) {
@@ -117,6 +244,9 @@ fn virtualization(allocator: std.mem.Allocator) ![]const u8 {
         const detected = detectContainerFromCgroup(cgroup);
         if (detected.len != 0) return allocator.dupe(u8, detected);
     }
+    if (has_containerenv) return allocator.dupe(u8, "container");
+    if (fileExists("/dev/.lxc-boot-id")) return allocator.dupe(u8, "lxc");
+    if (fileExists("/.komari-agent-container")) return allocator.dupe(u8, "container");
 
     const product = try readFirstLine(allocator, "/sys/class/dmi/id/product_name");
     defer allocator.free(product);
@@ -126,6 +256,11 @@ fn virtualization(allocator: std.mem.Allocator) ![]const u8 {
     if (std.mem.indexOf(u8, lower, "vmware") != null) return allocator.dupe(u8, "vmware");
     if (std.mem.indexOf(u8, lower, "virtualbox") != null) return allocator.dupe(u8, "oracle");
     if (std.mem.indexOf(u8, lower, "hyper-v") != null) return allocator.dupe(u8, "microsoft");
+    if (std.mem.indexOf(u8, lower, "xen") != null) return allocator.dupe(u8, "xen");
+    if (std.mem.indexOf(u8, lower, "bhyve") != null) return allocator.dupe(u8, "bhyve");
+    if (std.mem.indexOf(u8, lower, "qemu") != null) return allocator.dupe(u8, "qemu");
+    if (std.mem.indexOf(u8, lower, "parallels") != null) return allocator.dupe(u8, "parallels");
+    if (std.mem.indexOf(u8, lower, "acrn") != null) return allocator.dupe(u8, "acrn");
     return allocator.dupe(u8, "none");
 }
 
@@ -134,8 +269,25 @@ fn fileExists(path: []const u8) bool {
     return stat.kind == .file;
 }
 
+fn dirExists(path: []const u8) bool {
+    const stat = std.fs.cwd().statFile(path) catch return false;
+    return stat.kind == .directory;
+}
+
 fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
+    if (gpuNameFromLspci(allocator)) |line| {
+        if (!std.mem.eql(u8, line, "None")) return line;
+        allocator.free(line);
+    } else |_| {}
+    if (gpuNameFromSysfsDrm(allocator)) |line| {
+        if (!std.mem.eql(u8, line, "None")) return line;
+        allocator.free(line);
+    } else |_| {}
     if (commandOutputFirstLine(allocator, &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" })) |line| {
+        if (line.len != 0) return line;
+        allocator.free(line);
+    } else |_| {}
+    if (commandOutputFirstLine(allocator, &.{ "/opt/rocm/bin/rocm-smi", "--showproductname" })) |line| {
         if (line.len != 0) return line;
         allocator.free(line);
     } else |_| {}
@@ -143,7 +295,154 @@ fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
         if (line.len != 0) return line;
         allocator.free(line);
     } else |_| {}
-    return allocator.dupe(u8, "");
+    return allocator.dupe(u8, "None");
+}
+
+fn gpuNameFromLspci(allocator: std.mem.Allocator) ![]const u8 {
+    const out = commandOutput(allocator, &.{"lspci"}) catch return allocator.dupe(u8, "None");
+    defer allocator.free(out);
+    const priority = [_][]const u8{ "nvidia", "amd", "radeon", "intel", "arc", "snap", "qualcomm", "snapdragon" };
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line| {
+        const lower = try std.ascii.allocLowerString(allocator, line);
+        defer allocator.free(lower);
+        if (!isDisplayPciLine(lower)) continue;
+        for (&priority) |vendor| {
+            if (std.mem.indexOf(u8, lower, vendor) != null) {
+                if (extractPciGpuName(allocator, line)) |name| {
+                    if (!isVirtualGpuName(name)) return name;
+                    allocator.free(name);
+                } else |_| {}
+            }
+        }
+    }
+
+    lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line| {
+        const lower = try std.ascii.allocLowerString(allocator, line);
+        defer allocator.free(lower);
+        if (!isDisplayPciLine(lower)) continue;
+        if (extractPciGpuName(allocator, line)) |name| {
+            if (!isVirtualGpuName(name)) return name;
+            allocator.free(name);
+        } else |_| {}
+    }
+    return allocator.dupe(u8, "None");
+}
+
+fn isDisplayPciLine(lower: []const u8) bool {
+    return std.mem.indexOf(u8, lower, "vga") != null or
+        std.mem.indexOf(u8, lower, "3d") != null or
+        std.mem.indexOf(u8, lower, "display") != null;
+}
+
+fn extractPciGpuName(allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
+    const idx = std.mem.lastIndexOfScalar(u8, line, ':') orelse return error.NoGpuName;
+    var name = std.mem.trim(u8, line[idx + 1 ..], " \t\r\n");
+    if (std.mem.lastIndexOfScalar(u8, name, '(')) |paren| name = std.mem.trim(u8, name[0..paren], " \t\r\n");
+    if (name.len == 0) return error.NoGpuName;
+    return allocator.dupe(u8, name);
+}
+
+fn isVirtualGpuName(name: []const u8) bool {
+    const lower_buf = std.ascii.allocLowerString(std.heap.page_allocator, name) catch return false;
+    defer std.heap.page_allocator.free(lower_buf);
+    const blocked = [_][]const u8{ "1111", "cirrus logic", "virtio", "vmware", "qxl", "hyper-v" };
+    for (&blocked) |needle| {
+        if (std.mem.indexOf(u8, lower_buf, needle) != null) return true;
+    }
+    return false;
+}
+
+fn gpuNameFromSysfsDrm(allocator: std.mem.Allocator) ![]const u8 {
+    var dir = std.fs.cwd().openDir("/sys/class/drm", .{ .iterate = true }) catch return allocator.dupe(u8, "None");
+    defer dir.close();
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (!std.mem.startsWith(u8, entry.name, "card")) continue;
+        if (std.mem.indexOfScalar(u8, entry.name, '-') != null) continue;
+        const driver = driverNameForDrmCard(allocator, entry.name) catch continue;
+        defer allocator.free(driver);
+        if (isExcludedDrmDriver(driver)) continue;
+        if (socModelFromCompatible(allocator, entry.name, driver)) |model| return model else |_| {}
+        if (std.mem.eql(u8, driver, "vc4") or std.mem.eql(u8, driver, "vc4-drm")) return allocator.dupe(u8, "Broadcom VideoCore IV/VI (Raspberry Pi)");
+        if (std.mem.eql(u8, driver, "v3d") or std.mem.eql(u8, driver, "v3d-drm")) return allocator.dupe(u8, "Broadcom V3D (Raspberry Pi 4/5)");
+        if (std.mem.eql(u8, driver, "msm") or std.mem.eql(u8, driver, "msm_drm")) return allocator.dupe(u8, "Qualcomm Adreno (Unknown Model)");
+        if (std.mem.eql(u8, driver, "panfrost")) return allocator.dupe(u8, "ARM Mali (Panfrost)");
+        if (std.mem.eql(u8, driver, "lima")) return allocator.dupe(u8, "ARM Mali (Lima)");
+        if (std.mem.eql(u8, driver, "sun4i-drm") or std.mem.eql(u8, driver, "sunxi-drm")) return allocator.dupe(u8, "Allwinner Display Engine");
+        if (std.mem.eql(u8, driver, "tegra")) return allocator.dupe(u8, "NVIDIA Tegra");
+        if (std.mem.eql(u8, driver, "ast")) return allocator.dupe(u8, "ASPEED Technology, Inc. ASPEED Graphics Family");
+        if (std.mem.eql(u8, driver, "i915") or std.mem.eql(u8, driver, "i915-drm")) return allocator.dupe(u8, "Intel Integrated Graphics");
+        if (std.mem.eql(u8, driver, "mgag200")) return allocator.dupe(u8, "Matrox G200 Series");
+        if (driver.len != 0) return std.fmt.allocPrint(allocator, "Direct Render Manager {s}", .{driver});
+    }
+
+    const model = std.fs.cwd().readFileAlloc(allocator, "/sys/firmware/devicetree/base/model", 4096) catch return allocator.dupe(u8, "None");
+    defer allocator.free(model);
+    if (std.mem.indexOf(u8, model, "Raspberry Pi") != null) return allocator.dupe(u8, "Broadcom VideoCore (Integrated)");
+    return allocator.dupe(u8, "None");
+}
+
+fn driverNameForDrmCard(allocator: std.mem.Allocator, card: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sys/class/drm/{s}/device/driver", .{card});
+    defer allocator.free(path);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link = try std.fs.readLinkAbsolute(path, &buf);
+    return allocator.dupe(u8, std.fs.path.basename(link));
+}
+
+fn isExcludedDrmDriver(driver: []const u8) bool {
+    const excluded = [_][]const u8{ "virtio-pci", "virtio_gpu", "bochs-drm", "qxl", "vmwgfx", "cirrus", "vboxvideo", "hyperv_fb", "simpledrm", "simplefb", "cirrus-qemu" };
+    for (&excluded) |name| if (std.mem.eql(u8, driver, name)) return true;
+    return false;
+}
+
+fn socModelFromCompatible(allocator: std.mem.Allocator, card: []const u8, driver: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sys/class/drm/{s}/device/of_node/compatible", .{card});
+    defer allocator.free(path);
+    const raw = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
+    defer allocator.free(raw);
+    const compatible = try std.mem.replaceOwned(u8, allocator, raw, "\x00", " ");
+    defer allocator.free(compatible);
+    const lower = try std.ascii.allocLowerString(allocator, compatible);
+    defer allocator.free(lower);
+    if (std.mem.eql(u8, driver, "msm") or std.mem.indexOf(u8, lower, "adreno") != null) {
+        if (extractModelNumberAfter(allocator, lower, "adreno-")) |num| {
+            defer allocator.free(num);
+            return std.fmt.allocPrint(allocator, "Qualcomm Adreno {s}", .{num});
+        } else |_| {}
+        return allocator.dupe(u8, "Qualcomm Adreno");
+    }
+    if (std.mem.eql(u8, driver, "panfrost") or std.mem.eql(u8, driver, "lima") or std.mem.indexOf(u8, lower, "mali") != null) {
+        if (extractModelNumberAfter(allocator, lower, "mali-")) |num| {
+            defer allocator.free(num);
+            const upper = try std.ascii.allocUpperString(allocator, num);
+            defer allocator.free(upper);
+            return std.fmt.allocPrint(allocator, "ARM Mali {s}", .{upper});
+        } else |_| {}
+        return allocator.dupe(u8, "ARM Mali");
+    }
+    if (std.mem.eql(u8, driver, "vc4") or std.mem.eql(u8, driver, "vc4-drm") or std.mem.eql(u8, driver, "v3d")) {
+        if (std.mem.indexOf(u8, lower, "bcm2712") != null) return allocator.dupe(u8, "Broadcom VideoCore VII (Pi 5)");
+        if (std.mem.indexOf(u8, lower, "bcm2711") != null) return allocator.dupe(u8, "Broadcom VideoCore VI (Pi 4)");
+        if (std.mem.indexOf(u8, lower, "bcm2837") != null or std.mem.indexOf(u8, lower, "bcm2835") != null) return allocator.dupe(u8, "Broadcom VideoCore IV");
+    }
+    if (std.mem.indexOf(u8, lower, "allwinner") != null or std.mem.indexOf(u8, lower, "sun50i") != null or std.mem.indexOf(u8, lower, "sun8i") != null) return allocator.dupe(u8, "Allwinner Display Engine");
+    if (std.mem.eql(u8, driver, "tegra")) {
+        if (std.mem.indexOf(u8, lower, "tegra194") != null) return allocator.dupe(u8, "NVIDIA Tegra Xavier");
+        if (std.mem.indexOf(u8, lower, "tegra234") != null) return allocator.dupe(u8, "NVIDIA Orin");
+        if (std.mem.indexOf(u8, lower, "tegra210") != null) return allocator.dupe(u8, "NVIDIA Tegra X1");
+    }
+    return error.NoSocModel;
+}
+
+fn extractModelNumberAfter(allocator: std.mem.Allocator, text: []const u8, needle: []const u8) ![]const u8 {
+    const start = (std.mem.indexOf(u8, text, needle) orelse return error.NoModel) + needle.len;
+    var end = start;
+    while (end < text.len and (std.ascii.isAlphanumeric(text[end]) or text[end] == '_' or text[end] == '-')) : (end += 1) {}
+    if (end == start) return error.NoModel;
+    return allocator.dupe(u8, text[start..end]);
 }
 
 fn detailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
@@ -181,7 +480,7 @@ fn nvidiaDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn amdDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
-    const output = try commandOutput(allocator, &.{ "rocm-smi", "--showproductname", "--showuse", "--showmeminfo", "vram", "--showtemp", "--json" });
+    const output = commandOutput(allocator, &.{ "/opt/rocm/bin/rocm-smi", "--showallinfo", "--json" }) catch try commandOutput(allocator, &.{ "rocm-smi", "--showallinfo", "--json" });
     defer allocator.free(output);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, output, .{});
     defer parsed.deinit();
@@ -199,7 +498,7 @@ fn amdDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
         const util = parsePercent(jsonString(obj.get("GPU use (%)")) orelse "0");
         const mem_total = parseMiB(jsonString(obj.get("VRAM Total Memory (B)")) orelse jsonString(obj.get("VRAM Total Used Memory (B)")) orelse "0");
         const mem_used = parseMiB(jsonString(obj.get("VRAM Total Used Memory (B)")) orelse "0");
-        const temp = @as(u64, @intFromFloat(parsePercent(jsonString(obj.get("Temperature (Sensor edge) (C)")) orelse "0")));
+        const temp = @as(u64, @intFromFloat(parsePercent(jsonString(obj.get("Temperature (Sensor junction) (C)")) orelse "0")));
         if (count != 0) try detail.append(allocator, ',');
         try detail.writer(allocator).print("{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
         usage_sum += util;
@@ -433,22 +732,11 @@ fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common
 }
 
 fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
-    const path = try procPath(std.heap.page_allocator, options.host_proc, "net/dev");
-    defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return .{};
-    defer std.heap.page_allocator.free(bytes);
-    var current = parseProcNetDev(bytes, options.include_nics, options.exclude_nics);
-    const now = std.time.milliTimestamp();
-    if (previous_network) |prev| {
-        const elapsed_ms: u64 = @intCast(@max(now - prev.timestamp_ms, 1));
-        current.up = perSecond(current.totalUp, prev.total_up, elapsed_ms);
-        current.down = perSecond(current.totalDown, prev.total_down, elapsed_ms);
-    }
-    previous_network = .{
-        .total_up = current.totalUp,
-        .total_down = current.totalDown,
-        .timestamp_ms = now,
-    };
+    const first = try sampleNetworkCounters(options);
+    std.Thread.sleep(std.time.ns_per_s);
+    var current = try sampleNetworkCounters(options);
+    current.up = if (current.totalUp >= first.totalUp) current.totalUp - first.totalUp else 0;
+    current.down = if (current.totalDown >= first.totalDown) current.totalDown - first.totalDown else 0;
     if (options.month_rotate != 0) {
         const totals = netstatic.applyMonthlyTotals(std.heap.page_allocator, current.totalUp, current.totalDown, options.month_rotate);
         current.totalUp = totals.up;
@@ -457,18 +745,28 @@ fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
     return current;
 }
 
+fn sampleNetworkCounters(options: common.SnapshotOptions) !common.NetworkInfo {
+    const path = try procPath(std.heap.page_allocator, options.host_proc, "net/dev");
+    defer std.heap.page_allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return .{};
+    defer std.heap.page_allocator.free(bytes);
+    return parseProcNetDev(bytes, options.include_nics, options.exclude_nics);
+}
+
 fn cpuUsage(host_proc: []const u8) !f64 {
+    const previous = try readCpuStat(host_proc) orelse return 0.001;
+    std.Thread.sleep(std.time.ns_per_s);
+    const current = try readCpuStat(host_proc) orelse return 0.001;
+    const usage = cpuUsagePercent(previous, current);
+    return if (usage <= 0.001) 0.001 else usage;
+}
+
+fn readCpuStat(host_proc: []const u8) !?CpuStat {
     const path = try procPath(std.heap.page_allocator, host_proc, "stat");
     defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return 0.001;
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return null;
     defer std.heap.page_allocator.free(bytes);
-    const current = parseCpuStat(bytes) orelse return 0.001;
-    defer previous_cpu = current;
-    if (previous_cpu) |previous| {
-        const usage = cpuUsagePercent(previous, current);
-        return if (usage <= 0.001) 0.001 else usage;
-    }
-    return 0.001;
+    return parseCpuStat(bytes);
 }
 
 pub fn parseCpuStat(bytes: []const u8) ?CpuStat {
@@ -611,9 +909,10 @@ fn memInfoWithOptions(options: common.SnapshotOptions) !common.MemInfo {
 pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
     var total: u64 = 0;
     var free: u64 = 0;
-    var available: u64 = 0;
     var buffers: u64 = 0;
     var cached: u64 = 0;
+    var shmem: u64 = 0;
+    var sreclaimable: u64 = 0;
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t:");
@@ -622,20 +921,18 @@ pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
         const n = (std.fmt.parseInt(u64, val, 10) catch 0) * 1024;
         if (std.mem.eql(u8, key, "MemTotal")) total = n;
         if (std.mem.eql(u8, key, "MemFree")) free = n;
-        if (std.mem.eql(u8, key, "MemAvailable")) available = n;
         if (std.mem.eql(u8, key, "Buffers")) buffers = n;
         if (std.mem.eql(u8, key, "Cached")) cached = n;
+        if (std.mem.eql(u8, key, "Shmem")) shmem = n;
+        if (std.mem.eql(u8, key, "SReclaimable")) sreclaimable = n;
     }
-    const used = if (mode.report_raw_used)
-        if (total >= free + buffers + cached) total - free - buffers - cached else 0
-    else if (mode.include_cache)
+    const htop_deductions = free + cached + sreclaimable + buffers;
+    const htop_used = (if (total >= htop_deductions) total - htop_deductions else if (total >= free) total - free else 0) + shmem;
+    const used = if (mode.include_cache)
         if (total >= free) total - free else 0
-    else if (available > 0 and total >= available)
-        total - available
-    else if (total >= free)
-        total - free
     else
-        0;
+        htop_used;
+    _ = mode.report_raw_used;
     return .{ .total = total, .used = used };
 }
 
@@ -652,6 +949,7 @@ fn swapInfo() !common.MemInfo {
 fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {
     var total: u64 = 0;
     var free: u64 = 0;
+    var cached: u64 = 0;
     const path = try procPath(std.heap.page_allocator, host_proc, "meminfo");
     defer std.heap.page_allocator.free(path);
     const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return .{};
@@ -664,8 +962,10 @@ fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {
         const n = (std.fmt.parseInt(u64, val, 10) catch 0) * 1024;
         if (std.mem.eql(u8, key, "SwapTotal")) total = n;
         if (std.mem.eql(u8, key, "SwapFree")) free = n;
+        if (std.mem.eql(u8, key, "SwapCached")) cached = n;
     }
-    return .{ .total = total, .used = if (total >= free) total - free else 0 };
+    const deductions = free + cached;
+    return .{ .total = total, .used = if (total >= deductions) total - deductions else if (total >= free) total - free else 0 };
 }
 
 fn loadInfo(host_proc: []const u8) !common.LoadInfo {
