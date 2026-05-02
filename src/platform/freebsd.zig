@@ -1,10 +1,6 @@
 const common = @import("common.zig");
 const std = @import("std");
 
-var previous_network: ?NetworkSample = null;
-
-const NetworkSample = struct { up: u64, down: u64, timestamp_ms: i64 };
-
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     const mem = sysctlInt("hw.physmem") catch 0;
     return .{
@@ -27,7 +23,7 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
 pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
     _ = options;
     return .{
-        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(std.Thread.getCpuCount() catch 1), .usage = 0.001 },
+        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(std.Thread.getCpuCount() catch 1), .usage = cpuUsage(std.heap.page_allocator) catch 0.001 },
         .ram = memInfo() catch .{},
         .swap = .{ .total = swapTotal(std.heap.page_allocator) catch 0 },
         .load = loadInfo(std.heap.page_allocator) catch .{},
@@ -94,17 +90,44 @@ fn parseDf(out: []const u8) common.DiskInfo {
 }
 
 fn networkInfo(allocator: std.mem.Allocator) !common.NetworkInfo {
+    const first_out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
+    defer allocator.free(first_out);
+    const first = parseNetstat(first_out);
+    std.Thread.sleep(std.time.ns_per_s);
     const out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
     defer allocator.free(out);
     var current = parseNetstat(out);
-    const now = std.time.milliTimestamp();
-    if (previous_network) |prev| {
-        const elapsed: u64 = @intCast(@max(now - prev.timestamp_ms, 1));
-        current.up = perSecond(current.totalUp, prev.up, elapsed);
-        current.down = perSecond(current.totalDown, prev.down, elapsed);
-    }
-    previous_network = .{ .up = current.totalUp, .down = current.totalDown, .timestamp_ms = now };
+    current.up = if (current.totalUp >= first.totalUp) current.totalUp - first.totalUp else 0;
+    current.down = if (current.totalDown >= first.totalDown) current.totalDown - first.totalDown else 0;
     return current;
+}
+
+fn cpuUsage(allocator: std.mem.Allocator) !f64 {
+    const first = try cpuTimes(allocator);
+    std.Thread.sleep(std.time.ns_per_s);
+    const second = try cpuTimes(allocator);
+    if (second.total <= first.total or second.idle < first.idle) return 0.001;
+    const total_delta = second.total - first.total;
+    const idle_delta = second.idle - first.idle;
+    if (total_delta == 0 or idle_delta > total_delta) return 0.001;
+    return (@as(f64, @floatFromInt(total_delta - idle_delta)) / @as(f64, @floatFromInt(total_delta))) * 100.0;
+}
+
+const CpuTimes = struct { total: u64, idle: u64 };
+
+fn cpuTimes(allocator: std.mem.Allocator) !CpuTimes {
+    const out = try commandOutput(allocator, &.{ "sysctl", "-n", "kern.cp_time" });
+    defer allocator.free(out);
+    var fields = std.mem.tokenizeAny(u8, out, " \t\r\n");
+    var vals: [5]u64 = .{0} ** 5;
+    var i: usize = 0;
+    while (fields.next()) |field| : (i += 1) {
+        if (i >= vals.len) break;
+        vals[i] = std.fmt.parseInt(u64, field, 10) catch 0;
+    }
+    var total: u64 = 0;
+    for (vals) |v| total += v;
+    return .{ .total = total, .idle = vals[4] };
 }
 
 fn parseNetstat(out: []const u8) common.NetworkInfo {
@@ -218,11 +241,6 @@ fn countLines(allocator: std.mem.Allocator, argv: []const []const u8) !u64 {
         if (std.mem.trim(u8, line, " \t\r").len != 0) count += 1;
     }
     return count;
-}
-
-fn perSecond(current: u64, previous: u64, elapsed_ms: u64) u64 {
-    if (current <= previous) return 0;
-    return ((current - previous) * 1000) / elapsed_ms;
 }
 
 fn normalizeArch(arch: []const u8) []const u8 {

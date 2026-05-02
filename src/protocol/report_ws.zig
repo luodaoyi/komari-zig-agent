@@ -34,46 +34,56 @@ pub fn reconnectSleepSeconds(value: i32) u64 {
     return if (value <= 0) 5 else @intCast(value);
 }
 
-pub fn loop(allocator: std.mem.Allocator, cfg: config.Config) !void {
+pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*const std.atomic.Value(bool)) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
-    while (true) {
-        var ws = connectReportWsWithRetries(allocator, cfg) catch |err| blk: {
-            try stdout.print("WebSocket connect failed: {s}; retrying later\n", .{@errorName(err)});
-            break :blk null;
+    while (!isStopRequested(stop_requested)) {
+        var ws = connectReportWsWithRetries(allocator, cfg, stop_requested) catch |err| {
+            if (isStopRequested(stop_requested)) return;
+            try stdout.print("WebSocket connect failed: {s}\n", .{@errorName(err)});
+            return err;
         };
-        if (ws) |conn| startReader(allocator, conn, cfg);
+        startReader(allocator, ws, cfg);
         var last_heartbeat = std.time.timestamp();
+        var closed = false;
 
-        while (ws != null) {
+        while (!isStopRequested(stop_requested)) {
             const now = std.time.timestamp();
             if (now - last_heartbeat >= 30) {
-                ws.?.writePing() catch |err| {
+                ws.writePing() catch |err| {
                     try stdout.print("Failed to send heartbeat: {s}\n", .{@errorName(err)});
-                    ws.?.close(allocator);
-                    ws = null;
+                    ws.close(allocator);
+                    closed = true;
                     break;
                 };
                 last_heartbeat = now;
             }
             const payload = try runOnce(allocator, cfg);
             defer allocator.free(payload);
-            ws.?.writeText(payload) catch |err| {
+            ws.writeText(payload) catch |err| {
                 try stdout.print("WebSocket write failed: {s}\n", .{@errorName(err)});
-                ws.?.close(allocator);
-                ws = null;
+                ws.close(allocator);
+                closed = true;
                 break;
             };
             try stdout.print("Report generated: {d} bytes sent\n", .{payload.len});
-            std.Thread.sleep(reportSleepSeconds(cfg.interval) * std.time.ns_per_s);
+            if (sleepOrStop(reportSleepSeconds(cfg.interval), stop_requested)) return;
         }
-
-        if (ws == null) {
-            const payload = try runOnce(allocator, cfg);
-            defer allocator.free(payload);
-            try stdout.print("Report generated: {d} bytes\n", .{payload.len});
-            std.Thread.sleep(reconnectSleepSeconds(cfg.reconnect_interval) * std.time.ns_per_s);
-        }
+        if (!closed and isStopRequested(stop_requested)) return;
     }
+}
+
+fn isStopRequested(stop_requested: ?*const std.atomic.Value(bool)) bool {
+    const ptr = stop_requested orelse return false;
+    return ptr.load(.acquire);
+}
+
+fn sleepOrStop(seconds: u64, stop_requested: ?*const std.atomic.Value(bool)) bool {
+    var slept: u64 = 0;
+    while (slept < seconds) : (slept += 1) {
+        if (isStopRequested(stop_requested)) return true;
+        std.Thread.sleep(std.time.ns_per_s);
+    }
+    return isStopRequested(stop_requested);
 }
 
 fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client.Client {
@@ -82,12 +92,13 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client
     return ws_client.connect(allocator, url, cfg);
 }
 
-fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client.Client {
+fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*const std.atomic.Value(bool)) !*ws_client.Client {
     var retry: i32 = 0;
     while (retry <= cfg.max_retries) : (retry += 1) {
+        if (isStopRequested(stop_requested)) return error.ShutdownRequested;
         return connectReportWs(allocator, cfg) catch |err| {
             if (retry >= cfg.max_retries) return err;
-            std.Thread.sleep(reconnectSleepSeconds(cfg.reconnect_interval) * std.time.ns_per_s);
+            if (sleepOrStop(reconnectSleepSeconds(cfg.reconnect_interval), stop_requested)) return error.ShutdownRequested;
             continue;
         };
     }

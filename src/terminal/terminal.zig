@@ -106,7 +106,17 @@ const ShellSession = struct {
             _ = std.posix.kill(-self.pid, std.posix.SIG.TERM) catch {
                 _ = std.posix.kill(self.pid, std.posix.SIG.TERM) catch {};
             };
-            _ = std.posix.waitpid(self.pid, 0);
+            const deadline = std.time.milliTimestamp() + 5000;
+            while (std.time.milliTimestamp() < deadline) {
+                const result = std.posix.waitpid(self.pid, if (builtin.os.tag == .linux) std.os.linux.W.NOHANG else 0);
+                if (result.pid != 0) break;
+                std.Thread.sleep(50 * std.time.ns_per_ms);
+            } else {
+                _ = std.posix.kill(-self.pid, std.posix.SIG.KILL) catch {
+                    _ = std.posix.kill(self.pid, std.posix.SIG.KILL) catch {};
+                };
+                _ = std.posix.waitpid(self.pid, 0);
+            }
         }
         if (self.input.handle != self.output.handle) self.input.close();
         self.output.close();
@@ -157,18 +167,13 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     const prelude = try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"");
     defer allocator.free(prelude);
     var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
-    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch try allocator.dupe(u8, "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-    defer allocator.free(path_env);
-    const path_kv_raw = try std.fmt.allocPrint(allocator, "PATH={s}", .{path_env});
-    defer allocator.free(path_kv_raw);
-    const path_kv = try allocator.dupeZ(u8, path_kv_raw);
-    defer allocator.free(path_kv);
-    const env = [_:null]?[*:0]const u8{
-        "TERM=xterm-256color",
-        "LANG=C.UTF-8",
-        "LC_ALL=C.UTF-8",
-        path_kv.ptr,
-    };
+    var env_arena = std.heap.ArenaAllocator.init(allocator);
+    defer env_arena.deinit();
+    var env_map = try std.process.getEnvMap(env_arena.allocator());
+    try env_map.put("TERM", "xterm-256color");
+    try env_map.put("LANG", "C.UTF-8");
+    try env_map.put("LC_ALL", "C.UTF-8");
+    const env = try std.process.createEnvironFromMap(env_arena.allocator(), &env_map, .{});
 
     const pid = try std.posix.fork();
     if (pid == 0) {
@@ -180,7 +185,7 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
         std.posix.dup2(slave, std.posix.STDERR_FILENO) catch std.posix.exit(127);
         if (slave > 2) std.posix.close(slave);
         std.posix.close(master);
-        std.posix.execveZ(shell.ptr, &argv, &env) catch std.posix.exit(127);
+        std.posix.execveZ(shell.ptr, &argv, env.ptr) catch std.posix.exit(127);
     }
 
     const pty_file = std.fs.File{ .handle = master };

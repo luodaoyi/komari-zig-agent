@@ -1,15 +1,14 @@
 const std = @import("std");
 
 pub const TrafficData = struct { timestamp: u64, tx: u64, rx: u64 };
+pub const Counters = struct { tx: u64 = 0, rx: u64 = 0 };
+
 pub const NetStaticConfig = struct {
     data_preserve_day: f64 = 31,
     detect_interval: f64 = 2,
     save_interval: f64 = 600,
     nics: []const []const u8 = &.{},
 };
-
-pub fn startOrContinue() !void {}
-pub fn stop() !void {}
 
 pub const Store = struct {
     reset: i64 = 0,
@@ -22,17 +21,338 @@ pub const Totals = struct {
     down: u64,
 };
 
-pub fn applyMonthlyTotals(allocator: std.mem.Allocator, total_up: u64, total_down: u64, reset_day: i32) Totals {
-    if (reset_day < 1 or reset_day > 31) return .{ .up = total_up, .down = total_down };
-    const reset = lastResetDate(reset_day, std.time.timestamp());
-    var store = readStore(allocator) catch Store{};
-    if (store.reset != reset or total_up < store.up or total_down < store.down) {
-        store = .{ .reset = reset, .up = total_up, .down = total_down };
-        writeStore(allocator, store) catch {};
+const SampleList = std.ArrayList(TrafficData);
+const SampleMap = std.StringArrayHashMap(SampleList);
+const CounterMap = std.StringArrayHashMap(Counters);
+
+const Runtime = struct {
+    allocator: std.mem.Allocator,
+    mutex: std.Thread.Mutex = .{},
+    running: bool = false,
+    stop_requested: bool = false,
+    interfaces: SampleMap,
+    cache: SampleMap,
+    last: CounterMap,
+    config: NetStaticConfig = .{},
+};
+
+var runtime: ?*Runtime = null;
+
+pub fn startOrContinue() !void {
+    const allocator = std.heap.page_allocator;
+    const rt = try getRuntime(allocator);
+    rt.mutex.lock();
+    if (rt.running) {
+        rt.mutex.unlock();
+        return;
     }
-    return .{
-        .up = if (total_up >= store.up) total_up - store.up else 0,
-        .down = if (total_down >= store.down) total_down - store.down else 0,
+    try loadFromFileLocked(rt);
+    rt.running = true;
+    rt.stop_requested = false;
+    rt.mutex.unlock();
+
+    const sampler = try std.Thread.spawn(.{}, sampleLoop, .{rt});
+    sampler.detach();
+    const saver = try std.Thread.spawn(.{}, saveLoop, .{rt});
+    saver.detach();
+}
+
+pub fn stop() !void {
+    const rt = runtime orelse return;
+    rt.mutex.lock();
+    rt.stop_requested = true;
+    flushCacheLocked(rt, nowUnix());
+    purgeExpiredLocked(rt);
+    try saveToFileLocked(rt);
+    rt.running = false;
+    rt.mutex.unlock();
+}
+
+pub fn setNewConfig(new_cfg: NetStaticConfig) !void {
+    const rt = try getRuntime(std.heap.page_allocator);
+    rt.mutex.lock();
+    defer rt.mutex.unlock();
+    if (new_cfg.data_preserve_day != 0) rt.config.data_preserve_day = new_cfg.data_preserve_day;
+    if (new_cfg.detect_interval != 0) rt.config.detect_interval = new_cfg.detect_interval;
+    if (new_cfg.save_interval != 0) rt.config.save_interval = new_cfg.save_interval;
+    rt.config.nics = new_cfg.nics;
+    pruneUnmonitoredLocked(rt);
+    purgeExpiredLocked(rt);
+    try saveToFileLocked(rt);
+}
+
+pub fn applyMonthlyTotals(allocator: std.mem.Allocator, total_up: u64, total_down: u64, reset_day: i32) Totals {
+    _ = total_up;
+    _ = total_down;
+    return applyMonthlyTotalsFiltered(allocator, reset_day, "", "");
+}
+
+pub fn applyMonthlyTotalsFiltered(allocator: std.mem.Allocator, reset_day: i32, include_nics: []const u8, exclude_nics: []const u8) Totals {
+    if (reset_day < 1 or reset_day > 31) return .{ .up = 0, .down = 0 };
+    startOrContinue() catch {};
+    const start: u64 = @intCast(lastResetDate(reset_day, std.time.timestamp()));
+    const end: u64 = @intCast(std.time.timestamp());
+    return totalTrafficBetween(allocator, start, end, include_nics, exclude_nics) catch .{ .up = 0, .down = 0 };
+}
+
+pub fn totalTrafficBetween(allocator: std.mem.Allocator, start: u64, end: u64, include_nics: []const u8, exclude_nics: []const u8) !Totals {
+    _ = allocator;
+    const rt = try getRuntime(std.heap.page_allocator);
+    rt.mutex.lock();
+    defer rt.mutex.unlock();
+    var totals = Totals{ .up = 0, .down = 0 };
+    sumMapBetween(&totals, rt.interfaces, start, end, include_nics, exclude_nics);
+    sumMapBetween(&totals, rt.cache, start, end, include_nics, exclude_nics);
+    return totals;
+}
+
+fn getRuntime(allocator: std.mem.Allocator) !*Runtime {
+    if (runtime) |rt| return rt;
+    const rt = try allocator.create(Runtime);
+    rt.* = .{
+        .allocator = allocator,
+        .interfaces = SampleMap.init(allocator),
+        .cache = SampleMap.init(allocator),
+        .last = CounterMap.init(allocator),
+    };
+    runtime = rt;
+    return rt;
+}
+
+fn sampleLoop(rt: *Runtime) void {
+    while (true) {
+        rt.mutex.lock();
+        const stop_requested = rt.stop_requested;
+        const interval_ms: u64 = @intFromFloat(@max(rt.config.detect_interval, 0.1) * 1000);
+        rt.mutex.unlock();
+        if (stop_requested) return;
+        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+        rt.mutex.lock();
+        sampleOnceLocked(rt) catch {};
+        rt.mutex.unlock();
+    }
+}
+
+fn saveLoop(rt: *Runtime) void {
+    while (true) {
+        rt.mutex.lock();
+        const stop_requested = rt.stop_requested;
+        const interval_ms: u64 = @intFromFloat(@max(rt.config.save_interval, 1) * 1000);
+        rt.mutex.unlock();
+        if (stop_requested) return;
+        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+        rt.mutex.lock();
+        flushCacheLocked(rt, nowUnix());
+        purgeExpiredLocked(rt);
+        saveToFileLocked(rt) catch {};
+        rt.mutex.unlock();
+    }
+}
+
+fn sampleOnceLocked(rt: *Runtime) !void {
+    var counters = try readProcNetDev(rt.allocator);
+    defer deinitCounterMap(&counters);
+    const ts = nowUnix();
+    var it = counters.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (!isNicAllowed(rt.config, name)) continue;
+        const current = entry.value_ptr.*;
+        if (rt.last.get(name)) |previous| {
+            const dtx = safeDelta(current.tx, previous.tx);
+            const drx = safeDelta(current.rx, previous.rx);
+            if (dtx != 0 or drx != 0) try appendSample(&rt.cache, rt.allocator, name, .{ .timestamp = ts, .tx = dtx, .rx = drx });
+            try rt.last.put(name, current);
+        } else {
+            try rt.last.put(try rt.allocator.dupe(u8, name), current);
+        }
+    }
+}
+
+fn readProcNetDev(allocator: std.mem.Allocator) !CounterMap {
+    var result = CounterMap.init(allocator);
+    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return result;
+    defer allocator.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        var fields = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
+        const rx = std.fmt.parseInt(u64, fields.next() orelse "0", 10) catch 0;
+        var idx: usize = 1;
+        var tx: u64 = 0;
+        while (fields.next()) |field| : (idx += 1) {
+            if (idx == 8) {
+                tx = std.fmt.parseInt(u64, field, 10) catch 0;
+                break;
+            }
+        }
+        try result.put(try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
+    }
+    return result;
+}
+
+fn appendSample(map: *SampleMap, allocator: std.mem.Allocator, name: []const u8, sample: TrafficData) !void {
+    if (map.getPtr(name)) |list| {
+        try list.append(allocator, sample);
+        return;
+    }
+    var list = SampleList.empty;
+    try list.append(allocator, sample);
+    try map.put(try allocator.dupe(u8, name), list);
+}
+
+fn flushCacheLocked(rt: *Runtime, ts: u64) void {
+    var it = rt.cache.iterator();
+    while (it.next()) |entry| {
+        var tx: u64 = 0;
+        var rx: u64 = 0;
+        for (entry.value_ptr.items) |sample| {
+            tx += sample.tx;
+            rx += sample.rx;
+        }
+        if (tx != 0 or rx != 0) appendSample(&rt.interfaces, rt.allocator, entry.key_ptr.*, .{ .timestamp = ts, .tx = tx, .rx = rx }) catch {};
+        entry.value_ptr.clearRetainingCapacity();
+    }
+}
+
+fn purgeExpiredLocked(rt: *Runtime) void {
+    const ttl: i64 = @intFromFloat(@max(rt.config.data_preserve_day, 1) * 24 * 3600);
+    const cutoff: u64 = @intCast(@max(std.time.timestamp() - ttl, 0));
+    purgeMap(rt.interfaces, cutoff);
+    purgeMap(rt.cache, cutoff);
+}
+
+fn pruneUnmonitoredLocked(rt: *Runtime) void {
+    if (rt.config.nics.len == 0) return;
+    pruneCounterMap(&rt.last, rt.config);
+    pruneSampleMap(&rt.cache, rt.config);
+}
+
+fn pruneCounterMap(map: *CounterMap, cfg: NetStaticConfig) void {
+    var i: usize = 0;
+    while (i < map.count()) {
+        const name = map.keys()[i];
+        if (isNicAllowed(cfg, name)) {
+            i += 1;
+            continue;
+        }
+        map.allocator.free(name);
+        _ = map.orderedRemoveAt(i);
+    }
+}
+
+fn pruneSampleMap(map: *SampleMap, cfg: NetStaticConfig) void {
+    var i: usize = 0;
+    while (i < map.count()) {
+        const name = map.keys()[i];
+        if (isNicAllowed(cfg, name)) {
+            i += 1;
+            continue;
+        }
+        map.values()[i].deinit(map.allocator);
+        map.allocator.free(name);
+        _ = map.orderedRemoveAt(i);
+    }
+}
+
+fn purgeMap(map: SampleMap, cutoff: u64) void {
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        var kept: usize = 0;
+        for (entry.value_ptr.items) |sample| {
+            if (sample.timestamp >= cutoff) {
+                entry.value_ptr.items[kept] = sample;
+                kept += 1;
+            }
+        }
+        entry.value_ptr.shrinkRetainingCapacity(kept);
+    }
+}
+
+fn sumMapBetween(out: *Totals, map: SampleMap, start: u64, end: u64, include_nics: []const u8, exclude_nics: []const u8) void {
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        if (!shouldInclude(entry.key_ptr.*, include_nics, exclude_nics)) continue;
+        for (entry.value_ptr.items) |sample| {
+            if ((start == 0 or sample.timestamp >= start) and (end == 0 or sample.timestamp <= end)) {
+                out.up += sample.tx;
+                out.down += sample.rx;
+            }
+        }
+    }
+}
+
+fn loadFromFileLocked(rt: *Runtime) !void {
+    const bytes = std.fs.cwd().readFileAlloc(rt.allocator, saveFilePath(), 64 * 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer rt.allocator.free(bytes);
+    try parseNetStaticJsonInto(rt, bytes);
+    purgeExpiredLocked(rt);
+}
+
+fn parseNetStaticJsonInto(rt: *Runtime, bytes: []const u8) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, rt.allocator, bytes, .{}) catch {
+        std.fs.cwd().rename(saveFilePath(), "net_static.json.bak") catch {};
+        return;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    if (parsed.value.object.get("config")) |cfg_value| {
+        if (cfg_value == .object) {
+            rt.config.data_preserve_day = jsonFloat(cfg_value.object.get("data_preserve_day")) orelse rt.config.data_preserve_day;
+            rt.config.detect_interval = jsonFloat(cfg_value.object.get("detect_interval")) orelse rt.config.detect_interval;
+            rt.config.save_interval = jsonFloat(cfg_value.object.get("save_interval")) orelse rt.config.save_interval;
+        }
+    }
+    const interfaces = parsed.value.object.get("interfaces") orelse return;
+    if (interfaces != .object) return;
+    var it = interfaces.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .array) continue;
+        var list = SampleList.empty;
+        for (entry.value_ptr.array.items) |item| {
+            if (item != .object) continue;
+            try list.append(rt.allocator, .{
+                .timestamp = @intCast(jsonInt(item.object.get("timestamp")) orelse 0),
+                .tx = @intCast(jsonInt(item.object.get("tx")) orelse 0),
+                .rx = @intCast(jsonInt(item.object.get("rx")) orelse 0),
+            });
+        }
+        try rt.interfaces.put(try rt.allocator.dupe(u8, entry.key_ptr.*), list);
+    }
+}
+
+fn saveToFileLocked(rt: *Runtime) !void {
+    var writer = std.Io.Writer.Allocating.init(rt.allocator);
+    defer writer.deinit();
+    try writer.writer.writeAll("{\"interfaces\":{");
+    var first_iface = true;
+    var it = rt.interfaces.iterator();
+    while (it.next()) |entry| {
+        if (!first_iface) try writer.writer.writeByte(',');
+        first_iface = false;
+        try writer.writer.print("{f}:[", .{std.json.fmt(entry.key_ptr.*, .{})});
+        for (entry.value_ptr.items, 0..) |sample, i| {
+            if (i != 0) try writer.writer.writeByte(',');
+            try writer.writer.print("{{\"timestamp\":{d},\"tx\":{d},\"rx\":{d}}}", .{ sample.timestamp, sample.tx, sample.rx });
+        }
+        try writer.writer.writeByte(']');
+    }
+    try writer.writer.print("}},\"config\":{{\"data_preserve_day\":{d},\"detect_interval\":{d},\"save_interval\":{d},\"nics\":[", .{ rt.config.data_preserve_day, rt.config.detect_interval, rt.config.save_interval });
+    for (rt.config.nics, 0..) |nic, i| {
+        if (i != 0) try writer.writer.writeByte(',');
+        try writer.writer.print("{f}", .{std.json.fmt(nic, .{})});
+    }
+    try writer.writer.writeAll("]}}}");
+    const bytes = try writer.toOwnedSlice();
+    defer rt.allocator.free(bytes);
+    const tmp = "net_static.json.tmp";
+    try std.fs.cwd().writeFile(.{ .sub_path = tmp, .data = bytes });
+    std.fs.cwd().rename(tmp, saveFilePath()) catch {
+        try std.fs.cwd().writeFile(.{ .sub_path = saveFilePath(), .data = bytes });
     };
 }
 
@@ -60,33 +380,63 @@ fn jsonInt(value: ?std.json.Value) ?i64 {
     };
 }
 
-fn readStore(allocator: std.mem.Allocator) !Store {
-    const path = storePath();
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch |err| switch (err) {
-        error.FileNotFound => return Store{},
-        else => return err,
+fn jsonFloat(value: ?std.json.Value) ?f64 {
+    const v = value orelse return null;
+    return switch (v) {
+        .float => |n| n,
+        .integer => |n| @floatFromInt(n),
+        else => null,
     };
-    defer allocator.free(bytes);
-    return parseStore(bytes);
 }
 
-fn writeStore(allocator: std.mem.Allocator, store: Store) !void {
-    const path = storePath();
-    if (std.fs.path.dirname(path)) |dir| std.fs.cwd().makePath(dir) catch {};
-    const bytes = try allocStoreJson(allocator, store);
-    defer allocator.free(bytes);
-    var file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch {
-        var fallback = try std.fs.cwd().createFile(".komari-netstatic.json", .{ .truncate = true });
-        defer fallback.close();
-        try fallback.writeAll(bytes);
-        return;
-    };
-    defer file.close();
-    try file.writeAll(bytes);
+fn isNicAllowed(config: NetStaticConfig, name: []const u8) bool {
+    if (config.nics.len == 0) return true;
+    for (config.nics) |nic| if (std.mem.eql(u8, nic, name)) return true;
+    return false;
 }
 
-fn storePath() []const u8 {
-    return if (@import("builtin").os.tag == .windows) ".komari-netstatic.json" else "/var/lib/komari-agent/netstatic.json";
+fn shouldInclude(name: []const u8, include_nics: []const u8, exclude_nics: []const u8) bool {
+    const excluded_prefixes = [_][]const u8{ "br", "cni", "docker", "podman", "flannel", "lo", "veth", "virbr", "vmbr", "tap", "fwbr", "fwpr" };
+    for (&excluded_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, name, prefix)) return false;
+    }
+    if (include_nics.len != 0) return csvMatches(include_nics, name);
+    if (exclude_nics.len != 0 and csvMatches(exclude_nics, name)) return false;
+    return true;
+}
+
+fn csvMatches(csv: []const u8, needle: []const u8) bool {
+    var it = std.mem.splitScalar(u8, csv, ',');
+    while (it.next()) |part| {
+        const trimmed = std.mem.trim(u8, part, " \t");
+        if (std.mem.eql(u8, trimmed, needle)) return true;
+        if (globMatch(trimmed, needle)) return true;
+    }
+    return false;
+}
+
+fn globMatch(pattern: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, pattern, "*")) return true;
+    const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return std.mem.eql(u8, pattern, value);
+    return std.mem.startsWith(u8, value, pattern[0..star]) and std.mem.endsWith(u8, value, pattern[star + 1 ..]);
+}
+
+fn deinitCounterMap(map: *CounterMap) void {
+    var it = map.iterator();
+    while (it.next()) |entry| map.allocator.free(entry.key_ptr.*);
+    map.deinit();
+}
+
+fn safeDelta(cur: u64, prev: u64) u64 {
+    return if (cur >= prev) cur - prev else 0;
+}
+
+fn nowUnix() u64 {
+    return @intCast(std.time.timestamp());
+}
+
+fn saveFilePath() []const u8 {
+    return "./net_static.json";
 }
 
 pub fn lastResetDate(reset_day: i32, now: i64) i64 {

@@ -597,6 +597,60 @@ pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
     return mounts.toOwnedSlice(allocator);
 }
 
+pub fn monitoringDiskList(allocator: std.mem.Allocator, include_mountpoints: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    if (include_mountpoints.len != 0) {
+        var mounts = std.mem.splitScalar(u8, include_mountpoints, ';');
+        while (mounts.next()) |raw| {
+            const mountpoint = std.mem.trim(u8, raw, " \t\r\n");
+            if (mountpoint.len != 0) try out.append(allocator, try allocator.dupe(u8, mountpoint));
+        }
+        return out.toOwnedSlice(allocator);
+    }
+
+    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return out.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+    var by_device = std.StringHashMap(common.DiskMount).init(allocator);
+    var it = std.mem.splitScalar(u8, bytes, '\n');
+    while (it.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const device = fields.next() orelse continue;
+        const mountpoint = fields.next() orelse continue;
+        const fstype = fields.next() orelse continue;
+        if (!isPhysicalMount(mountpoint, fstype, device)) continue;
+        const key = diskDeviceKey(device, fstype);
+        if (by_device.getPtr(key)) |existing| {
+            if (mountpoint.len < existing.mountpoint.len) {
+                existing.mountpoint = try allocator.dupe(u8, mountpoint);
+                existing.fstype = try allocator.dupe(u8, fstype);
+            }
+        } else {
+            try by_device.put(try allocator.dupe(u8, key), .{
+                .mountpoint = try allocator.dupe(u8, mountpoint),
+                .fstype = try allocator.dupe(u8, fstype),
+            });
+        }
+    }
+    var values = by_device.valueIterator();
+    while (values.next()) |mount| {
+        try out.append(allocator, try std.fmt.allocPrint(allocator, "{s} ({s})", .{ mount.mountpoint, mount.fstype }));
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn interfaceList(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return out.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        if (shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) try out.append(allocator, try allocator.dupe(u8, name));
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 fn readFirstLine(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const bytes = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch return allocator.dupe(u8, "");
     if (std.mem.indexOfScalar(u8, bytes, '\n')) |idx| return bytes[0..idx];
@@ -705,7 +759,6 @@ pub fn isPhysicalMount(mountpoint_raw: []const u8, fstype_raw: []const u8, devic
         "debugfs",
         "binfmt_misc",
         "securityfs",
-        "squashfs",
     };
     for (&excluded_fs) |excluded| {
         if (std.ascii.eqlIgnoreCase(fstype, excluded) or startsWithIgnoreCase(fstype, excluded)) return false;
@@ -738,7 +791,7 @@ fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
     current.up = if (current.totalUp >= first.totalUp) current.totalUp - first.totalUp else 0;
     current.down = if (current.totalDown >= first.totalDown) current.totalDown - first.totalDown else 0;
     if (options.month_rotate != 0) {
-        const totals = netstatic.applyMonthlyTotals(std.heap.page_allocator, current.totalUp, current.totalDown, options.month_rotate);
+        const totals = netstatic.applyMonthlyTotalsFiltered(std.heap.page_allocator, options.month_rotate, options.include_nics, options.exclude_nics);
         current.totalUp = totals.up;
         current.totalDown = totals.down;
     }

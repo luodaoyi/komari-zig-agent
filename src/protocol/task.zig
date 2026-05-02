@@ -30,20 +30,18 @@ pub fn runCommand(allocator: std.mem.Allocator, command: []const u8) ![]const u8
 
 pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !CommandResult {
     if (command.len == 0) return .{ .output = try allocator.dupe(u8, "No command provided"), .exit_code = 0 };
-    var child = std.process.Child.init(&.{ "sh", "-c", command }, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-    const term = try child.wait();
-    defer allocator.free(stdout);
-    defer allocator.free(stderr);
-    const merged = try std.mem.concat(allocator, u8, &.{ stdout, if (stderr.len > 0) "\n" else "", stderr });
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "sh", "-c", command },
+        .max_output_bytes = std.math.maxInt(usize),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    const merged = try std.mem.concat(allocator, u8, &.{ result.stdout, if (result.stderr.len > 0) "\n" else "", result.stderr });
     defer allocator.free(merged);
     return .{
         .output = try normalizeCommandOutput(allocator, merged),
-        .exit_code = exitCode(term),
+        .exit_code = exitCode(result.term),
     };
 }
 

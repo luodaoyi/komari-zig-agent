@@ -5,14 +5,20 @@ const basic_info = @import("protocol/basic_info.zig");
 const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
 const ip = @import("protocol/ip.zig");
+const netstatic = @import("report_netstatic");
 const report_ws = @import("protocol/report_ws.zig");
 const update = @import("update.zig");
 const version = @import("version.zig");
+const builtin = @import("builtin");
+
+var shutdown_requested = std.atomic.Value(bool).init(false);
+var netstatic_active = std.atomic.Value(bool).init(false);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    installSignalHandlers();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -44,11 +50,79 @@ pub fn main() !void {
         return;
     }
 
+    if (cfg.month_rotate != 0) {
+        netstatic.startOrContinue() catch |err| try stdout.print("Failed to start netstatic monitoring: {s}\n", .{@errorName(err)});
+        const nics = provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics) catch &.{};
+        netstatic.setNewConfig(.{ .nics = nics }) catch |err| try stdout.print("Failed to set netstatic config: {s}\n", .{@errorName(err)});
+        netstatic_active.store(true, .release);
+    }
+    defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
+
     if (!cfg.disable_auto_update) {
         try update.checkAndUpdate(allocator, cfg);
         update.startBackground(allocator, cfg);
     }
 
+    printMonitoringLists(allocator, cfg) catch {};
+
+    if (shutdown_requested.load(.acquire)) return;
+    try uploadBasicInfoOnce(allocator, cfg);
+    if (shutdown_requested.load(.acquire)) return;
+    startBasicInfoLoop(allocator, cfg);
+
+    const report_json = try report_ws.runOnce(allocator, cfg);
+    defer allocator.free(report_json);
+    try stdout.print("Report ready: {d} bytes\n", .{report_json.len});
+    if (shutdown_requested.load(.acquire)) return;
+
+    while (!shutdown_requested.load(.acquire)) {
+        report_ws.loop(allocator, cfg, &shutdown_requested) catch |err| {
+            try stdout.print("Report websocket exited: {s}\n", .{@errorName(err)});
+        };
+        if (shutdown_requested.load(.acquire)) break;
+        try uploadBasicInfoOnce(allocator, cfg);
+    }
+    try stdout.writeAll("shutting down gracefully...\n");
+}
+
+fn installSignalHandlers() void {
+    if (builtin.os.tag == .windows) return;
+    const action = std.posix.Sigaction{
+        .handler = .{ .handler = handleSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &action, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+}
+
+fn handleSignal(_: i32) callconv(.c) void {
+    shutdown_requested.store(true, .release);
+    if (!netstatic_active.load(.acquire)) std.posix.exit(0);
+}
+
+fn printMonitoringLists(allocator: std.mem.Allocator, cfg: config.Config) !void {
+    var stdout = std.fs.File.stdout().deprecatedWriter();
+    const disks = try provider.monitoringDiskList(allocator, cfg.include_mountpoints);
+    defer allocator.free(disks);
+    try stdout.writeAll("Monitoring Mountpoints: [");
+    for (disks, 0..) |disk, i| {
+        if (i != 0) try stdout.writeAll(" ");
+        try stdout.print("{s}", .{disk});
+    }
+    try stdout.writeAll("]\n");
+    const nics = try provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics);
+    defer allocator.free(nics);
+    try stdout.writeAll("Monitoring Interfaces: [");
+    for (nics, 0..) |nic, i| {
+        if (i != 0) try stdout.writeAll(" ");
+        try stdout.print("{s}", .{nic});
+    }
+    try stdout.writeAll("]\n");
+}
+
+fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
+    var stdout = std.fs.File.stdout().deprecatedWriter();
     var info = try provider.basicInfo(allocator);
     try applyIpConfig(allocator, cfg, &info);
     const info_json = try basic_info.allocBasicInfoJson(allocator, info, true);
@@ -56,16 +130,9 @@ pub fn main() !void {
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
     basic_info.upload(allocator, cfg, info) catch |err| {
         try stdout.print("Basic info upload failed: {s}\n", .{@errorName(err)});
-        return;
+        return err;
     };
     try stdout.writeAll("Basic info uploaded successfully\n");
-    startBasicInfoLoop(allocator, cfg);
-
-    const report_json = try report_ws.runOnce(allocator, cfg);
-    defer allocator.free(report_json);
-    try stdout.print("Report ready: {d} bytes\n", .{report_json.len});
-
-    try report_ws.loop(allocator, cfg);
 }
 
 fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
