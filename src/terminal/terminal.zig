@@ -137,10 +137,16 @@ const ShellSession = struct {
     }
 
     fn resize(self: *ShellSession, cols: u16, rows: u16) !void {
-        if (builtin.os.tag != .linux or cols == 0 or rows == 0) return;
-        var wsz = std.posix.winsize{ .row = rows, .col = cols, .xpixel = 0, .ypixel = 0 };
-        const rc = std.posix.system.ioctl(self.output.handle, std.posix.T.IOCSWINSZ, @intFromPtr(&wsz));
-        if (std.posix.errno(rc) != .SUCCESS) return error.ResizeFailed;
+        if (cols == 0 or rows == 0) return;
+        if (builtin.os.tag == .linux) {
+            var wsz = std.posix.winsize{ .row = rows, .col = cols, .xpixel = 0, .ypixel = 0 };
+            const rc = std.posix.system.ioctl(self.output.handle, std.posix.T.IOCSWINSZ, @intFromPtr(&wsz));
+            if (std.posix.errno(rc) != .SUCCESS) return error.ResizeFailed;
+            return;
+        }
+        var buf: [64]u8 = undefined;
+        const cmd = try std.fmt.bufPrint(&buf, "stty cols {d} rows {d}\n", .{ cols, rows });
+        try self.input.writeAll(cmd);
     }
 };
 

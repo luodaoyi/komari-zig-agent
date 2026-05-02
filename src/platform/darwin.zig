@@ -1,5 +1,6 @@
 const common = @import("common.zig");
 const std = @import("std");
+const netstatic = @import("report_netstatic");
 
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     return .{
@@ -20,14 +21,13 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
 }
 
 pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
-    _ = options;
     return .{
         .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(std.Thread.getCpuCount() catch 1), .usage = cpuUsage(std.heap.page_allocator) catch 0.001 },
         .ram = memInfo(std.heap.page_allocator) catch .{},
         .swap = swapInfo(std.heap.page_allocator) catch .{},
         .load = loadInfo(std.heap.page_allocator) catch .{},
-        .disk = diskInfo(std.heap.page_allocator) catch .{},
-        .network = networkInfo(std.heap.page_allocator) catch .{},
+        .disk = diskInfoWithMountpoints(std.heap.page_allocator, options.include_mountpoints) catch .{},
+        .network = networkInfoWithOptions(std.heap.page_allocator, options) catch .{},
         .connections = connectionsInfo(std.heap.page_allocator) catch .{},
         .uptime = uptime(std.heap.page_allocator) catch 0,
         .process = processCount(std.heap.page_allocator) catch 0,
@@ -35,7 +35,7 @@ pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
 }
 
 pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
-    const out = commandOutput(allocator, &.{ "df", "-k", "-P" }) catch return &.{};
+    const out = commandOutput(allocator, &.{ "df", "-k", "-P" }) catch return allocator.alloc(common.DiskMount, 0);
     defer allocator.free(out);
     var list: std.ArrayList(common.DiskMount) = .empty;
     var lines = std.mem.splitScalar(u8, out, '\n');
@@ -52,6 +52,24 @@ pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
         try list.append(allocator, .{ .mountpoint = try allocator.dupe(u8, mountpoint), .fstype = try allocator.dupe(u8, "apfs") });
     }
     return list.toOwnedSlice(allocator);
+}
+
+pub fn monitoringDiskList(allocator: std.mem.Allocator, include_mountpoints: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    if (include_mountpoints.len != 0) {
+        var mounts = std.mem.splitScalar(u8, include_mountpoints, ';');
+        while (mounts.next()) |raw| {
+            const mountpoint = std.mem.trim(u8, raw, " \t\r\n");
+            if (mountpoint.len != 0) try out.append(allocator, try allocator.dupe(u8, mountpoint));
+        }
+        return out.toOwnedSlice(allocator);
+    }
+    const disks = try diskList(allocator);
+    defer allocator.free(disks);
+    for (disks) |disk| {
+        try out.append(allocator, try std.fmt.allocPrint(allocator, "{s} ({s})", .{ disk.mountpoint, disk.fstype }));
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn memInfo(allocator: std.mem.Allocator) !common.MemInfo {
@@ -116,6 +134,22 @@ fn loadInfo(allocator: std.mem.Allocator) !common.LoadInfo {
 }
 
 fn diskInfo(allocator: std.mem.Allocator) !common.DiskInfo {
+    return diskInfoWithMountpoints(allocator, "");
+}
+
+fn diskInfoWithMountpoints(allocator: std.mem.Allocator, include_mountpoints: []const u8) !common.DiskInfo {
+    if (include_mountpoints.len != 0) {
+        var total = common.DiskInfo{};
+        var mounts = std.mem.splitScalar(u8, include_mountpoints, ';');
+        while (mounts.next()) |raw_mount| {
+            const mountpoint = std.mem.trim(u8, raw_mount, " \t\r\n");
+            if (mountpoint.len == 0) continue;
+            const usage = diskUsageFromDf(allocator, mountpoint) catch continue;
+            total.total += usage.total;
+            total.used += usage.used;
+        }
+        return total;
+    }
     const out = try commandOutput(allocator, &.{ "df", "-k", "-P" });
     defer allocator.free(out);
     var total = common.DiskInfo{};
@@ -131,20 +165,46 @@ fn diskInfo(allocator: std.mem.Allocator) !common.DiskInfo {
     return total;
 }
 
+fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common.DiskInfo {
+    const out = try commandOutput(allocator, &.{ "df", "-k", "-P", mountpoint });
+    defer allocator.free(out);
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    _ = lines.next();
+    const data = lines.next() orelse return error.BadDfOutput;
+    var fields = std.mem.tokenizeAny(u8, data, " \t");
+    _ = fields.next() orelse return error.BadDfOutput;
+    const blocks = try std.fmt.parseInt(u64, fields.next() orelse return error.BadDfOutput, 10);
+    const used = try std.fmt.parseInt(u64, fields.next() orelse return error.BadDfOutput, 10);
+    return .{ .total = blocks * 1024, .used = used * 1024 };
+}
+
 fn networkInfo(allocator: std.mem.Allocator) !common.NetworkInfo {
+    return networkInfoWithOptions(allocator, .{});
+}
+
+fn networkInfoWithOptions(allocator: std.mem.Allocator, options: common.SnapshotOptions) !common.NetworkInfo {
     const first_out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
     defer allocator.free(first_out);
-    const first = parseNetstat(first_out);
+    const first = parseNetstatFiltered(first_out, options.include_nics, options.exclude_nics);
     std.Thread.sleep(std.time.ns_per_s);
     const out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
     defer allocator.free(out);
-    var current = parseNetstat(out);
+    var current = parseNetstatFiltered(out, options.include_nics, options.exclude_nics);
     current.up = if (current.totalUp >= first.totalUp) current.totalUp - first.totalUp else 0;
     current.down = if (current.totalDown >= first.totalDown) current.totalDown - first.totalDown else 0;
+    if (options.month_rotate != 0) {
+        const totals = netstatic.applyMonthlyTotalsFiltered(std.heap.page_allocator, options.month_rotate, options.include_nics, options.exclude_nics);
+        current.totalUp = totals.up;
+        current.totalDown = totals.down;
+    }
     return current;
 }
 
 fn parseNetstat(out: []const u8) common.NetworkInfo {
+    return parseNetstatFiltered(out, "", "");
+}
+
+fn parseNetstatFiltered(out: []const u8, include_nics: []const u8, exclude_nics: []const u8) common.NetworkInfo {
     var up: u64 = 0;
     var down: u64 = 0;
     var lines = std.mem.splitScalar(u8, out, '\n');
@@ -152,7 +212,7 @@ fn parseNetstat(out: []const u8) common.NetworkInfo {
     while (lines.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t");
         const name = fields.next() orelse continue;
-        if (std.mem.eql(u8, name, "lo0")) continue;
+        if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
         var vals: [12][]const u8 = undefined;
         var n: usize = 0;
         while (fields.next()) |f| : (n += 1) {
@@ -163,6 +223,78 @@ fn parseNetstat(out: []const u8) common.NetworkInfo {
         up += std.fmt.parseInt(u64, vals[8], 10) catch 0;
     }
     return .{ .totalUp = up, .totalDown = down };
+}
+
+pub fn interfaceList(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) ![]const []const u8 {
+    const out_bytes = commandOutput(allocator, &.{ "netstat", "-ibn" }) catch return allocator.alloc([]const u8, 0);
+    defer allocator.free(out_bytes);
+    var out: std.ArrayList([]const u8) = .empty;
+    var seen = std.StringHashMap(void).init(allocator);
+    var lines = std.mem.splitScalar(u8, out_bytes, '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const name = fields.next() orelse continue;
+        if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
+        if (seen.contains(name)) continue;
+        try seen.put(try allocator.dupe(u8, name), {});
+        try out.append(allocator, try allocator.dupe(u8, name));
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
+    return localIpFromIfconfig(allocator, include_nics, exclude_nics);
+}
+
+fn shouldIncludeNetworkInterface(name: []const u8, include_nics: []const u8, exclude_nics: []const u8) bool {
+    const excluded_prefixes = [_][]const u8{ "lo", "br", "cni", "docker", "podman", "flannel", "veth", "virbr", "vmbr", "tap", "fwbr", "fwpr" };
+    for (&excluded_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, name, prefix)) return false;
+    }
+    if (include_nics.len != 0) return csvMatches(include_nics, name);
+    if (exclude_nics.len != 0 and csvMatches(exclude_nics, name)) return false;
+    return true;
+}
+
+fn csvMatches(csv: []const u8, needle: []const u8) bool {
+    var it = std.mem.splitScalar(u8, csv, ',');
+    while (it.next()) |part| {
+        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t\r\n"), needle)) return true;
+    }
+    return false;
+}
+
+fn localIpFromIfconfig(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
+    const out = commandOutput(allocator, &.{"ifconfig"}) catch return .{};
+    defer allocator.free(out);
+    var ipv4: []const u8 = "";
+    var ipv6: []const u8 = "";
+    var current: []const u8 = "";
+    var allowed = false;
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trimRight(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] != ' ' and line[0] != '\t') {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            current = line[0..colon];
+            allowed = shouldIncludeNetworkInterface(current, include_nics, exclude_nics);
+            continue;
+        }
+        if (!allowed) continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const kind = fields.next() orelse continue;
+        if (std.mem.eql(u8, kind, "inet")) {
+            const addr = fields.next() orelse continue;
+            if (ipv4.len == 0) ipv4 = try allocator.dupe(u8, addr);
+        } else if (std.mem.eql(u8, kind, "inet6")) {
+            const addr = fields.next() orelse continue;
+            if (ipv6.len == 0 and !std.mem.startsWith(u8, addr, "fe80:")) ipv6 = try allocator.dupe(u8, addr);
+        }
+        if (ipv4.len != 0 and ipv6.len != 0) break;
+    }
+    return .{ .ipv4 = ipv4, .ipv6 = ipv6 };
 }
 
 fn connectionsInfo(allocator: std.mem.Allocator) !common.ConnectionInfo {

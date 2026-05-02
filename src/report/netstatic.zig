@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const TrafficData = struct { timestamp: u64, tx: u64, rx: u64 };
 pub const Counters = struct { tx: u64 = 0, rx: u64 = 0 };
@@ -170,6 +171,7 @@ fn sampleOnceLocked(rt: *Runtime) !void {
 }
 
 fn readProcNetDev(allocator: std.mem.Allocator) !CounterMap {
+    if (builtin.os.tag == .freebsd or builtin.os.tag == .macos) return readNetstatCounters(allocator);
     var result = CounterMap.init(allocator);
     const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return result;
     defer allocator.free(bytes);
@@ -190,6 +192,41 @@ fn readProcNetDev(allocator: std.mem.Allocator) !CounterMap {
         try result.put(try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
     }
     return result;
+}
+
+fn readNetstatCounters(allocator: std.mem.Allocator) !CounterMap {
+    var result = CounterMap.init(allocator);
+    const out = commandOutput(allocator, &.{ "netstat", "-ibn" }) catch return result;
+    defer allocator.free(out);
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const name = fields.next() orelse continue;
+        if (std.mem.eql(u8, name, "lo0")) continue;
+        var vals: [12][]const u8 = undefined;
+        var n: usize = 0;
+        while (fields.next()) |f| : (n += 1) {
+            if (n < vals.len) vals[n] = f;
+        }
+        if (n < 10) continue;
+        const rx = std.fmt.parseInt(u64, vals[5], 10) catch 0;
+        const tx = std.fmt.parseInt(u64, vals[8], 10) catch 0;
+        try result.put(try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
+    }
+    return result;
+}
+
+fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
+    errdefer allocator.free(stdout);
+    const term = try child.wait();
+    if (term != .Exited or term.Exited != 0) return error.CommandFailed;
+    return stdout;
 }
 
 fn appendSample(map: *SampleMap, allocator: std.mem.Allocator, name: []const u8, sample: TrafficData) !void {
