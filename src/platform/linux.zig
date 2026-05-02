@@ -37,12 +37,11 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
 }
 
 pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
-    const mem = try memInfoWithOptions(options);
-    const swap = try swapInfoWithRoot(options.host_proc);
+    const mem_swap = try memAndSwapInfoWithOptions(options);
     return .{
         .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(try std.Thread.getCpuCount()), .usage = try cpuUsage(options.host_proc) },
-        .ram = mem,
-        .swap = swap,
+        .ram = mem_swap.ram,
+        .swap = mem_swap.swap,
         .load = try loadInfo(options.host_proc),
         .disk = try diskInfoWithMountpoints(options.include_mountpoints),
         .network = try networkInfo(options),
@@ -906,10 +905,8 @@ fn cpuUsage(host_proc: []const u8) !f64 {
 }
 
 fn readCpuStat(host_proc: []const u8) !?CpuStat {
-    const path = try procPath(std.heap.page_allocator, host_proc, "stat");
-    defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return null;
-    defer std.heap.page_allocator.free(bytes);
+    var buf: [8192]u8 = undefined;
+    const bytes = readSmallProcFile(host_proc, "stat", &buf) orelse return null;
     return parseCpuStat(bytes);
 }
 
@@ -1050,6 +1047,20 @@ fn memInfoWithOptions(options: common.SnapshotOptions) !common.MemInfo {
     return memInfoFromPath(path, .{ .include_cache = options.memory_include_cache, .report_raw_used = options.memory_report_raw_used });
 }
 
+const MemSwapInfo = struct {
+    ram: common.MemInfo,
+    swap: common.MemInfo,
+};
+
+fn memAndSwapInfoWithOptions(options: common.SnapshotOptions) !MemSwapInfo {
+    var buf: [16 * 1024]u8 = undefined;
+    const bytes = readSmallProcFile(options.host_proc, "meminfo", &buf) orelse return .{ .ram = .{}, .swap = .{} };
+    return .{
+        .ram = parseMemInfo(bytes, .{ .include_cache = options.memory_include_cache, .report_raw_used = options.memory_report_raw_used }),
+        .swap = parseSwapInfo(bytes),
+    };
+}
+
 pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
     var total: u64 = 0;
     var free: u64 = 0;
@@ -1081,8 +1092,8 @@ pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
 }
 
 fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return .{};
-    defer std.heap.page_allocator.free(bytes);
+    var buf: [16 * 1024]u8 = undefined;
+    const bytes = readSmallFile(path, &buf) orelse return .{};
     return parseMemInfo(bytes, mode);
 }
 
@@ -1091,13 +1102,15 @@ fn swapInfo() !common.MemInfo {
 }
 
 fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {
+    var buf: [16 * 1024]u8 = undefined;
+    const bytes = readSmallProcFile(host_proc, "meminfo", &buf) orelse return .{};
+    return parseSwapInfo(bytes);
+}
+
+pub fn parseSwapInfo(bytes: []const u8) common.MemInfo {
     var total: u64 = 0;
     var free: u64 = 0;
     var cached: u64 = 0;
-    const path = try procPath(std.heap.page_allocator, host_proc, "meminfo");
-    defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return .{};
-    defer std.heap.page_allocator.free(bytes);
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t:");
@@ -1113,10 +1126,8 @@ fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {
 }
 
 fn loadInfo(host_proc: []const u8) !common.LoadInfo {
-    const path = try procPath(std.heap.page_allocator, host_proc, "loadavg");
-    defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 4096) catch return .{};
-    defer std.heap.page_allocator.free(bytes);
+    var buf: [256]u8 = undefined;
+    const bytes = readSmallProcFile(host_proc, "loadavg", &buf) orelse return .{};
     var fields = std.mem.tokenizeAny(u8, bytes, " \t\n");
     return .{
         .load1 = std.fmt.parseFloat(f64, fields.next() orelse "0") catch 0,
@@ -1126,10 +1137,8 @@ fn loadInfo(host_proc: []const u8) !common.LoadInfo {
 }
 
 fn uptime(host_proc: []const u8) !u64 {
-    const path = try procPath(std.heap.page_allocator, host_proc, "uptime");
-    defer std.heap.page_allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 4096) catch return 0;
-    defer std.heap.page_allocator.free(bytes);
+    var buf: [128]u8 = undefined;
+    const bytes = readSmallProcFile(host_proc, "uptime", &buf) orelse return 0;
     var fields = std.mem.tokenizeAny(u8, bytes, " \t\n");
     const first = fields.next() orelse return 0;
     return @intFromFloat(std.fmt.parseFloat(f64, first) catch 0);
@@ -1152,4 +1161,17 @@ fn processCount(host_proc: []const u8) !u64 {
 pub fn procPath(allocator: std.mem.Allocator, root: []const u8, suffix: []const u8) ![]const u8 {
     if (root.len == 0) return std.fmt.allocPrint(allocator, "/proc/{s}", .{suffix});
     return std.fs.path.join(allocator, &.{ root, suffix });
+}
+
+fn readSmallProcFile(host_proc: []const u8, suffix: []const u8, buf: []u8) ?[]const u8 {
+    const path = procPath(std.heap.page_allocator, host_proc, suffix) catch return null;
+    defer std.heap.page_allocator.free(path);
+    return readSmallFile(path, buf);
+}
+
+fn readSmallFile(path: []const u8, buf: []u8) ?[]const u8 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const n = file.readAll(buf) catch return null;
+    return buf[0..n];
 }

@@ -17,6 +17,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", opts);
+    if (target.result.os.tag == .freebsd or target.result.os.tag == .macos) {
+        exe.linkLibC();
+    }
+    if (target.result.os.tag == .freebsd) {
+        exe.linkSystemLibrary("util");
+    }
     exe.root_module.addImport("idna", b.createModule(.{
         .root_source_file = b.path("src/idna.zig"),
         .target = target,

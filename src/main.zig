@@ -117,13 +117,15 @@ fn printMonitoringLists(allocator: std.mem.Allocator, cfg: config.Config) !void 
 }
 
 fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
     var stdout = std.fs.File.stdout().deprecatedWriter();
-    var info = try provider.basicInfo(allocator);
-    try applyIpConfig(allocator, cfg, &info);
-    const info_json = try basic_info.allocBasicInfoJson(allocator, info, true);
-    defer allocator.free(info_json);
+    var info = try provider.basicInfo(scratch);
+    try applyIpConfig(scratch, cfg, &info);
+    const info_json = try basic_info.allocBasicInfoJson(scratch, info, true);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
-    basic_info.upload(allocator, cfg, info) catch |err| {
+    basic_info.upload(scratch, cfg, info) catch |err| {
         try stdout.print("Basic info upload failed: {s}\n", .{@errorName(err)});
         return err;
     };
@@ -139,9 +141,12 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     const mins: u64 = if (cfg.info_report_interval <= 0) 5 else @intCast(cfg.info_report_interval);
     while (true) {
         std.Thread.sleep(mins * 60 * std.time.ns_per_s);
-        var info = provider.basicInfo(allocator) catch continue;
-        applyIpConfig(allocator, cfg, &info) catch {};
-        basic_info.upload(allocator, cfg, info) catch {};
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var info = provider.basicInfo(scratch) catch continue;
+        applyIpConfig(scratch, cfg, &info) catch {};
+        basic_info.upload(scratch, cfg, info) catch {};
     }
 }
 

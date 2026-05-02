@@ -54,6 +54,17 @@ test "meminfo parser honors memory modes" {
     try std.testing.expectEqual(@as(u64, 700 * 1024), raw.used);
 }
 
+test "swap parser matches meminfo semantics" {
+    const text =
+        \\SwapTotal:      1000 kB
+        \\SwapFree:        200 kB
+        \\SwapCached:      100 kB
+    ;
+    const swap = linux.parseSwapInfo(text);
+    try std.testing.expectEqual(@as(u64, 1000 * 1024), swap.total);
+    try std.testing.expectEqual(@as(u64, 700 * 1024), swap.used);
+}
+
 test "proc path uses host proc root when provided" {
     const path = try linux.procPath(std.testing.allocator, "/host/proc", "net/dev");
     defer std.testing.allocator.free(path);

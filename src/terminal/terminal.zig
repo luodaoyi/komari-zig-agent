@@ -3,6 +3,9 @@ const http = @import("../protocol/http.zig");
 const ws_client = @import("../protocol/ws_client.zig");
 const builtin = @import("builtin");
 
+extern "c" fn openpty(amaster: *c_int, aslave: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const std.posix.winsize) c_int;
+extern "c" fn ioctl(fd: std.posix.fd_t, request: c_ulong, ...) c_int;
+
 pub const Input = union(enum) {
     input: []const u8,
     resize: struct { cols: u16, rows: u16 },
@@ -97,6 +100,7 @@ const ShellSession = struct {
 
     fn start(allocator: std.mem.Allocator) !ShellSession {
         if (builtin.os.tag == .linux) return startLinuxPty(allocator);
+        if (builtin.os.tag == .freebsd or builtin.os.tag == .macos) return startBsdPty(allocator);
         return startPipeFallback(allocator);
     }
 
@@ -144,6 +148,12 @@ const ShellSession = struct {
             if (std.posix.errno(rc) != .SUCCESS) return error.ResizeFailed;
             return;
         }
+        if (builtin.os.tag == .freebsd or builtin.os.tag == .macos) {
+            var wsz = std.posix.winsize{ .row = rows, .col = cols, .xpixel = 0, .ypixel = 0 };
+            const rc = ioctl(self.output.handle, tiocswinszRequest(), @intFromPtr(&wsz));
+            if (std.posix.errno(rc) != .SUCCESS) return error.ResizeFailed;
+            return;
+        }
         var buf: [64]u8 = undefined;
         const cmd = try std.fmt.bufPrint(&buf, "stty cols {d} rows {d}\n", .{ cols, rows });
         try self.input.writeAll(cmd);
@@ -185,7 +195,7 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     if (pid == 0) {
         _ = std.os.linux.setsid();
         const slave = std.posix.openZ(slave_path.ptr, .{ .ACCMODE = .RDWR }, 0) catch std.posix.exit(127);
-        _ = std.posix.system.ioctl(slave, std.posix.T.IOCSCTTY, 0);
+        _ = std.posix.system.ioctl(slave, std.posix.T.IOCSCTTY, @as(c_int, 0));
         std.posix.dup2(slave, std.posix.STDIN_FILENO) catch std.posix.exit(127);
         std.posix.dup2(slave, std.posix.STDOUT_FILENO) catch std.posix.exit(127);
         std.posix.dup2(slave, std.posix.STDERR_FILENO) catch std.posix.exit(127);
@@ -200,10 +210,55 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     return .{ .input = pty_file, .output = pty_file, .pid = pid };
 }
 
+fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
+    const shell_path = try shellPathAlloc(allocator);
+    defer allocator.free(shell_path);
+    const shell = try allocator.dupeZ(u8, shell_path);
+    defer allocator.free(shell);
+    const shell_base_raw = std.fs.path.basename(shell_path);
+    const shell_base = try allocator.dupeZ(u8, shell_base_raw);
+    defer allocator.free(shell_base);
+    const prelude = try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"");
+    defer allocator.free(prelude);
+    var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
+    var env_arena = std.heap.ArenaAllocator.init(allocator);
+    defer env_arena.deinit();
+    var env_map = try std.process.getEnvMap(env_arena.allocator());
+    try env_map.put("TERM", "xterm-256color");
+    try env_map.put("LANG", "C.UTF-8");
+    try env_map.put("LC_ALL", "C.UTF-8");
+    const env = try std.process.createEnvironFromMap(env_arena.allocator(), &env_map, .{});
+
+    var master_fd: c_int = -1;
+    var slave_fd: c_int = -1;
+    var initial_size = std.posix.winsize{ .row = 24, .col = 80, .xpixel = 0, .ypixel = 0 };
+    if (openpty(&master_fd, &slave_fd, null, null, &initial_size) != 0) return error.PtyOpenFailed;
+    const master: std.posix.fd_t = @intCast(master_fd);
+    const slave: std.posix.fd_t = @intCast(slave_fd);
+    errdefer std.posix.close(master);
+    errdefer std.posix.close(slave);
+
+    const pid = try std.posix.fork();
+    if (pid == 0) {
+        _ = std.posix.setsid() catch {};
+        _ = ioctl(slave, tiocscttyRequest(), @as(c_int, 0));
+        std.posix.dup2(slave, std.posix.STDIN_FILENO) catch std.posix.exit(127);
+        std.posix.dup2(slave, std.posix.STDOUT_FILENO) catch std.posix.exit(127);
+        std.posix.dup2(slave, std.posix.STDERR_FILENO) catch std.posix.exit(127);
+        if (slave > 2) std.posix.close(slave);
+        std.posix.close(master);
+        std.posix.execveZ(shell.ptr, &argv, env.ptr) catch std.posix.exit(127);
+    }
+
+    std.posix.close(slave);
+    const pty_file = std.fs.File{ .handle = master };
+    return .{ .input = pty_file, .output = pty_file, .pid = pid };
+}
+
 fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
     const shell = shellPath();
     const argv = if (builtin.os.tag == .windows)
-        &.{ shell }
+        &.{shell}
     else
         &.{ "script", "-q", "/dev/null", shell };
     var sh = std.process.Child.init(argv, allocator);
@@ -214,6 +269,20 @@ fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
     try sh.spawn();
     if (sh.stdin == null or sh.stdout == null) return error.ShellPipeFailed;
     return .{ .input = sh.stdin.?, .output = sh.stdout.?, .pid = if (builtin.os.tag == .windows) {} else sh.id };
+}
+
+fn tiocswinszRequest() c_ulong {
+    return switch (builtin.os.tag) {
+        .freebsd, .macos => 0x80087467,
+        else => @intCast(std.posix.T.IOCSWINSZ),
+    };
+}
+
+fn tiocscttyRequest() c_ulong {
+    return switch (builtin.os.tag) {
+        .freebsd, .macos => 0x20007461,
+        else => @intCast(std.posix.T.IOCSCTTY),
+    };
 }
 
 fn shellPath() []const u8 {
