@@ -2,6 +2,8 @@ const std = @import("std");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
 
+pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
+
 pub const Headers = struct {
     cf_access_client_id: ?[]const u8 = null,
     cf_access_client_secret: ?[]const u8 = null,
@@ -106,6 +108,7 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
             return err;
         };
         const code = @intFromEnum(result.status);
+        if (response_writer.written().len > max_response_body_bytes) return error.HttpResponseTooLarge;
         if (code == 200) return response_writer.toOwnedSlice();
         if (attempt < max_retries) {
             std.Thread.sleep(2 * std.time.ns_per_s);
@@ -134,6 +137,7 @@ pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
         .keep_alive = false,
     });
     const code = @intFromEnum(result.status);
+    if (response_writer.written().len > max_response_body_bytes) return error.HttpResponseTooLarge;
     if (code != 200) return error.HttpStatusNotOk;
     return response_writer.toOwnedSlice();
 }
@@ -408,6 +412,7 @@ fn readHttpResponse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !HttpR
     const status = try parseStatus(header);
     if (headerValue(header, "Content-Length")) |value| {
         const len = try std.fmt.parseInt(usize, std.mem.trim(u8, value, " \t"), 10);
+        if (len > max_response_body_bytes) return error.HttpResponseTooLarge;
         const body = try allocator.alloc(u8, len);
         errdefer allocator.free(body);
         try reader.readSliceAll(body);
@@ -466,12 +471,12 @@ fn readChunked(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
             break;
         }
         const old = out.items.len;
+        if (size > max_response_body_bytes - old) return error.HttpResponseTooLarge;
         try out.resize(allocator, old + size);
         try reader.readSliceAll(out.items[old..]);
         var crlf: [2]u8 = undefined;
         try reader.readSliceAll(&crlf);
         if (!std.mem.eql(u8, &crlf, "\r\n")) return error.InvalidHttpResponse;
-        if (out.items.len > 64 * 1024 * 1024) return error.HttpResponseTooLarge;
     }
     return out.toOwnedSlice(allocator);
 }

@@ -11,16 +11,18 @@ permissions:
 
 env:
   ZIG_VERSION: 0.15.2
+  ZIG_SHA256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install Zig
         run: |
           set -eu
           curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
           tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
       - name: Test
@@ -82,11 +84,12 @@ jobs:
             arch: "386"
             target: x86-windows-gnu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install Zig
         run: |
           set -eu
           curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
           tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
       - name: Build
@@ -101,7 +104,7 @@ jobs:
             asset="${asset}.exe"
           fi
           cp "zig-out/bin/${binary}" "dist/${asset}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}*

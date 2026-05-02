@@ -31,6 +31,11 @@ pub const PendingUpdateState = struct {
     }
 };
 
+const ReleaseAsset = struct {
+    url: []const u8,
+    digest: ?[]const u8 = null,
+};
+
 pub fn parseVersionPrefixless(value: []const u8) []const u8 {
     if (value.len > 0 and (value[0] == 'v' or value[0] == 'V')) return value[1..];
     return value;
@@ -183,8 +188,9 @@ pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
 
     const wanted = try assetName(allocator);
     defer allocator.free(wanted);
-    const url = findAssetUrl(parsed.value.object, wanted) orelse return;
-    try downloadAndReplace(allocator, url, cfg, tag);
+    const asset = findAsset(parsed.value.object, wanted) orelse return;
+    const sums_url = findAssetUrl(parsed.value.object, "SHA256SUMS");
+    try downloadAndReplace(allocator, asset.url, cfg, tag, wanted, asset.digest, sums_url);
 }
 
 pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
@@ -199,8 +205,18 @@ fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     }
 }
 
-fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, target_version: []const u8) !void {
-    const body = try downloadReleaseAsset(allocator, url, cfg);
+fn downloadAndReplace(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    cfg: config.Config,
+    target_version: []const u8,
+    asset_name: []const u8,
+    digest: ?[]const u8,
+    sums_url: ?[]const u8,
+) !void {
+    const expected = try expectedSha256(allocator, cfg, asset_name, digest, sums_url);
+    defer if (expected) |value| allocator.free(value);
+    const body = try downloadReleaseAsset(allocator, url, cfg, expected);
     defer allocator.free(body);
     const exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe);
@@ -230,7 +246,33 @@ fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config
     std.process.exit(42);
 }
 
-fn downloadReleaseAsset(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
+fn expectedSha256(allocator: std.mem.Allocator, cfg: config.Config, asset_name: []const u8, digest: ?[]const u8, sums_url: ?[]const u8) !?[]const u8 {
+    if (digest) |value| {
+        if (sha256DigestHex(value)) |hex| {
+            const copy = try allocator.dupe(u8, hex);
+            return copy;
+        }
+    }
+    const url = sums_url orelse return null;
+    const sums = try downloadReleaseAssetUnchecked(allocator, url, cfg);
+    defer allocator.free(sums);
+    const hex = checksumFromSums(sums, asset_name) orelse return error.ReleaseChecksumMissing;
+    const copy = try allocator.dupe(u8, hex);
+    return copy;
+}
+
+fn downloadReleaseAsset(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, expected_sha256: ?[]const u8) ![]u8 {
+    const body = try downloadReleaseAssetUnchecked(allocator, url, cfg);
+    errdefer allocator.free(body);
+    if (expected_sha256) |expected| {
+        if (!sha256Matches(body, expected)) return error.ReleaseChecksumMismatch;
+    } else {
+        return error.ReleaseChecksumMissing;
+    }
+    return body;
+}
+
+fn downloadReleaseAssetUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
     if (http.getReadCfg(allocator, url, cfg)) |body| return body else |err| {
         var last_err = err;
         if (std.process.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
@@ -259,6 +301,53 @@ pub fn githubProxyUrl(allocator: std.mem.Allocator, proxy: []const u8, url: []co
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.trimRight(u8, proxy, "/"), url });
 }
 
+fn sha256DigestHex(value: []const u8) ?[]const u8 {
+    const prefix = "sha256:";
+    if (!std.ascii.startsWithIgnoreCase(value, prefix)) return null;
+    const hex = value[prefix.len..];
+    if (!isHexSha256(hex)) return null;
+    return hex;
+}
+
+pub fn checksumFromSums(sums: []const u8, asset_name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, sums, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const hex = fields.next() orelse continue;
+        const name_raw = fields.next() orelse continue;
+        const name = if (name_raw.len > 0 and name_raw[0] == '*') name_raw[1..] else name_raw;
+        if (std.mem.eql(u8, name, asset_name) and isHexSha256(hex)) return hex;
+    }
+    return null;
+}
+
+fn sha256Matches(bytes: []const u8, expected: []const u8) bool {
+    if (!isHexSha256(expected)) return false;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    var actual: [64]u8 = undefined;
+    toHexLower(&actual, &digest);
+    return std.ascii.eqlIgnoreCase(&actual, expected);
+}
+
+fn toHexLower(out: *[64]u8, bytes: *const [32]u8) void {
+    const table = "0123456789abcdef";
+    for (bytes, 0..) |b, i| {
+        out[i * 2] = table[b >> 4];
+        out[i * 2 + 1] = table[b & 0x0f];
+    }
+}
+
+fn isHexSha256(value: []const u8) bool {
+    if (value.len != 64) return false;
+    for (value) |c| {
+        if (!std.ascii.isHex(c)) return false;
+    }
+    return true;
+}
+
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     if (object.get(name)) |value| {
         if (value == .string) return value.string;
@@ -274,12 +363,22 @@ fn intField(object: std.json.ObjectMap, name: []const u8) ?u32 {
 }
 
 fn findAssetUrl(object: std.json.ObjectMap, wanted: []const u8) ?[]const u8 {
+    const asset = findAsset(object, wanted) orelse return null;
+    return asset.url;
+}
+
+fn findAsset(object: std.json.ObjectMap, wanted: []const u8) ?ReleaseAsset {
     const assets = object.get("assets") orelse return null;
     if (assets != .array) return null;
     for (assets.array.items) |asset| {
         if (asset != .object) continue;
         const name = stringField(asset.object, "name") orelse continue;
-        if (std.mem.eql(u8, name, wanted)) return stringField(asset.object, "browser_download_url");
+        if (!std.mem.eql(u8, name, wanted)) continue;
+        const url = stringField(asset.object, "browser_download_url") orelse return null;
+        return .{
+            .url = url,
+            .digest = stringField(asset.object, "digest"),
+        };
     }
     return null;
 }

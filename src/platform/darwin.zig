@@ -2,6 +2,8 @@ const common = @import("common.zig");
 const std = @import("std");
 const netstatic = @import("report_netstatic");
 
+const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     return .{
         .cpu = .{
@@ -387,6 +389,10 @@ fn commandFirstLine(allocator: std.mem.Allocator, argv: []const []const u8, fall
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     var child = std.process.Child.init(argv, allocator);
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    try env.put("PATH", safe_command_path);
+    child.env_map = &env;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
     try child.spawn();

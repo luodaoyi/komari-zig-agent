@@ -158,6 +158,7 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/repl
 
 - 自动识别 CPU 架构并下载对应 Release 资产。
 - 下载优先直连 GitHub；直连失败后自动测速多个 GitHub 代理并选择可用源。
+- 同步下载 Release 中的 `SHA256SUMS` 并校验二进制，校验失败不会替换。
 - 下载失败会重试；下载后会先试运行二进制，避免把错误架构或错误页面写入服务。
 - 停止原服务，备份原二进制为 `*.go-backup.<timestamp>`。
 - 替换二进制并重启原服务；systemd 服务启动失败会自动回滚到备份。
@@ -199,7 +200,7 @@ komari-agent-windows-arm64.exe
 komari-agent-windows-386.exe
 ```
 
-自更新同样优先直连 GitHub；直连失败后按内置代理池回退。可用 `KOMARI_GITHUB_PROXIES` 覆盖代理池。
+自更新同样优先直连 GitHub；直连失败后按内置代理池回退。可用 `KOMARI_GITHUB_PROXIES` 覆盖代理池。下载完成后会校验 GitHub Release API 的 `digest`；若 API 未返回 digest，则使用同 Release 的 `SHA256SUMS`。校验失败不会替换本机二进制。
 
 可用参数关闭自更新：
 
@@ -257,6 +258,7 @@ Action 会自动：
 - 编译 Linux、FreeBSD、macOS 多架构二进制。
 - 创建 GitHub Release。
 - 上传所有 Release 资产。
+- 生成并上传 `SHA256SUMS`，供安装脚本、替换脚本和 Agent 自更新校验下载内容。
 
 ## Star History
 

@@ -15,6 +15,7 @@ permissions:
 
 env:
   ZIG_VERSION: 0.15.2
+  ZIG_SHA256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
 
 jobs:
   prepare:
@@ -22,7 +23,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
       - name: Resolve and create tag
@@ -119,13 +120,14 @@ jobs:
             arch: "386"
             target: x86-windows-gnu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       - name: Install Zig
         run: |
           set -eu
           curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
           tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
       - name: Build
@@ -140,7 +142,7 @@ jobs:
             asset="${asset}.exe"
           fi
           cp "zig-out/bin/${binary}" "dist/${asset}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}*
@@ -150,10 +152,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [prepare, build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true
@@ -166,4 +168,5 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$TAG" --generate-notes
           fi
-          gh release upload "$TAG" dist/komari-agent-* --clobber
+          (cd dist && sha256sum komari-agent-* > SHA256SUMS)
+          gh release upload "$TAG" dist/komari-agent-* dist/SHA256SUMS --clobber

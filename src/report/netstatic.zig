@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
 pub const TrafficData = struct { timestamp: u64, tx: u64, rx: u64 };
 pub const Counters = struct { tx: u64 = 0, rx: u64 = 0 };
 
@@ -256,6 +258,10 @@ fn readNetstatCounters(allocator: std.mem.Allocator) !CounterMap {
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     var child = std.process.Child.init(argv, allocator);
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    try env.put("PATH", safe_command_path);
+    child.env_map = &env;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
     try child.spawn();

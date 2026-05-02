@@ -36,6 +36,22 @@ test "self update github proxy urls do not include closed mirrors" {
     try std.testing.expectEqualStrings("https://gh.example.com/https://github.com/o/r/releases/latest/download/a", url);
 }
 
+test "self update checksum file parser accepts common formats" {
+    const sums =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  komari-agent-linux-amd64\n" ++
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *komari-agent-linux-arm64\n";
+
+    try std.testing.expectEqualStrings(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        update.checksumFromSums(sums, "komari-agent-linux-amd64").?,
+    );
+    try std.testing.expectEqualStrings(
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        update.checksumFromSums(sums, "komari-agent-linux-arm64").?,
+    );
+    try std.testing.expect(update.checksumFromSums(sums, "missing") == null);
+}
+
 test "pending update allows first start then rolls back next unconfirmed start" {
     var state = update.PendingUpdateState{
         .previous_version = "v0.1.2",

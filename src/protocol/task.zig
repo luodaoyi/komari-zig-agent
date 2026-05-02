@@ -2,6 +2,9 @@ const std = @import("std");
 const types = @import("types.zig");
 const http = @import("http.zig");
 
+pub const max_command_output_bytes: usize = 4 * 1024 * 1024;
+const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
+
 pub const CommandResult = struct {
     output: []const u8,
     exit_code: i32,
@@ -30,11 +33,21 @@ pub fn runCommand(allocator: std.mem.Allocator, command: []const u8) ![]const u8
 
 pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !CommandResult {
     if (command.len == 0) return .{ .output = try allocator.dupe(u8, "No command provided"), .exit_code = 0 };
-    const result = try std.process.Child.run(.{
+    var env = try std.process.getEnvMap(allocator);
+    defer env.deinit();
+    try env.put("PATH", safe_command_path);
+    const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ "sh", "-c", command },
-        .max_output_bytes = std.math.maxInt(usize),
-    });
+        .argv = &.{ "/bin/sh", "-c", command },
+        .env_map = &env,
+        .max_output_bytes = max_command_output_bytes,
+    }) catch |err| switch (err) {
+        error.StdoutStreamTooLong, error.StderrStreamTooLong => return .{
+            .output = try std.fmt.allocPrint(allocator, "Command output exceeded {d} bytes", .{max_command_output_bytes}),
+            .exit_code = -1,
+        },
+        else => return err,
+    };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     const merged = try std.mem.concat(allocator, u8, &.{ result.stdout, if (result.stderr.len > 0) "\n" else "", result.stderr });

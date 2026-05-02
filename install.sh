@@ -168,15 +168,15 @@ uninstall_previous
 mkdir -p "$target_dir"
 
 download_file() {
-  url="$1"
-  out="$2"
-  attempt=1
-  max_attempts=3
-  while [ "$attempt" -le "$max_attempts" ]; do
-    curl -fL -o "$out" "$url" && return 0
-    rm -f "$out"
-    log_warning "Download failed, retry ${attempt}/${max_attempts}"
-    attempt=$((attempt + 1))
+  df_url="$1"
+  df_out="$2"
+  df_attempt=1
+  df_max_attempts=3
+  while [ "$df_attempt" -le "$df_max_attempts" ]; do
+    curl -fL -o "$df_out" "$df_url" && return 0
+    rm -f "$df_out"
+    log_warning "Download failed, retry ${df_attempt}/${df_max_attempts}"
+    df_attempt=$((df_attempt + 1))
     sleep 2
   done
   return 1
@@ -204,7 +204,7 @@ github_proxy_items() {
 
 select_fastest_proxy_url() {
   base_url="$1"
-  best_url=""
+  best_proxy=""
   best_time=""
   for proxy in $(github_proxy_items); do
     candidate="$(proxy_url "$proxy" "$base_url")"
@@ -213,46 +213,87 @@ select_fastest_proxy_url() {
     log_info "Proxy probe: ${CYAN}$proxy${NC} ${elapsed}s" >&2
     if [ -z "$best_time" ] || time_less_than "$elapsed" "$best_time"; then
       best_time="$elapsed"
-      best_url="$candidate"
+      best_proxy="$proxy"
     fi
   done
-  [ -n "$best_url" ] || return 1
-  printf '%s\n' "$best_url"
+  [ -n "$best_proxy" ] || return 1
+  printf '%s\n' "$best_proxy"
 }
 
 try_download_binary() {
-  url="$1"
-  out="$2"
-  log_info "Downloading: ${CYAN}$url${NC}"
-  download_file "$url" "$out" || return 1
-  chmod +x "$out"
-  "$out" --show-warning >/dev/null 2>&1 && return 0
-  rm -f "$out"
+  tdb_url="$1"
+  tdb_sums_url="$2"
+  tdb_out="$3"
+  tdb_sums_fallback_url="${4:-}"
+  tdb_sums_out="${tdb_out}.sha256.$$"
+  rm -f "$tdb_sums_out"
+  log_info "Downloading: ${CYAN}$tdb_url${NC}"
+  download_file "$tdb_url" "$tdb_out" || { rm -f "$tdb_sums_out"; return 1; }
+  if ! download_file "$tdb_sums_url" "$tdb_sums_out"; then
+    if [ -n "$tdb_sums_fallback_url" ]; then
+      download_file "$tdb_sums_fallback_url" "$tdb_sums_out" || { rm -f "$tdb_out" "$tdb_sums_out"; return 1; }
+    else
+      rm -f "$tdb_out" "$tdb_sums_out"
+      return 1
+    fi
+  fi
+  verify_sha256sum "$tdb_out" "$tdb_sums_out" || {
+    rm -f "$tdb_out" "$tdb_sums_out"
+    log_warning "Downloaded file failed SHA256 verification"
+    return 1
+  }
+  rm -f "$tdb_sums_out"
+  chmod +x "$tdb_out"
+  "$tdb_out" --show-warning >/dev/null 2>&1 && return 0
+  rm -f "$tdb_out"
   log_warning "Downloaded file failed binary preflight"
   return 1
 }
 
+sha256_file() {
+  file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  elif command -v sha256 >/dev/null 2>&1; then
+    sha256 -q "$file"
+  else
+    log_error "sha256sum, shasum, or sha256 is required"
+    return 1
+  fi
+}
+
+verify_sha256sum() {
+  file="$1"
+  sums="$2"
+  expected="$(awk -v name="$asset" '($2 == name || $2 == "*" name) { print $1; exit }' "$sums")"
+  [ -n "$expected" ] || return 1
+  actual="$(sha256_file "$file")" || return 1
+  [ "$expected" = "$actual" ]
+}
+
 download_binary_with_fallback() {
-  base_url="$1"
-  out="$2"
+  db_base_url="$1"
+  db_sums_url="$2"
+  db_out="$3"
   if [ -n "$github_proxy" ]; then
-    try_download_binary "$(proxy_url "$github_proxy" "$base_url")" "$out"
+    try_download_binary "$(proxy_url "$github_proxy" "$db_base_url")" "$db_sums_url" "$db_out" "$(proxy_url "$github_proxy" "$db_sums_url")"
     return
   fi
 
-  try_download_binary "$base_url" "$out" && return 0
+  try_download_binary "$db_base_url" "$db_sums_url" "$db_out" && return 0
   log_warning "Direct GitHub download failed, probing GitHub proxy mirrors"
 
-  fastest="$(select_fastest_proxy_url "$base_url" || true)"
-  if [ -n "$fastest" ]; then
-    try_download_binary "$fastest" "$out" && return 0
+  db_fastest_proxy="$(select_fastest_proxy_url "$db_base_url" || true)"
+  if [ -n "$db_fastest_proxy" ]; then
+    try_download_binary "$(proxy_url "$db_fastest_proxy" "$db_base_url")" "$db_sums_url" "$db_out" "$(proxy_url "$db_fastest_proxy" "$db_sums_url")" && return 0
     log_warning "Fastest proxy failed, trying remaining proxy mirrors"
   fi
 
   for proxy in $(github_proxy_items); do
-    candidate="$(proxy_url "$proxy" "$base_url")"
-    [ "$candidate" = "$fastest" ] && continue
-    try_download_binary "$candidate" "$out" && return 0
+    [ "$proxy" = "$db_fastest_proxy" ] && continue
+    try_download_binary "$(proxy_url "$proxy" "$db_base_url")" "$db_sums_url" "$db_out" "$(proxy_url "$proxy" "$db_sums_url")" && return 0
   done
   return 1
 }
@@ -264,9 +305,10 @@ else
   release_path="latest/download"
 fi
 download_url="https://github.com/${repo}/releases/${release_path}/${asset}"
+checksums_url="https://github.com/${repo}/releases/${release_path}/SHA256SUMS"
 
 log_info "Detected OS: ${GREEN}$os_name${NC}, Architecture: ${GREEN}$arch${NC}"
-download_binary_with_fallback "$download_url" "$agent_path" || {
+download_binary_with_fallback "$download_url" "$checksums_url" "$agent_path" || {
   log_error "Failed to download release asset"
   exit 1
 }

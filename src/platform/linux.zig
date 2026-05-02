@@ -2,6 +2,8 @@ const std = @import("std");
 const common = @import("common.zig");
 const netstatic = @import("report_netstatic");
 
+const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
+
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuStat = null;
 var cached_cpu_cores = std.atomic.Value(u32).init(0);
@@ -646,6 +648,10 @@ fn stripCidr(allocator: std.mem.Allocator, cidr: []const u8) ![]const u8 {
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     try ensureExecutable(allocator, argv[0]);
     var child = std.process.Child.init(argv, allocator);
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    try env.put("PATH", safe_command_path);
+    child.env_map = &env;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
     try child.spawn();
@@ -663,9 +669,7 @@ fn ensureExecutable(allocator: std.mem.Allocator, exe: []const u8) !void {
         return;
     }
 
-    const path = std.process.getEnvVarOwned(allocator, "PATH") catch try allocator.dupe(u8, "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-    defer allocator.free(path);
-    var dirs = std.mem.splitScalar(u8, path, ':');
+    var dirs = std.mem.splitScalar(u8, safe_command_path, ':');
     while (dirs.next()) |dir| {
         if (dir.len == 0) continue;
         const full = try std.fs.path.join(allocator, &.{ dir, exe });
