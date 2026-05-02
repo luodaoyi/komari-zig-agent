@@ -4,6 +4,7 @@ const netstatic = @import("report_netstatic");
 
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuStat = null;
+var cached_cpu_cores = std.atomic.Value(u32).init(0);
 
 const NetworkSample = struct {
     total_up: u64,
@@ -21,7 +22,7 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
         .cpu = .{
             .name = try cpuName(allocator),
             .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)),
-            .cores = @intCast(try std.Thread.getCpuCount()),
+            .cores = try cpuCoreCount(),
             .usage = 0.001,
         },
         .os_name = try osName(allocator),
@@ -39,7 +40,7 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
 pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
     const mem_swap = try memAndSwapInfoWithOptions(options);
     return .{
-        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(try std.Thread.getCpuCount()), .usage = try cpuUsage(options.host_proc) },
+        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = try cpuCoreCount(), .usage = try cpuUsage(options.host_proc) },
         .ram = mem_swap.ram,
         .swap = mem_swap.swap,
         .load = try loadInfo(options.host_proc),
@@ -59,6 +60,14 @@ pub fn normalizeArch(arch: []const u8) []const u8 {
     if (std.mem.eql(u8, arch, "i386")) return "386";
     if (std.mem.eql(u8, arch, "arm")) return "arm";
     return arch;
+}
+
+fn cpuCoreCount() !u32 {
+    const cached = cached_cpu_cores.load(.acquire);
+    if (cached != 0) return cached;
+    const count: u32 = @intCast(try std.Thread.getCpuCount());
+    cached_cpu_cores.store(count, .release);
+    return count;
 }
 
 pub fn parseOsReleaseName(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
@@ -769,7 +778,13 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
         return total;
     }
 
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return .{};
+    var mounts_buf: [64 * 1024]u8 = undefined;
+    const stack_mounts = readSmallFile("/proc/mounts", &mounts_buf) orelse return .{};
+    const heap_mounts = if (stack_mounts.len == mounts_buf.len)
+        std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return .{}
+    else
+        "";
+    const bytes = if (heap_mounts.len != 0) heap_mounts else stack_mounts;
     var by_device = std.StringHashMap(common.DiskInfo).init(allocator);
 
     var it = std.mem.splitScalar(u8, bytes, '\n');
@@ -785,7 +800,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
         const key = diskDeviceKey(device, fstype);
         const existing = by_device.get(key);
         if (existing == null or usage.total > existing.?.total) {
-            try by_device.put(try allocator.dupe(u8, key), usage);
+            try by_device.put(key, usage);
         }
     }
 
@@ -944,6 +959,11 @@ fn connectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
 }
 
 fn countProcNetFile(host_proc: []const u8, suffix: []const u8) u64 {
+    if (host_proc.len == 0) {
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{s}", .{suffix}) catch return 0;
+        return countProcNetConnectionsFile(path);
+    }
     const path = procPath(std.heap.page_allocator, host_proc, suffix) catch return 0;
     defer std.heap.page_allocator.free(path);
     return countProcNetConnectionsFile(path);
@@ -1187,6 +1207,11 @@ pub fn procPath(allocator: std.mem.Allocator, root: []const u8, suffix: []const 
 }
 
 fn readSmallProcFile(host_proc: []const u8, suffix: []const u8, buf: []u8) ?[]const u8 {
+    if (host_proc.len == 0) {
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/{s}", .{suffix}) catch return null;
+        return readSmallFile(path, buf);
+    }
     const path = procPath(std.heap.page_allocator, host_proc, suffix) catch return null;
     defer std.heap.page_allocator.free(path);
     return readSmallFile(path, buf);

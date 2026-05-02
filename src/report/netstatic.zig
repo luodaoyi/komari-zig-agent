@@ -151,22 +151,59 @@ fn saveLoop(rt: *Runtime) void {
 }
 
 fn sampleOnceLocked(rt: *Runtime) !void {
+    if (builtin.os.tag != .freebsd and builtin.os.tag != .macos) {
+        return sampleProcNetDevOnceLocked(rt);
+    }
     var counters = try readProcNetDev(rt.allocator);
     defer deinitCounterMap(&counters);
+    try sampleCounterMapLocked(rt, &counters);
+}
+
+fn sampleCounterMapLocked(rt: *Runtime, counters: *CounterMap) !void {
     const ts = nowUnix();
     var it = counters.iterator();
     while (it.next()) |entry| {
-        const name = entry.key_ptr.*;
-        if (!isNicAllowed(rt.config, name)) continue;
-        const current = entry.value_ptr.*;
-        if (rt.last.get(name)) |previous| {
-            const dtx = safeDelta(current.tx, previous.tx);
-            const drx = safeDelta(current.rx, previous.rx);
-            if (dtx != 0 or drx != 0) try appendSample(&rt.cache, rt.allocator, name, .{ .timestamp = ts, .tx = dtx, .rx = drx });
-            try rt.last.put(name, current);
-        } else {
-            try rt.last.put(try rt.allocator.dupe(u8, name), current);
+        try sampleCounterLocked(rt, ts, entry.key_ptr.*, entry.value_ptr.*);
+    }
+}
+
+fn sampleProcNetDevOnceLocked(rt: *Runtime) !void {
+    var buf: [64 * 1024]u8 = undefined;
+    const bytes = readSmallFile("/proc/net/dev", &buf) orelse return;
+    if (bytes.len == buf.len) {
+        var counters = try readProcNetDev(rt.allocator);
+        defer deinitCounterMap(&counters);
+        return sampleCounterMapLocked(rt, &counters);
+    }
+    const ts = nowUnix();
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        var fields = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
+        const rx = std.fmt.parseInt(u64, fields.next() orelse "0", 10) catch 0;
+        var idx: usize = 1;
+        var tx: u64 = 0;
+        while (fields.next()) |field| : (idx += 1) {
+            if (idx == 8) {
+                tx = std.fmt.parseInt(u64, field, 10) catch 0;
+                break;
+            }
         }
+        try sampleCounterLocked(rt, ts, name, .{ .tx = tx, .rx = rx });
+    }
+}
+
+fn sampleCounterLocked(rt: *Runtime, ts: u64, name: []const u8, current: Counters) !void {
+    if (!isNicAllowed(rt.config, name)) return;
+    if (rt.last.getIndex(name)) |idx| {
+        const previous = rt.last.values()[idx];
+        const dtx = safeDelta(current.tx, previous.tx);
+        const drx = safeDelta(current.rx, previous.rx);
+        if (dtx != 0 or drx != 0) try appendSample(&rt.cache, rt.allocator, name, .{ .timestamp = ts, .tx = dtx, .rx = drx });
+        rt.last.values()[idx] = current;
+    } else {
+        try rt.last.put(try rt.allocator.dupe(u8, name), current);
     }
 }
 
@@ -470,6 +507,13 @@ fn safeDelta(cur: u64, prev: u64) u64 {
 
 fn nowUnix() u64 {
     return @intCast(std.time.timestamp());
+}
+
+fn readSmallFile(path: []const u8, buf: []u8) ?[]const u8 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    const n = file.readAll(buf) catch return null;
+    return buf[0..n];
 }
 
 fn saveFilePath() []const u8 {

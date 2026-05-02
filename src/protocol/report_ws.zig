@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("../config.zig");
 const http = @import("http.zig");
+const common = @import("../platform/common.zig");
 const provider = @import("../platform/provider.zig");
 const report = @import("../report/report.zig");
 const ping = @import("ping.zig");
@@ -13,8 +14,10 @@ pub const ServerMessageKind = ws_message.ServerMessageKind;
 pub const ServerMessage = ws_message.ServerMessage;
 pub const parseServerMessage = ws_message.parseServerMessage;
 
-pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
-    return report.allocReportJson(allocator, try provider.snapshotWithOptions(.{
+const report_stack_buffer_size = 4096;
+
+fn snapshotOptions(cfg: config.Config) common.SnapshotOptions {
+    return .{
         .include_nics = cfg.include_nics,
         .exclude_nics = cfg.exclude_nics,
         .include_mountpoints = cfg.include_mountpoints,
@@ -23,7 +26,30 @@ pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .host_proc = cfg.host_proc,
         .memory_include_cache = cfg.memory_include_cache,
         .memory_report_raw_used = cfg.memory_report_raw_used,
-    }));
+    };
+}
+
+pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
+    return report.allocReportJson(allocator, try provider.snapshotWithOptions(snapshotOptions(cfg)));
+}
+
+fn writeReportOnce(allocator: std.mem.Allocator, ws: *ws_client.Client, cfg: config.Config) !void {
+    const snap = try provider.snapshotWithOptions(snapshotOptions(cfg));
+    var owns_gpu_json = true;
+    defer if (owns_gpu_json and snap.gpu_json.len != 0) std.heap.page_allocator.free(snap.gpu_json);
+
+    var buf: [report_stack_buffer_size]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    report.writeReportJson(&writer, snap) catch |err| switch (err) {
+        error.WriteFailed => {
+            owns_gpu_json = false;
+            const payload = try report.allocReportJson(allocator, snap);
+            defer allocator.free(payload);
+            try ws.writeText(payload);
+            return;
+        },
+    };
+    try ws.writeText(writer.buffered());
 }
 
 pub fn reportSleepSeconds(interval: f64) u64 {
@@ -57,9 +83,7 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
                 };
                 last_heartbeat = now;
             }
-            const payload = try runOnce(allocator, cfg);
-            defer allocator.free(payload);
-            ws.writeText(payload) catch |err| {
+            writeReportOnce(allocator, ws, cfg) catch |err| {
                 try stdout.print("WebSocket write failed: {s}\n", .{@errorName(err)});
                 ws.close(allocator);
                 closed = true;
