@@ -53,19 +53,15 @@ fn httpPing(allocator: std.mem.Allocator, target: []const u8) !i64 {
     const url = try normalizeHttpTarget(allocator, target);
     defer allocator.free(url);
 
-    var args = std.ArrayList([]const u8).empty;
-    defer args.deinit(allocator);
-    try args.appendSlice(allocator, &.{ "curl", "-o", "/dev/null", "-s", "-w", "%{http_code}", "--max-time", "3", url });
     const start = std.time.milliTimestamp();
-    var child = std.process.Child.init(args.items, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 4096);
-    defer allocator.free(stdout);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.HttpPingFailed;
-    const code = std.fmt.parseInt(u16, std.mem.trim(u8, stdout, " \t\r\n"), 10) catch return error.HttpPingFailed;
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = .GET,
+        .keep_alive = false,
+    });
+    const code = @intFromEnum(result.status);
     const elapsed = std.time.milliTimestamp() - start;
     if (code >= 200 and code < 400) return elapsed;
     return -1;
