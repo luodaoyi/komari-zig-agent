@@ -1,6 +1,14 @@
 const std = @import("std");
 const common = @import("common.zig");
 
+var previous_network: ?NetworkSample = null;
+
+const NetworkSample = struct {
+    total_up: u64,
+    total_down: u64,
+    timestamp_ms: i64,
+};
+
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     var info = common.BasicInfo{
         .cpu = .{
@@ -30,6 +38,7 @@ pub fn snapshot() !common.Snapshot {
         .swap = swap,
         .load = try loadInfo(),
         .disk = try diskInfo(),
+        .network = try networkInfo(),
         .uptime = try uptime(),
         .process = try processCount(),
     };
@@ -316,6 +325,71 @@ fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common
     const total = try std.fmt.parseInt(u64, fields.next() orelse return error.BadDfOutput, 10);
     const used = try std.fmt.parseInt(u64, fields.next() orelse return error.BadDfOutput, 10);
     return .{ .total = total, .used = used };
+}
+
+fn networkInfo() !common.NetworkInfo {
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/net/dev", 1024 * 1024) catch return .{};
+    defer std.heap.page_allocator.free(bytes);
+    var current = parseProcNetDev(bytes, "", "");
+    const now = std.time.milliTimestamp();
+    if (previous_network) |prev| {
+        const elapsed_ms: u64 = @intCast(@max(now - prev.timestamp_ms, 1));
+        current.up = perSecond(current.totalUp, prev.total_up, elapsed_ms);
+        current.down = perSecond(current.totalDown, prev.total_down, elapsed_ms);
+    }
+    previous_network = .{
+        .total_up = current.totalUp,
+        .total_down = current.totalDown,
+        .timestamp_ms = now,
+    };
+    return current;
+}
+
+fn perSecond(current: u64, previous: u64, elapsed_ms: u64) u64 {
+    if (current <= previous) return 0;
+    return ((current - previous) * 1000) / elapsed_ms;
+}
+
+pub fn parseProcNetDev(bytes: []const u8, include_nics: []const u8, exclude_nics: []const u8) common.NetworkInfo {
+    var total_up: u64 = 0;
+    var total_down: u64 = 0;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
+        var fields = std.mem.tokenizeAny(u8, line[colon + 1 ..], " \t");
+        const rx = std.fmt.parseInt(u64, fields.next() orelse "0", 10) catch 0;
+        var idx: usize = 1;
+        var tx: u64 = 0;
+        while (fields.next()) |field| : (idx += 1) {
+            if (idx == 8) {
+                tx = std.fmt.parseInt(u64, field, 10) catch 0;
+                break;
+            }
+        }
+        total_down += rx;
+        total_up += tx;
+    }
+    return .{ .totalUp = total_up, .totalDown = total_down };
+}
+
+pub fn shouldIncludeNetworkInterface(name: []const u8, include_nics: []const u8, exclude_nics: []const u8) bool {
+    const excluded_prefixes = [_][]const u8{ "br", "cni", "docker", "podman", "flannel", "lo", "veth", "virbr", "vmbr", "tap", "fwbr", "fwpr" };
+    for (&excluded_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, name, prefix)) return false;
+    }
+    if (include_nics.len != 0) return csvContains(include_nics, name);
+    if (exclude_nics.len != 0 and csvContains(exclude_nics, name)) return false;
+    return true;
+}
+
+fn csvContains(csv: []const u8, needle: []const u8) bool {
+    var it = std.mem.splitScalar(u8, csv, ',');
+    while (it.next()) |part| {
+        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t"), needle)) return true;
+    }
+    return false;
 }
 
 fn cpuName(allocator: std.mem.Allocator) ![]const u8 {
