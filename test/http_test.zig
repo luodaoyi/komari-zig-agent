@@ -1,0 +1,65 @@
+const std = @import("std");
+const config = @import("config");
+const http = @import("protocol_http");
+
+test "endpoint helpers trim slash and place token query" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqualStrings(
+        "https://panel.example/api/clients/uploadBasicInfo?token=tok",
+        try http.basicInfoUrl(allocator, "https://panel.example/", "tok"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://panel.example/api/clients/task/result?token=tok",
+        try http.taskResultUrl(allocator, "https://panel.example/", "tok"),
+    );
+    try std.testing.expectEqualStrings(
+        "https://panel.example/api/clients/register?name=host%20one",
+        try http.registerUrl(allocator, "https://panel.example/", "host one"),
+    );
+}
+
+test "websocket helpers convert scheme" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqualStrings(
+        "wss://panel.example/api/clients/report?token=tok",
+        try http.reportWsUrl(allocator, "https://panel.example/", "tok"),
+    );
+    try std.testing.expectEqualStrings(
+        "ws://panel.example/api/clients/terminal?token=tok&id=req",
+        try http.terminalWsUrl(allocator, "http://panel.example/", "tok", "req"),
+    );
+}
+
+test "cloudflare access headers are added when both values exist" {
+    const cfg = config.Config{
+        .cf_access_client_id = "id",
+        .cf_access_client_secret = "secret",
+    };
+    var headers = http.Headers{};
+    http.addCloudflareHeaders(&headers, cfg);
+
+    try std.testing.expectEqualStrings("id", headers.cf_access_client_id.?);
+    try std.testing.expectEqualStrings("secret", headers.cf_access_client_secret.?);
+}
+
+test "http client shell keeps timeout tls and retry settings" {
+    const client = http.Client.init(.{
+        .timeout_ms = 30000,
+        .ignore_unsafe_cert = true,
+        .max_retries = 3,
+    });
+
+    try std.testing.expectEqual(@as(u64, 30000), client.timeout_ms);
+    try std.testing.expect(client.ignore_unsafe_cert);
+    try std.testing.expectEqual(@as(u32, 3), client.max_retries);
+    try std.testing.expect(client.shouldRetry(0, error.TemporaryNetworkFailure, null));
+    try std.testing.expect(!client.shouldRetry(3, error.TemporaryNetworkFailure, null));
+    try std.testing.expect(client.shouldRetry(0, null, 500));
+    try std.testing.expect(!client.shouldRetry(0, null, 200));
+}
