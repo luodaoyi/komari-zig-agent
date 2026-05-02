@@ -2,10 +2,16 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const fallback_servers = [_][]const u8{
+    "[2606:4700:4700::1111]:53",
+    "[2606:4700:4700::1001]:53",
+    "[2001:4860:4860::8888]:53",
+    "[2001:4860:4860::8844]:53",
+    "114.114.114.114:53",
     "1.1.1.1:53",
     "8.8.8.8:53",
-    "114.114.114.114:53",
-    "[2606:4700:4700::1111]:53",
+    "8.8.4.4:53",
+    "223.5.5.5:53",
+    "119.29.29.29:53",
 };
 
 pub fn normalizeDnsServer(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
@@ -71,29 +77,34 @@ fn queryServer(allocator: std.mem.Allocator, server: []const u8, host: []const u
     const sock = try std.posix.socket(family, flags, std.posix.IPPROTO.UDP);
     defer std.posix.close(sock);
 
-    const request = try buildQuery(allocator, host, 0x4b5a, 1);
-    defer allocator.free(request);
-    _ = try std.posix.sendto(sock, request, 0, &server_addr.any, server_addr.getOsSockLen());
     var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
-    const ready = try std.posix.poll(&fds, 3000);
-    if (ready == 0) return error.Timeout;
-    var buf: [1500]u8 = undefined;
-    const n = try std.posix.recvfrom(sock, &buf, 0, null, null);
-
     var out: std.ArrayList(std.net.Address) = .empty;
     defer out.deinit(allocator);
-    try parseResponse(allocator, buf[0..n], 0x4b5a, port, &out);
-    if (out.items.len == 0) {
-        const request6 = try buildQuery(allocator, host, 0x4b5b, 28);
-        defer allocator.free(request6);
-        _ = try std.posix.sendto(sock, request6, 0, &server_addr.any, server_addr.getOsSockLen());
-        const ready6 = try std.posix.poll(&fds, 3000);
-        if (ready6 != 0) {
-            const n6 = try std.posix.recvfrom(sock, &buf, 0, null, null);
-            try parseResponse(allocator, buf[0..n6], 0x4b5b, port, &out);
-        }
-    }
+    try queryType(allocator, sock, &server_addr, &fds, host, port, 0x4b5a, 1, &out);
+    try queryType(allocator, sock, &server_addr, &fds, host, port, 0x4b5b, 28, &out);
     return out.toOwnedSlice(allocator);
+}
+
+fn queryType(
+    allocator: std.mem.Allocator,
+    sock: std.posix.socket_t,
+    server_addr: *const std.net.Address,
+    fds: []std.posix.pollfd,
+    host: []const u8,
+    port: u16,
+    id: u16,
+    qtype: u16,
+    out: *std.ArrayList(std.net.Address),
+) !void {
+    const request = try buildQuery(allocator, host, id, qtype);
+    defer allocator.free(request);
+    _ = try std.posix.sendto(sock, request, 0, &server_addr.any, server_addr.getOsSockLen());
+    if (fds.len != 0) fds[0].revents = 0;
+    const ready = try std.posix.poll(fds, 3000);
+    if (ready == 0) return;
+    var buf: [1500]u8 = undefined;
+    const n = try std.posix.recvfrom(sock, &buf, 0, null, null);
+    parseResponse(allocator, buf[0..n], id, port, out) catch {};
 }
 
 const HostPort = struct { host: []const u8, port: u16 };
@@ -184,9 +195,40 @@ fn writeU16(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u16) !
 }
 
 fn sortAddresses(addrs: []std.net.Address) void {
-    std.mem.sort(std.net.Address, addrs, {}, struct {
-        fn lessThan(_: void, a: std.net.Address, b: std.net.Address) bool {
-            return a.any.family == std.posix.AF.INET and b.any.family != std.posix.AF.INET;
+    const prefer_v4 = preferIPv4First();
+    std.mem.sort(std.net.Address, addrs, prefer_v4, struct {
+        fn lessThan(prefer: bool, a: std.net.Address, b: std.net.Address) bool {
+            const a_v4 = a.any.family == std.posix.AF.INET;
+            const b_v4 = b.any.family == std.posix.AF.INET;
+            if (a_v4 == b_v4) return false;
+            return if (prefer) a_v4 else !a_v4;
         }
     }.lessThan);
+}
+
+fn preferIPv4First() bool {
+    return switch (builtin.os.tag) {
+        .linux => hasLinuxIPv4Route(),
+        else => true,
+    };
+}
+
+fn hasLinuxIPv4Route() bool {
+    const file = std.fs.cwd().openFile("/proc/net/route", .{}) catch return true;
+    defer file.close();
+    var buf: [8192]u8 = undefined;
+    const n = file.readAll(&buf) catch return true;
+    var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
+    _ = lines.next();
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t\r\n");
+        const iface = fields.next() orelse continue;
+        if (std.mem.eql(u8, iface, "lo")) continue;
+        _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const flags_hex = fields.next() orelse continue;
+        const flags = std.fmt.parseInt(u32, flags_hex, 16) catch continue;
+        if ((flags & 0x1) != 0) return true;
+    }
+    return false;
 }

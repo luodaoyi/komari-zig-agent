@@ -62,6 +62,11 @@ pub const BasicInfo = struct {
     virtualization: []const u8 = "",
 };
 
+pub const LocalIpInfo = struct {
+    ipv4: []const u8 = "",
+    ipv6: []const u8 = "",
+};
+
 pub const Snapshot = struct {
     cpu: CpuInfo = .{},
     ram: MemInfo = .{},

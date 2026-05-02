@@ -40,3 +40,8 @@ pub fn interfaceList(allocator: std.mem.Allocator, include_nics: []const u8, exc
     if (@hasDecl(impl, "interfaceList")) return impl.interfaceList(allocator, include_nics, exclude_nics);
     return allocator.alloc([]const u8, 0);
 }
+
+pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
+    if (@hasDecl(impl, "localIpFromInterfaces")) return impl.localIpFromInterfaces(allocator, include_nics, exclude_nics);
+    return .{ .ipv4 = "", .ipv6 = "" };
+}

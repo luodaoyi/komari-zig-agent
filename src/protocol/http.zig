@@ -42,17 +42,23 @@ pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const 
 }
 
 pub fn postJsonRead(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) ![]u8 {
+    return postJsonReadAuth(allocator, url, payload, cfg, "");
+}
+
+pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype, bearer_token: []const u8) ![]u8 {
     const ascii_url = try idna.convertUrlToAscii(allocator, url);
     defer allocator.free(ascii_url);
+    const authorization = if (bearer_token.len == 0) "" else try std.fmt.allocPrint(allocator, "Bearer {s}", .{bearer_token});
+    defer if (bearer_token.len != 0) allocator.free(authorization);
     if (cfg.custom_dns.len != 0 or cfg.ignore_unsafe_cert) {
-        return requestRead(allocator, ascii_url, "POST", payload, "application/json", cfg);
+        return requestReadAuth(allocator, ascii_url, "POST", payload, "application/json", cfg, authorization);
     }
 
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
-    var extra: [2]std.http.Header = undefined;
-    const extra_headers = cloudflareHeaders(cfg, &extra);
+    var extra: [3]std.http.Header = undefined;
+    const extra_headers = postHeaders(cfg, authorization, &extra);
 
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
@@ -173,6 +179,21 @@ pub fn cloudflareHeaders(cfg: anytype, out: *[2]std.http.Header) []const std.htt
     return out[0..2];
 }
 
+fn postHeaders(cfg: anytype, authorization: []const u8, out: *[3]std.http.Header) []const std.http.Header {
+    var len: usize = 0;
+    if (authorization.len != 0) {
+        out[len] = .{ .name = "Authorization", .value = authorization };
+        len += 1;
+    }
+    if (cfg.cf_access_client_id.len != 0 and cfg.cf_access_client_secret.len != 0) {
+        out[len] = .{ .name = "CF-Access-Client-Id", .value = cfg.cf_access_client_id };
+        len += 1;
+        out[len] = .{ .name = "CF-Access-Client-Secret", .value = cfg.cf_access_client_secret };
+        len += 1;
+    }
+    return out[0..len];
+}
+
 fn wsEndpoint(allocator: std.mem.Allocator, endpoint: []const u8) ![]const u8 {
     if (std.mem.startsWith(u8, endpoint, "https://")) {
         return std.fmt.allocPrint(allocator, "wss://{s}", .{endpoint["https://".len..]});
@@ -214,10 +235,18 @@ fn proxyFromEnv() ?[]const u8 {
 }
 
 fn requestRead(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype) ![]u8 {
-    return requestReadWithFamily(allocator, url, method, payload, content_type, cfg, .any, "komari-zig-agent");
+    return requestReadAuth(allocator, url, method, payload, content_type, cfg, "");
+}
+
+fn requestReadAuth(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, authorization: []const u8) ![]u8 {
+    return requestReadWithFamilyAuth(allocator, url, method, payload, content_type, cfg, .any, "komari-zig-agent", authorization);
 }
 
 fn requestReadWithFamily(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8) ![]u8 {
+    return requestReadWithFamilyAuth(allocator, url, method, payload, content_type, cfg, family, user_agent, "");
+}
+
+fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8, authorization: []const u8) ![]u8 {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -245,6 +274,7 @@ fn requestReadWithFamily(allocator: std.mem.Allocator, url: []const u8, method: 
         }
         var cf: [2]std.http.Header = undefined;
         for (cloudflareHeaders(cfg, &cf)) |header| try req.writer.print("{s}: {s}\r\n", .{ header.name, header.value });
+        if (authorization.len != 0) try req.writer.print("Authorization: {s}\r\n", .{authorization});
         try req.writer.writeAll("\r\n");
         if (payload.len != 0) try req.writer.writeAll(payload);
         const request = try req.toOwnedSlice();

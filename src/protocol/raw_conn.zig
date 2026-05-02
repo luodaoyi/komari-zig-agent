@@ -46,55 +46,65 @@ pub const RawConn = struct {
         var last_err: ?anyerror = null;
         for (addrs) |addr| {
             if (!familyMatches(addr, family)) continue;
-            const stream = connectAddress(addr) catch |err| {
+            return connectResolved(allocator, addr, host, use_tls, ignore_unsafe_cert) catch |err| {
                 last_err = err;
                 continue;
             };
-            errdefer stream.close();
-            const raw = try allocator.create(RawConn);
-            errdefer allocator.destroy(raw);
-            raw.* = .{
-                .allocator = allocator,
-                .stream = stream,
-                .stream_reader = undefined,
-                .stream_writer = undefined,
-            };
-            raw.stream_reader = raw.stream.reader(raw.socket_read_buf[0..]);
-            raw.stream_writer = raw.stream.writer(raw.socket_write_buf[0..]);
-            if (use_tls) {
-                if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
-                if (ignore_unsafe_cert) {
-                    raw.tls_client = std.crypto.tls.Client.init(
-                        raw.stream_reader.interface(),
-                        &raw.stream_writer.interface,
-                        .{
-                            .host = .{ .explicit = host },
-                            .ca = .{ .no_verification = {} },
-                            .read_buffer = raw.tls_read_buf[0..],
-                            .write_buffer = raw.tls_write_buf[0..],
-                            .allow_truncation_attacks = true,
-                        },
-                    ) catch return error.TlsInitializationFailed;
-                } else {
-                    raw.ca_bundle = .{};
-                    try raw.ca_bundle.rescan(allocator);
-                    raw.verify_ca = true;
-                    raw.tls_client = std.crypto.tls.Client.init(
-                        raw.stream_reader.interface(),
-                        &raw.stream_writer.interface,
-                        .{
-                            .host = .{ .explicit = host },
-                            .ca = .{ .bundle = raw.ca_bundle },
-                            .read_buffer = raw.tls_read_buf[0..],
-                            .write_buffer = raw.tls_write_buf[0..],
-                            .allow_truncation_attacks = true,
-                        },
-                    ) catch return error.TlsInitializationFailed;
-                }
-            }
-            return raw;
         }
         return last_err orelse error.ConnectFailed;
+    }
+
+    pub fn connectResolved(
+        allocator: std.mem.Allocator,
+        addr: std.net.Address,
+        tls_host: []const u8,
+        use_tls: bool,
+        ignore_unsafe_cert: bool,
+    ) !*RawConn {
+        const stream = try connectStreamAddress(addr);
+        errdefer stream.close();
+        const raw = try allocator.create(RawConn);
+        errdefer allocator.destroy(raw);
+        raw.* = .{
+            .allocator = allocator,
+            .stream = stream,
+            .stream_reader = undefined,
+            .stream_writer = undefined,
+        };
+        raw.stream_reader = raw.stream.reader(raw.socket_read_buf[0..]);
+        raw.stream_writer = raw.stream.writer(raw.socket_write_buf[0..]);
+        if (use_tls) {
+            if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
+            if (ignore_unsafe_cert) {
+                raw.tls_client = std.crypto.tls.Client.init(
+                    raw.stream_reader.interface(),
+                    &raw.stream_writer.interface,
+                    .{
+                        .host = .{ .explicit = tls_host },
+                        .ca = .{ .no_verification = {} },
+                        .read_buffer = raw.tls_read_buf[0..],
+                        .write_buffer = raw.tls_write_buf[0..],
+                        .allow_truncation_attacks = true,
+                    },
+                ) catch return error.TlsInitializationFailed;
+            } else {
+                raw.ca_bundle = .{};
+                try raw.ca_bundle.rescan(allocator);
+                raw.verify_ca = true;
+                raw.tls_client = std.crypto.tls.Client.init(
+                    raw.stream_reader.interface(),
+                    &raw.stream_writer.interface,
+                    .{
+                        .host = .{ .explicit = tls_host },
+                        .ca = .{ .bundle = raw.ca_bundle },
+                        .read_buffer = raw.tls_read_buf[0..],
+                        .write_buffer = raw.tls_write_buf[0..],
+                        .allow_truncation_attacks = true,
+                    },
+                ) catch return error.TlsInitializationFailed;
+            }
+        }
+        return raw;
     }
 
     pub fn close(self: *RawConn) void {
@@ -128,7 +138,7 @@ fn familyMatches(addr: std.net.Address, family: AddressFamily) bool {
     };
 }
 
-fn connectAddress(addr: std.net.Address) !std.net.Stream {
+fn connectStreamAddress(addr: std.net.Address) !std.net.Stream {
     const flags = std.posix.SOCK.STREAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
     const sock = try std.posix.socket(addr.any.family, flags, std.posix.IPPROTO.TCP);
     errdefer std.posix.close(sock);

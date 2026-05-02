@@ -163,7 +163,20 @@ pub fn parseUrl(url: []const u8) !Target {
     const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return error.InvalidWebSocketUrl;
     const hostport = rest[0..slash];
     const path = rest[slash..];
+    if (std.mem.startsWith(u8, hostport, "[")) {
+        const close = std.mem.indexOfScalar(u8, hostport, ']') orelse return error.InvalidWebSocketUrl;
+        const host = hostport[1..close];
+        if (close + 1 < hostport.len) {
+            if (hostport[close + 1] != ':') return error.InvalidWebSocketUrl;
+            const port = try std.fmt.parseInt(u16, hostport[close + 2 ..], 10);
+            return .{ .host = host, .port = port, .path = path, .tls = prefix[1] == 's' };
+        }
+        return .{ .host = host, .port = if (prefix[1] == 's') 443 else 80, .path = path, .tls = prefix[1] == 's' };
+    }
     if (std.mem.lastIndexOfScalar(u8, hostport, ':')) |idx| {
+        if (std.mem.indexOfScalar(u8, hostport[0..idx], ':') != null) {
+            return .{ .host = hostport, .port = if (prefix[1] == 's') 443 else 80, .path = path, .tls = prefix[1] == 's' };
+        }
         const port = try std.fmt.parseInt(u16, hostport[idx + 1 ..], 10);
         return .{ .host = hostport[0..idx], .port = port, .path = path, .tls = prefix[1] == 's' };
     }

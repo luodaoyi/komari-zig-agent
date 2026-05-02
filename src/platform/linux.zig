@@ -49,7 +49,7 @@ pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
         .connections = try connectionsInfo(options.host_proc),
         .uptime = try uptime(options.host_proc),
         .process = try processCount(options.host_proc),
-        .gpu_json = if (options.enable_gpu) detailedGpuJson(std.heap.page_allocator) catch "" else "",
+        .gpu_json = if (options.enable_gpu) gpuReportJson(std.heap.page_allocator) catch "" else "",
     };
 }
 
@@ -451,6 +451,62 @@ fn detailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
     return error.NoGpuDetails;
 }
 
+fn gpuReportJson(allocator: std.mem.Allocator) ![]const u8 {
+    return detailedGpuJson(allocator) catch modelGpuJson(allocator);
+}
+
+fn modelGpuJson(allocator: std.mem.Allocator) ![]const u8 {
+    var models: std.ArrayList(u8) = .empty;
+    defer models.deinit(allocator);
+    try models.append(allocator, '[');
+    var count: usize = 0;
+    if (nvidiaGpuModels(allocator, &models, &count)) {} else |_| {}
+    if (count == 0) {
+        if (amdGpuModels(allocator, &models, &count)) {} else |_| {}
+    }
+    if (count == 0) {
+        const name = try gpuName(allocator);
+        defer allocator.free(name);
+        if (!std.mem.eql(u8, name, "None")) {
+            try models.writer(allocator).print("{f}", .{std.json.fmt(name, .{})});
+            count = 1;
+        }
+    }
+    try models.append(allocator, ']');
+    if (count == 0) return error.NoGpuModels;
+    return std.fmt.allocPrint(allocator, "{{\"models\":{s}}}", .{models.items});
+}
+
+fn nvidiaGpuModels(allocator: std.mem.Allocator, models: *std.ArrayList(u8), count: *usize) !void {
+    const output = try commandOutput(allocator, &.{ "nvidia-smi", "--query-gpu=name", "--format=csv,noheader" });
+    defer allocator.free(output);
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw| {
+        const name = std.mem.trim(u8, raw, " \t\r");
+        if (name.len == 0) continue;
+        if (count.* != 0) try models.append(allocator, ',');
+        try models.writer(allocator).print("{f}", .{std.json.fmt(name, .{})});
+        count.* += 1;
+    }
+}
+
+fn amdGpuModels(allocator: std.mem.Allocator, models: *std.ArrayList(u8), count: *usize) !void {
+    const output = commandOutput(allocator, &.{ "/opt/rocm/bin/rocm-smi", "--showallinfo", "--json" }) catch try commandOutput(allocator, &.{ "rocm-smi", "--showallinfo", "--json" });
+    defer allocator.free(output);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, output, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    var it = parsed.value.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* != .object) continue;
+        const obj = entry.value_ptr.object;
+        const name = jsonString(obj.get("Card series")) orelse jsonString(obj.get("Card model")) orelse entry.key_ptr.*;
+        if (count.* != 0) try models.append(allocator, ',');
+        try models.writer(allocator).print("{f}", .{std.json.fmt(name, .{})});
+        count.* += 1;
+    }
+}
+
 fn nvidiaDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
     const output = try commandOutput(allocator, &.{ "nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits" });
     defer allocator.free(output);
@@ -540,25 +596,38 @@ fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8
 }
 
 fn fillLocalIp(allocator: std.mem.Allocator, info: *common.BasicInfo) !void {
-    const output = commandOutput(allocator, &.{ "ip", "-o", "addr", "show", "scope", "global" }) catch return;
+    const local = try localIpFromInterfaces(allocator, "", "");
+    info.ipv4 = local.ipv4;
+    info.ipv6 = local.ipv6;
+}
+
+pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
+    const output = commandOutput(allocator, &.{ "ip", "-o", "addr", "show", "scope", "global" }) catch return .{ .ipv4 = "", .ipv6 = "" };
     defer allocator.free(output);
 
+    var ipv4: []const u8 = "";
+    var ipv6: []const u8 = "";
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t");
+        _ = fields.next() orelse continue;
+        const name_raw = fields.next() orelse continue;
+        const name = std.mem.trimRight(u8, name_raw, ":");
+        if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
         while (fields.next()) |field| {
             if (std.mem.eql(u8, field, "inet")) {
                 if (fields.next()) |cidr| {
-                    if (info.ipv4.len == 0) info.ipv4 = try stripCidr(allocator, cidr);
+                    if (ipv4.len == 0) ipv4 = try stripCidr(allocator, cidr);
                 }
             } else if (std.mem.eql(u8, field, "inet6")) {
                 if (fields.next()) |cidr| {
-                    if (info.ipv6.len == 0 and std.mem.indexOf(u8, cidr, "fe80:") == null) info.ipv6 = try stripCidr(allocator, cidr);
+                    if (ipv6.len == 0 and std.mem.indexOf(u8, cidr, "fe80:") == null) ipv6 = try stripCidr(allocator, cidr);
                 }
             }
-            if (info.ipv4.len != 0 and info.ipv6.len != 0) return;
+            if (ipv4.len != 0 and ipv6.len != 0) return .{ .ipv4 = ipv4, .ipv6 = ipv6 };
         }
     }
+    return .{ .ipv4 = ipv4, .ipv6 = ipv6 };
 }
 
 fn stripCidr(allocator: std.mem.Allocator, cidr: []const u8) ![]const u8 {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const config = @import("../config.zig");
 const http = @import("http.zig");
@@ -53,18 +54,57 @@ pub fn allocRegisterRequest(allocator: std.mem.Allocator, key: []const u8) ![]co
 }
 
 pub fn register(allocator: std.mem.Allocator, cfg: *config.Config) !void {
-    const hostname_owned = std.process.getEnvVarOwned(allocator, "HOSTNAME") catch try allocator.dupe(u8, "komari-agent");
+    const hostname_owned = try systemHostname(allocator);
     defer allocator.free(hostname_owned);
     const hostname = hostname_owned;
     const url = try http.registerUrl(allocator, cfg.endpoint, hostname);
     defer allocator.free(url);
     const payload = try allocRegisterRequest(allocator, cfg.auto_discovery_key);
     defer allocator.free(payload);
-    const response = try http.postJsonRead(allocator, url, payload, cfg.*);
+    const response = try http.postJsonReadAuth(allocator, url, payload, cfg.*, cfg.auto_discovery_key);
     defer allocator.free(response);
     const parsed = try parseRegisterResponse(allocator, response);
     try save(allocator, parsed);
     cfg.token = parsed.token;
+}
+
+pub fn systemHostname(allocator: std.mem.Allocator) ![]u8 {
+    if (try posixHostname(allocator)) |hostname| return hostname;
+    if (std.process.getEnvVarOwned(allocator, "HOSTNAME")) |hostname| {
+        if (std.mem.trim(u8, hostname, " \t\r\n").len != 0) return hostname;
+        allocator.free(hostname);
+    } else |_| {}
+    if (readTrimmedFile(allocator, "/etc/hostname")) |hostname| return hostname else |_| {}
+    return allocator.dupe(u8, "komari-agent");
+}
+
+fn posixHostname(allocator: std.mem.Allocator) !?[]u8 {
+    switch (builtin.os.tag) {
+        .linux => return posixHostnameImpl(allocator),
+        .macos, .freebsd => {
+            if (comptime builtin.link_libc) return posixHostnameImpl(allocator);
+            return null;
+        },
+        else => return null,
+    }
+}
+
+fn posixHostnameImpl(allocator: std.mem.Allocator) !?[]u8 {
+    var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    const raw = std.posix.gethostname(&buf) catch return null;
+    const hostname = std.mem.trim(u8, raw, " \t\r\n");
+    if (hostname.len == 0) return null;
+    return try allocator.dupe(u8, hostname);
+}
+
+fn readTrimmedFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 4096);
+    errdefer allocator.free(bytes);
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    if (trimmed.len == bytes.len) return bytes;
+    const out = try allocator.dupe(u8, trimmed);
+    allocator.free(bytes);
+    return out;
 }
 
 pub fn parseRegisterResponse(allocator: std.mem.Allocator, bytes: []const u8) !AutoDiscoveryConfig {

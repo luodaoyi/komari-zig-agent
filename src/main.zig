@@ -152,9 +152,12 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
 
 fn applyIpConfig(allocator: std.mem.Allocator, cfg: config.Config, info: *common.BasicInfo) !void {
     if (cfg.get_ip_addr_from_nic) {
-        if (cfg.custom_ipv4.len != 0) info.ipv4 = cfg.custom_ipv4;
-        if (cfg.custom_ipv6.len != 0) info.ipv6 = cfg.custom_ipv6;
-        return;
+        const local = try provider.localIpFromInterfaces(allocator, cfg.include_nics, cfg.exclude_nics);
+        if (local.ipv4.len != 0 or local.ipv6.len != 0) {
+            info.ipv4 = local.ipv4;
+            info.ipv6 = local.ipv6;
+            return;
+        }
     }
 
     info.ipv4 = if (cfg.custom_ipv4.len != 0) cfg.custom_ipv4 else try ip.getIPv4Address(allocator, cfg);

@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const builtin = @import("builtin");
 const dns = @import("dns");
+const raw_conn = @import("raw_conn.zig");
 
 pub const TcpTarget = struct {
     host: []const u8,
@@ -213,41 +214,32 @@ fn parseHostOnly(target: []const u8) []const u8 {
 }
 
 fn httpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const u8) !i64 {
-    if (custom_dns.len != 0 and (std.mem.startsWith(u8, target, "http://") or std.mem.indexOf(u8, target, "://") == null)) {
-        return httpPingPlainWithDns(allocator, target, custom_dns);
-    }
-    return httpPingStd(allocator, target);
-}
-
-fn httpPingPlainWithDns(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const u8) !i64 {
     const url = try normalizeHttpTarget(allocator, target);
     defer allocator.free(url);
     const uri = try std.Uri.parse(url);
     const host_component = uri.host orelse return error.InvalidUrl;
-    const host = switch (host_component) {
+    const host_raw = switch (host_component) {
         .raw => |raw| raw,
         .percent_encoded => |raw| raw,
     };
-    const port = uri.port orelse 80;
+    const host = std.mem.trim(u8, host_raw, "[]");
+    const use_tls = std.mem.eql(u8, uri.scheme, "https");
+    const port: u16 = uri.port orelse if (use_tls) @as(u16, 443) else @as(u16, 80);
     const addrs = try dns.resolveHost(allocator, host, port, custom_dns);
     defer allocator.free(addrs);
-    const path = uri.path.percent_encoded;
+    const path = try uriPathQuery(allocator, uri);
+    defer allocator.free(path);
 
     const start = std.time.milliTimestamp();
     for (addrs) |addr| {
-        const sock_flags = std.posix.SOCK.STREAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
-        const sock = std.posix.socket(addr.any.family, sock_flags, std.posix.IPPROTO.TCP) catch continue;
-        std.posix.connect(sock, &addr.any, addr.getOsSockLen()) catch {
-            std.posix.close(sock);
-            continue;
-        };
-        defer std.posix.close(sock);
-        var stream = std.net.Stream{ .handle = sock };
-        const request = try std.fmt.allocPrint(allocator, "GET {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n\r\n", .{ if (path.len == 0) "/" else path, host });
+        var conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, false) catch continue;
+        defer conn.close();
+        const request = try std.fmt.allocPrint(allocator, "GET {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n\r\n", .{ path, host_raw });
         defer allocator.free(request);
-        try stream.writeAll(request);
+        try conn.writer().writeAll(request);
+        try conn.flush();
         var buf: [64]u8 = undefined;
-        const n = try stream.read(&buf);
+        const n = try conn.reader().readSliceShort(&buf);
         const elapsed = std.time.milliTimestamp() - start;
         if (n >= 12 and std.mem.startsWith(u8, buf[0..n], "HTTP/1.") and buf[9] >= '2' and buf[9] <= '3') return elapsed;
         return -1;
@@ -255,20 +247,8 @@ fn httpPingPlainWithDns(allocator: std.mem.Allocator, target: []const u8, custom
     return error.ConnectFailed;
 }
 
-fn httpPingStd(allocator: std.mem.Allocator, target: []const u8) !i64 {
-    const url = try normalizeHttpTarget(allocator, target);
-    defer allocator.free(url);
-
-    const start = std.time.milliTimestamp();
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
-    const result = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .GET,
-        .keep_alive = false,
-    });
-    const code = @intFromEnum(result.status);
-    const elapsed = std.time.milliTimestamp() - start;
-    if (code >= 200 and code < 400) return elapsed;
-    return -1;
+fn uriPathQuery(allocator: std.mem.Allocator, uri: std.Uri) ![]const u8 {
+    const path = if (uri.path.percent_encoded.len == 0) "/" else uri.path.percent_encoded;
+    if (uri.query) |query| return std.fmt.allocPrint(allocator, "{s}?{s}", .{ path, query.percent_encoded });
+    return allocator.dupe(u8, path);
 }
