@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -8,11 +8,11 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-log_info() { echo -e "${NC} $*"; }
-log_success() { echo -e "${GREEN}${NC} $*"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-log_config() { echo -e "${CYAN}[CONFIG]${NC} $*"; }
+log_info() { printf '%b\n' "${NC} $*"; }
+log_success() { printf '%b\n' "${GREEN}${NC} $*"; }
+log_warning() { printf '%b\n' "${YELLOW}[WARNING]${NC} $*"; }
+log_error() { printf '%b\n' "${RED}[ERROR]${NC} $*" >&2; }
+log_config() { printf '%b\n' "${CYAN}[CONFIG]${NC} $*"; }
 
 repo="luodaoyi/komari-zig-agent"
 service_name="komari-agent"
@@ -79,9 +79,9 @@ case "$arch" in
   *) log_error "Unsupported architecture: $arch"; exit 1 ;;
 esac
 
-echo -e "${WHITE}===========================================${NC}"
-echo -e "${WHITE}    Komari Agent Installation Script${NC}"
-echo -e "${WHITE}===========================================${NC}"
+printf '%b\n' "${WHITE}===========================================${NC}"
+printf '%b\n' "${WHITE}    Komari Agent Installation Script${NC}"
+printf '%b\n' "${WHITE}===========================================${NC}"
 log_config "Service name: ${GREEN}$service_name${NC}"
 log_config "Install directory: ${GREEN}$target_dir${NC}"
 log_config "GitHub proxy: ${GREEN}${github_proxy:-"(direct)"}${NC}"
@@ -166,6 +166,21 @@ install_dependencies
 uninstall_previous
 mkdir -p "$target_dir"
 
+download_file() {
+  url="$1"
+  out="$2"
+  attempt=1
+  max_attempts=3
+  while [ "$attempt" -le "$max_attempts" ]; do
+    curl -fL -o "$out" "$url" && return 0
+    rm -f "$out"
+    log_warning "Download failed, retry ${attempt}/${max_attempts}"
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  return 1
+}
+
 asset="komari-agent-${os_name}-${arch}"
 if [ -n "$install_version" ]; then
   release_path="download/${install_version}"
@@ -177,8 +192,16 @@ download_url="https://github.com/${repo}/releases/${release_path}/${asset}"
 
 log_info "Detected OS: ${GREEN}$os_name${NC}, Architecture: ${GREEN}$arch${NC}"
 log_info "Downloading: ${CYAN}$download_url${NC}"
-curl -L -o "$agent_path" "$download_url"
+download_file "$download_url" "$agent_path" || {
+  log_error "Failed to download release asset"
+  exit 1
+}
 chmod +x "$agent_path"
+"$agent_path" --show-warning >/dev/null 2>&1 || {
+  rm -f "$agent_path"
+  log_error "Downloaded binary cannot run on this system"
+  exit 1
+}
 log_success "Installed binary: $agent_path"
 
 init_system="$(detect_init_system)"
@@ -303,7 +326,11 @@ EOF
     service "$service_name" restart
     ;;
   launchd)
-    if [[ "$target_dir" =~ ^/Users/.* ]] || [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    case "$target_dir" in
+      /Users/*) user_launchd=true ;;
+      *) user_launchd=false ;;
+    esac
+    if [ "$user_launchd" = true ] || [ "${EUID:-$(id -u)}" -ne 0 ]; then
       plist_dir="$HOME/Library/LaunchAgents"
       plist_file="$plist_dir/com.komari.${service_name}.plist"
       domain="gui/$(id -u)"
