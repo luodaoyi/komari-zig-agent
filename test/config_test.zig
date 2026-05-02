@@ -89,6 +89,66 @@ test "full go-compatible cli flags parse" {
     try std.testing.expectEqualStrings("agent.json", cfg.config_file);
 }
 
+test "go-style equals cli flags parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{
+        "komari-agent",
+        "--token=tok",
+        "--endpoint=https://panel.example",
+        "--interval=2.5",
+        "--max-retries=8",
+        "--reconnect-interval=13",
+        "--include-nics=eth*",
+        "--exclude-nics=docker*",
+        "--include-mountpoint=/;/data",
+        "--month-rotate=9",
+        "--custom-dns=8.8.8.8",
+        "--config=agent.json",
+    };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+
+    try std.testing.expectEqualStrings("tok", cfg.token);
+    try std.testing.expectEqualStrings("https://panel.example", cfg.endpoint);
+    try std.testing.expectEqual(@as(f64, 2.5), cfg.interval);
+    try std.testing.expectEqual(@as(i32, 8), cfg.max_retries);
+    try std.testing.expectEqual(@as(i32, 13), cfg.reconnect_interval);
+    try std.testing.expectEqualStrings("eth*", cfg.include_nics);
+    try std.testing.expectEqualStrings("docker*", cfg.exclude_nics);
+    try std.testing.expectEqualStrings("/;/data", cfg.include_mountpoints);
+    try std.testing.expectEqual(@as(i32, 9), cfg.month_rotate);
+    try std.testing.expectEqualStrings("8.8.8.8", cfg.custom_dns);
+    try std.testing.expectEqualStrings("agent.json", cfg.config_file);
+}
+
+test "go-style equals bool cli flags parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{
+        "komari-agent",
+        "--disable-auto-update=true",
+        "--disable-web-ssh=true",
+        "--ignore-unsafe-cert=true",
+        "--memory-include-cache=true",
+        "--memory-exclude-bcf=true",
+        "--gpu=true",
+        "--show-warning=true",
+        "--get-ip-addr-from-nic=true",
+    };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+
+    try std.testing.expect(cfg.disable_auto_update);
+    try std.testing.expect(cfg.disable_web_ssh);
+    try std.testing.expect(cfg.ignore_unsafe_cert);
+    try std.testing.expect(cfg.memory_include_cache);
+    try std.testing.expect(cfg.memory_report_raw_used);
+    try std.testing.expect(cfg.enable_gpu);
+    try std.testing.expect(cfg.show_warning);
+    try std.testing.expect(cfg.get_ip_addr_from_nic);
+}
+
 test "list-disk subcommand is recognized" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

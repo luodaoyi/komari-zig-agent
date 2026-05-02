@@ -24,8 +24,7 @@ pub fn load(allocator: std.mem.Allocator) !?AutoDiscoveryConfig {
         else => return err,
     };
     defer allocator.free(bytes);
-    const parsed = try std.json.parseFromSliceLeaky(AutoDiscoveryConfig, allocator, bytes, .{ .ignore_unknown_fields = true });
-    return parsed;
+    return parseStoredConfig(allocator, bytes);
 }
 
 pub fn save(allocator: std.mem.Allocator, value: AutoDiscoveryConfig) !void {
@@ -39,11 +38,17 @@ pub fn save(allocator: std.mem.Allocator, value: AutoDiscoveryConfig) !void {
 
 pub fn applyExistingToken(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     if (cfg.auto_discovery_key.len == 0) return;
-    if (try load(allocator)) |stored| {
+    if (load(allocator) catch null) |stored| {
         cfg.token = stored.token;
         return;
     }
     try register(allocator, cfg);
+}
+
+pub fn parseStoredConfig(allocator: std.mem.Allocator, bytes: []const u8) !?AutoDiscoveryConfig {
+    const parsed = std.json.parseFromSliceLeaky(AutoDiscoveryConfig, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return null;
+    if (parsed.token.len == 0) return null;
+    return parsed;
 }
 
 pub fn allocRegisterRequest(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {

@@ -68,3 +68,32 @@ test "http client shell keeps timeout tls and retry settings" {
     try std.testing.expect(client.shouldRetry(0, null, 500));
     try std.testing.expect(!client.shouldRetry(0, null, 200));
 }
+
+test "proxy environment follows request scheme" {
+    try std.testing.expectEqualStrings(
+        "http://http-proxy.example:8080",
+        http.proxyEnvForScheme("http", .{
+            .http_proxy = "http://http-proxy.example:8080",
+            .https_proxy = "http://https-proxy.example:8443",
+        }).?,
+    );
+    try std.testing.expectEqualStrings(
+        "http://https-proxy.example:8443",
+        http.proxyEnvForScheme("https", .{
+            .http_proxy = "http://http-proxy.example:8080",
+            .https_proxy = "http://https-proxy.example:8443",
+        }).?,
+    );
+}
+
+test "proxy environment accepts lowercase and all proxy fallback" {
+    try std.testing.expectEqualStrings(
+        "http://lower-proxy.example:8080",
+        http.proxyEnvForScheme("http", .{ .http_proxy_lower = "http://lower-proxy.example:8080" }).?,
+    );
+    try std.testing.expectEqualStrings(
+        "http://all-proxy.example:8080",
+        http.proxyEnvForScheme("https", .{ .all_proxy = "http://all-proxy.example:8080" }).?,
+    );
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForScheme("https", .{}));
+}

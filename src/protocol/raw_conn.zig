@@ -64,6 +64,16 @@ pub const RawConn = struct {
     ) !*RawConn {
         const stream = try connectStreamAddress(addr);
         errdefer stream.close();
+        return fromStream(allocator, stream, tls_host, use_tls, ignore_unsafe_cert);
+    }
+
+    pub fn fromStream(
+        allocator: std.mem.Allocator,
+        stream: std.net.Stream,
+        tls_host: []const u8,
+        use_tls: bool,
+        ignore_unsafe_cert: bool,
+    ) !*RawConn {
         const raw = try allocator.create(RawConn);
         errdefer allocator.destroy(raw);
         raw.* = .{
@@ -74,38 +84,41 @@ pub const RawConn = struct {
         };
         raw.stream_reader = raw.stream.reader(raw.socket_read_buf[0..]);
         raw.stream_writer = raw.stream.writer(raw.socket_write_buf[0..]);
-        if (use_tls) {
-            if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
-            if (ignore_unsafe_cert) {
-                raw.tls_client = std.crypto.tls.Client.init(
-                    raw.stream_reader.interface(),
-                    &raw.stream_writer.interface,
-                    .{
-                        .host = .{ .explicit = tls_host },
-                        .ca = .{ .no_verification = {} },
-                        .read_buffer = raw.tls_read_buf[0..],
-                        .write_buffer = raw.tls_write_buf[0..],
-                        .allow_truncation_attacks = true,
-                    },
-                ) catch return error.TlsInitializationFailed;
-            } else {
-                raw.ca_bundle = .{};
-                try raw.ca_bundle.rescan(allocator);
-                raw.verify_ca = true;
-                raw.tls_client = std.crypto.tls.Client.init(
-                    raw.stream_reader.interface(),
-                    &raw.stream_writer.interface,
-                    .{
-                        .host = .{ .explicit = tls_host },
-                        .ca = .{ .bundle = raw.ca_bundle },
-                        .read_buffer = raw.tls_read_buf[0..],
-                        .write_buffer = raw.tls_write_buf[0..],
-                        .allow_truncation_attacks = true,
-                    },
-                ) catch return error.TlsInitializationFailed;
-            }
-        }
+        if (use_tls) try raw.startTls(tls_host, ignore_unsafe_cert);
         return raw;
+    }
+
+    pub fn startTls(self: *RawConn, tls_host: []const u8, ignore_unsafe_cert: bool) !void {
+        if (self.tls_client != null) return error.TlsAlreadyStarted;
+        if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
+        if (ignore_unsafe_cert) {
+            self.tls_client = std.crypto.tls.Client.init(
+                self.stream_reader.interface(),
+                &self.stream_writer.interface,
+                .{
+                    .host = .{ .explicit = tls_host },
+                    .ca = .{ .no_verification = {} },
+                    .read_buffer = self.tls_read_buf[0..],
+                    .write_buffer = self.tls_write_buf[0..],
+                    .allow_truncation_attacks = true,
+                },
+            ) catch return error.TlsInitializationFailed;
+        } else {
+            self.ca_bundle = .{};
+            try self.ca_bundle.rescan(self.allocator);
+            self.verify_ca = true;
+            self.tls_client = std.crypto.tls.Client.init(
+                self.stream_reader.interface(),
+                &self.stream_writer.interface,
+                .{
+                    .host = .{ .explicit = tls_host },
+                    .ca = .{ .bundle = self.ca_bundle },
+                    .read_buffer = self.tls_read_buf[0..],
+                    .write_buffer = self.tls_write_buf[0..],
+                    .allow_truncation_attacks = true,
+                },
+            ) catch return error.TlsInitializationFailed;
+        }
     }
 
     pub fn shutdown(self: *RawConn) void {

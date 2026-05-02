@@ -19,6 +19,7 @@ pub const Client = struct {
     http_client: ?std.http.Client = null,
     request: ?std.http.Client.Request = null,
     raw: ?*raw_conn.RawConn = null,
+    proxy_arena: ?std.heap.ArenaAllocator = null,
     write_mutex: std.Thread.Mutex = .{},
     refs: std.atomic.Value(usize) = std.atomic.Value(usize).init(1),
     closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -50,6 +51,7 @@ pub const Client = struct {
             request.deinit();
         }
         if (self.http_client) |*client| client.deinit();
+        if (self.proxy_arena) |*arena| arena.deinit();
         if (self.raw) |raw| raw.close();
         allocator.destroy(self);
     }
@@ -123,6 +125,9 @@ pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cl
     const uri = try std.Uri.parse(ascii_url);
     var http_client = std.http.Client{ .allocator = allocator };
     errdefer http_client.deinit();
+    var proxy_arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer proxy_arena.deinit();
+    try http_client.initDefaultProxies(proxy_arena.allocator());
 
     const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
     var extra: [6]std.http.Header = undefined;
@@ -153,21 +158,26 @@ pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cl
     client.* = .{
         .http_client = http_client,
         .request = req,
+        .proxy_arena = proxy_arena,
     };
     return client;
 }
 
 fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
     const target = try parseUrl(url);
-    const raw = try raw_conn.RawConn.connect(allocator, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns);
-    errdefer raw.close();
+    const scheme = if (target.tls) "wss" else "ws";
+    const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any);
+    errdefer raw_http.close(allocator);
+    const raw = raw_http.conn;
     const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
     var req = std.Io.Writer.Allocating.init(allocator);
     defer req.deinit();
+    const request_target = if (raw_http.proxied_plain) url else target.path;
     try req.writer.print(
         "GET {s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\nUser-Agent: komari-zig-agent\r\n",
-        .{ target.path, target.host, nonce },
+        .{ request_target, target.host, nonce },
     );
+    if (raw_http.proxy_authorization) |authorization| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization});
     var cf: [2]std.http.Header = undefined;
     for (http.cloudflareHeaders(cfg, &cf)) |header| try req.writer.print("{s}: {s}\r\n", .{ header.name, header.value });
     try req.writer.writeAll("\r\n");
@@ -179,6 +189,7 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     if (code != 101) return error.WebSocketHandshakeFailed;
     const client = try allocator.create(Client);
     client.* = .{ .raw = raw };
+    if (raw_http.proxy_authorization) |authorization| allocator.free(authorization);
     return client;
 }
 

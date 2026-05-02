@@ -8,6 +8,17 @@ test "release versions compare with or without v prefix" {
     try std.testing.expect(!update.newerThan("v0.2.1", "v0.2.0"));
 }
 
+test "stable release updates same numeric prerelease" {
+    try std.testing.expect(update.newerThan("v0.1.4-webssh2", "v0.1.4"));
+    try std.testing.expect(update.newerThan("0.1.4-rc1", "0.1.4"));
+    try std.testing.expect(!update.newerThan("0.1.4", "0.1.4-rc1"));
+}
+
+test "build metadata does not affect release ordering" {
+    try std.testing.expect(!update.newerThan("v0.1.6+local", "v0.1.6"));
+    try std.testing.expect(update.newerThan("v0.1.6+local", "v0.1.7"));
+}
+
 test "self update asset name matches release assets" {
     const name = try update.assetName(std.testing.allocator);
     defer std.testing.allocator.free(name);

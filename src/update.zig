@@ -249,8 +249,10 @@ fn findAssetUrl(object: std.json.ObjectMap, wanted: []const u8) ?[]const u8 {
 }
 
 fn compareVersion(a_raw: []const u8, b_raw: []const u8) i32 {
-    var ait = std.mem.splitScalar(u8, a_raw, '.');
-    var bit = std.mem.splitScalar(u8, b_raw, '.');
+    const a_no_build = stripBuildMetadata(a_raw);
+    const b_no_build = stripBuildMetadata(b_raw);
+    var ait = std.mem.splitScalar(u8, a_no_build, '.');
+    var bit = std.mem.splitScalar(u8, b_no_build, '.');
     var i: usize = 0;
     while (i < 3) : (i += 1) {
         const av = parseVersionPart(ait.next() orelse "0");
@@ -258,7 +260,60 @@ fn compareVersion(a_raw: []const u8, b_raw: []const u8) i32 {
         if (av > bv) return 1;
         if (av < bv) return -1;
     }
-    return 0;
+    return comparePrerelease(prereleasePart(a_no_build), prereleasePart(b_no_build));
+}
+
+fn stripBuildMetadata(value: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, value, '+') orelse value.len;
+    return value[0..end];
+}
+
+fn prereleasePart(value: []const u8) []const u8 {
+    const idx = std.mem.indexOfScalar(u8, value, '-') orelse return "";
+    return value[idx + 1 ..];
+}
+
+fn comparePrerelease(a: []const u8, b: []const u8) i32 {
+    if (a.len == 0 and b.len == 0) return 0;
+    if (a.len == 0) return 1;
+    if (b.len == 0) return -1;
+    var ait = std.mem.splitScalar(u8, a, '.');
+    var bit = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const av = ait.next();
+        const bv = bit.next();
+        if (av == null and bv == null) return 0;
+        if (av == null) return -1;
+        if (bv == null) return 1;
+        const cmp = comparePrereleaseIdentifier(av.?, bv.?);
+        if (cmp != 0) return cmp;
+    }
+}
+
+fn comparePrereleaseIdentifier(a: []const u8, b: []const u8) i32 {
+    const ai = parseNumericIdentifier(a);
+    const bi = parseNumericIdentifier(b);
+    if (ai) |an| {
+        if (bi) |bn| {
+            if (an > bn) return 1;
+            if (an < bn) return -1;
+            return 0;
+        }
+        return -1;
+    }
+    if (bi != null) return 1;
+    const order = std.mem.order(u8, a, b);
+    return switch (order) {
+        .lt => -1,
+        .eq => 0,
+        .gt => 1,
+    };
+}
+
+fn parseNumericIdentifier(value: []const u8) ?u64 {
+    if (value.len == 0) return null;
+    for (value) |c| if (c < '0' or c > '9') return null;
+    return std.fmt.parseInt(u64, value, 10) catch null;
 }
 
 fn isNumericVersion(value_raw: []const u8) bool {

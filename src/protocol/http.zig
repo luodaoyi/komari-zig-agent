@@ -24,7 +24,7 @@ pub const Client = struct {
             .timeout_ms = options.timeout_ms,
             .ignore_unsafe_cert = options.ignore_unsafe_cert,
             .max_retries = options.max_retries,
-            .proxy_url = proxyFromEnv(),
+            .proxy_url = null,
         };
     }
 
@@ -33,6 +33,26 @@ pub const Client = struct {
         if (err != null) return true;
         if (status) |code| return code < 200 or code >= 400;
         return false;
+    }
+};
+
+pub const ProxyEnv = struct {
+    http_proxy: ?[]const u8 = null,
+    https_proxy: ?[]const u8 = null,
+    all_proxy: ?[]const u8 = null,
+    http_proxy_lower: ?[]const u8 = null,
+    https_proxy_lower: ?[]const u8 = null,
+    all_proxy_lower: ?[]const u8 = null,
+};
+
+pub const RawConnection = struct {
+    conn: *raw_conn.RawConn,
+    proxied_plain: bool = false,
+    proxy_authorization: ?[]const u8 = null,
+
+    pub fn close(self: RawConnection, allocator: std.mem.Allocator) void {
+        if (self.proxy_authorization) |value| allocator.free(value);
+        self.conn.close();
     }
 };
 
@@ -56,6 +76,9 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
 
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
+    var proxy_arena = std.heap.ArenaAllocator.init(allocator);
+    defer proxy_arena.deinit();
+    try client.initDefaultProxies(proxy_arena.allocator());
 
     var extra: [3]std.http.Header = undefined;
     const extra_headers = postHeaders(cfg, authorization, &extra);
@@ -96,6 +119,9 @@ pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
 
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
+    var proxy_arena = std.heap.ArenaAllocator.init(allocator);
+    defer proxy_arena.deinit();
+    try client.initDefaultProxies(proxy_arena.allocator());
     var response_writer = std.Io.Writer.Allocating.init(allocator);
     defer response_writer.deinit();
     const result = try client.fetch(.{
@@ -224,14 +250,46 @@ fn isUnreserved(b: u8) bool {
         b == '-' or b == '_' or b == '.' or b == '~';
 }
 
-fn proxyFromEnv() ?[]const u8 {
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "HTTPS_PROXY")) |value| {
-        return value;
-    } else |_| {}
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "HTTP_PROXY")) |value| {
-        return value;
-    } else |_| {}
+pub fn proxyEnvForScheme(scheme: []const u8, env: ProxyEnv) ?[]const u8 {
+    if (std.ascii.eqlIgnoreCase(scheme, "https") or std.ascii.eqlIgnoreCase(scheme, "wss")) {
+        return firstNonEmpty(&.{ env.https_proxy, env.https_proxy_lower, env.all_proxy, env.all_proxy_lower });
+    }
+    if (std.ascii.eqlIgnoreCase(scheme, "http") or std.ascii.eqlIgnoreCase(scheme, "ws")) {
+        return firstNonEmpty(&.{ env.http_proxy, env.http_proxy_lower, env.all_proxy, env.all_proxy_lower });
+    }
     return null;
+}
+
+pub fn connectRawHttp(
+    allocator: std.mem.Allocator,
+    scheme: []const u8,
+    host: []const u8,
+    port: u16,
+    use_tls: bool,
+    ignore_unsafe_cert: bool,
+    custom_dns: []const u8,
+    family: raw_conn.AddressFamily,
+) !RawConnection {
+    const proxy_url = try proxyFromProcess(allocator, scheme);
+    defer if (proxy_url) |value| allocator.free(value);
+    if (proxy_url) |value| {
+        const proxy = try parseProxyUrl(allocator, value);
+        defer proxy.deinit(allocator);
+        if (proxy.tls) return error.UnsupportedProxyScheme;
+        var conn = try raw_conn.RawConn.connectWithFamily(allocator, proxy.host, proxy.port, false, false, "", .any);
+        errdefer conn.close();
+        if (use_tls) {
+            try sendConnectTunnel(allocator, conn, host, port, proxy.authorization);
+            try conn.startTls(host, ignore_unsafe_cert);
+            return .{ .conn = conn };
+        }
+        const authorization = if (proxy.authorization) |auth| try allocator.dupe(u8, auth) else null;
+        errdefer if (authorization) |auth| allocator.free(auth);
+        return .{ .conn = conn, .proxied_plain = true, .proxy_authorization = authorization };
+    }
+    return .{
+        .conn = try raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, family),
+    };
 }
 
 fn requestRead(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype) ![]u8 {
@@ -258,17 +316,20 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        var conn = raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family) catch |err| {
+        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family) catch |err| {
             if (attempt < max_retries) {
                 std.Thread.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
         };
-        defer conn.close();
+        var conn = raw.conn;
+        defer raw.close(allocator);
         var req = std.Io.Writer.Allocating.init(allocator);
         defer req.deinit();
-        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, path, host, user_agent });
+        const request_target = if (raw.proxied_plain) url else path;
+        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, request_target, host, user_agent });
+        if (raw.proxy_authorization) |authorization_value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization_value});
         if (payload.len != 0) {
             try req.writer.print("Content-Type: {s}\r\nContent-Length: {d}\r\n", .{ content_type, payload.len });
         }
@@ -406,4 +467,98 @@ fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {
         i += 1;
     }
     return error.LineTooLong;
+}
+
+const ProxyTarget = struct {
+    host: []const u8,
+    port: u16,
+    tls: bool,
+    authorization: ?[]const u8 = null,
+
+    fn deinit(self: ProxyTarget, allocator: std.mem.Allocator) void {
+        allocator.free(self.host);
+        if (self.authorization) |value| allocator.free(value);
+    }
+};
+
+fn firstNonEmpty(values: []const ?[]const u8) ?[]const u8 {
+    for (values) |value| {
+        if (value) |v| if (v.len != 0) return v;
+    }
+    return null;
+}
+
+fn proxyFromProcess(allocator: std.mem.Allocator, scheme: []const u8) !?[]const u8 {
+    const names: []const []const u8 = if (std.ascii.eqlIgnoreCase(scheme, "https") or std.ascii.eqlIgnoreCase(scheme, "wss"))
+        &.{ "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy" }
+    else if (std.ascii.eqlIgnoreCase(scheme, "http") or std.ascii.eqlIgnoreCase(scheme, "ws"))
+        &.{ "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy" }
+    else
+        return null;
+    for (names) |name| {
+        const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => continue,
+            else => |e| return e,
+        };
+        if (value.len != 0) return value;
+        allocator.free(value);
+    }
+    return null;
+}
+
+fn parseProxyUrl(allocator: std.mem.Allocator, value: []const u8) !ProxyTarget {
+    const with_scheme = if (std.mem.indexOf(u8, value, "://") == null)
+        try std.fmt.allocPrint(allocator, "http://{s}", .{value})
+    else
+        try allocator.dupe(u8, value);
+    defer allocator.free(with_scheme);
+    const uri = try std.Uri.parse(with_scheme);
+    const is_https = std.ascii.eqlIgnoreCase(uri.scheme, "https");
+    if (!is_https and !std.ascii.eqlIgnoreCase(uri.scheme, "http")) return error.UnsupportedProxyScheme;
+    const host = try uri.getHostAlloc(allocator);
+    errdefer allocator.free(host);
+    const authorization = try basicProxyAuthorization(allocator, uri);
+    errdefer if (authorization) |auth| allocator.free(auth);
+    return .{
+        .host = host,
+        .port = uri.port orelse if (is_https) 443 else 80,
+        .tls = is_https,
+        .authorization = authorization,
+    };
+}
+
+fn basicProxyAuthorization(allocator: std.mem.Allocator, uri: std.Uri) !?[]const u8 {
+    if (uri.user == null and uri.password == null) return null;
+    const user = componentText(uri.user) orelse "";
+    const password = componentText(uri.password) orelse "";
+    const raw = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ user, password });
+    defer allocator.free(raw);
+    const encoded_len = std.base64.standard.Encoder.calcSize(raw.len);
+    const out = try allocator.alloc(u8, "Basic ".len + encoded_len);
+    @memcpy(out[0.."Basic ".len], "Basic ");
+    _ = std.base64.standard.Encoder.encode(out["Basic ".len..], raw);
+    return out;
+}
+
+fn componentText(component: ?std.Uri.Component) ?[]const u8 {
+    const c = component orelse return null;
+    return switch (c) {
+        .raw => |value| value,
+        .percent_encoded => |value| value,
+    };
+}
+
+fn sendConnectTunnel(allocator: std.mem.Allocator, conn: *raw_conn.RawConn, host: []const u8, port: u16, authorization: ?[]const u8) !void {
+    var req = std.Io.Writer.Allocating.init(allocator);
+    defer req.deinit();
+    try req.writer.print("CONNECT {s}:{d} HTTP/1.1\r\nHost: {s}:{d}\r\n", .{ host, port, host, port });
+    if (authorization) |value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{value});
+    try req.writer.writeAll("\r\n");
+    const bytes = try req.toOwnedSlice();
+    defer allocator.free(bytes);
+    try conn.writer().writeAll(bytes);
+    try conn.flush();
+    const response = try readHttpResponse(allocator, conn.reader());
+    defer allocator.free(response.body);
+    if (response.status < 200 or response.status >= 300) return error.ProxyConnectFailed;
 }

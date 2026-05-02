@@ -25,20 +25,22 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .freebsd) {
         exe.linkSystemLibrary("util");
     }
-    exe.root_module.addImport("idna", b.createModule(.{
+    const exe_idna = b.createModule(.{
         .root_source_file = b.path("src/idna.zig"),
         .target = target,
         .optimize = optimize,
         .unwind_tables = .none,
         .omit_frame_pointer = true,
-    }));
-    exe.root_module.addImport("dns", b.createModule(.{
+    });
+    const exe_dns = b.createModule(.{
         .root_source_file = b.path("src/dns.zig"),
         .target = target,
         .optimize = optimize,
         .unwind_tables = .none,
         .omit_frame_pointer = true,
-    }));
+    });
+    exe.root_module.addImport("idna", exe_idna);
+    exe.root_module.addImport("dns", exe_dns);
     exe.root_module.addImport("report_netstatic", b.createModule(.{
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
@@ -59,6 +61,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/bootstrap_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/config_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/protocol_json_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "src/autodiscovery_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/http_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/dns_idna_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/linux_basic_info_test.zig", target, optimize, opts, version_module);

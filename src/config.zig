@@ -124,6 +124,56 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.command = .list_disk;
         } else if (std.mem.eql(u8, arg, "check-mem")) {
             cfg.command = .check_mem;
+        } else if (optionValue(arg, "--token")) |v| {
+            cfg.token = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--endpoint")) |v| {
+            cfg.endpoint = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--auto-discovery")) |v| {
+            cfg.auto_discovery_key = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--interval")) |v| {
+            cfg.interval = try std.fmt.parseFloat(f64, v);
+        } else if (optionValue(arg, "--max-retries")) |v| {
+            cfg.max_retries = try std.fmt.parseInt(i32, v, 10);
+        } else if (optionValue(arg, "--reconnect-interval")) |v| {
+            cfg.reconnect_interval = try std.fmt.parseInt(i32, v, 10);
+        } else if (optionValue(arg, "--info-report-interval")) |v| {
+            cfg.info_report_interval = try std.fmt.parseInt(i32, v, 10);
+        } else if (optionValue(arg, "--include-nics")) |v| {
+            cfg.include_nics = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--exclude-nics")) |v| {
+            cfg.exclude_nics = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--include-mountpoint")) |v| {
+            cfg.include_mountpoints = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--month-rotate")) |v| {
+            cfg.month_rotate = try std.fmt.parseInt(i32, v, 10);
+        } else if (optionValue(arg, "--cf-access-client-id")) |v| {
+            cfg.cf_access_client_id = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--cf-access-client-secret")) |v| {
+            cfg.cf_access_client_secret = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--custom-dns")) |v| {
+            cfg.custom_dns = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--custom-ipv4")) |v| {
+            cfg.custom_ipv4 = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--custom-ipv6")) |v| {
+            cfg.custom_ipv6 = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--config")) |v| {
+            cfg.config_file = try allocator.dupe(u8, v);
+        } else if (boolOptionValue(arg, "--disable-auto-update")) |v| {
+            cfg.disable_auto_update = v;
+        } else if (boolOptionValue(arg, "--disable-web-ssh")) |v| {
+            cfg.disable_web_ssh = v;
+        } else if (boolOptionValue(arg, "--ignore-unsafe-cert")) |v| {
+            cfg.ignore_unsafe_cert = v;
+        } else if (boolOptionValue(arg, "--memory-include-cache")) |v| {
+            cfg.memory_include_cache = v;
+        } else if (boolOptionValue(arg, "--memory-exclude-bcf")) |v| {
+            cfg.memory_report_raw_used = v;
+        } else if (boolOptionValue(arg, "--gpu")) |v| {
+            cfg.enable_gpu = v;
+        } else if (boolOptionValue(arg, "--show-warning")) |v| {
+            cfg.show_warning = v;
+        } else if (boolOptionValue(arg, "--get-ip-addr-from-nic")) |v| {
+            cfg.get_ip_addr_from_nic = v;
         } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--token")) {
             if (nextValue(args, &i)) |v| cfg.token = try allocator.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--endpoint")) {
@@ -179,6 +229,20 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
         }
     }
     return cfg;
+}
+
+fn optionValue(arg: []const u8, name: []const u8) ?[]const u8 {
+    if (arg.len <= name.len or !std.mem.startsWith(u8, arg, name) or arg[name.len] != '=') return null;
+    return arg[name.len + 1 ..];
+}
+
+fn boolOptionValue(arg: []const u8, name: []const u8) ?bool {
+    const value = optionValue(arg, name) orelse return null;
+    return parseBool(value);
+}
+
+fn parseBool(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "true") or std.mem.eql(u8, value, "1");
 }
 
 fn nextValue(args: []const []const u8, index: *usize) ?[]const u8 {
