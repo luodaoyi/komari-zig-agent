@@ -18,6 +18,7 @@ repo="luodaoyi/komari-zig-agent"
 service_name="komari-agent"
 target_dir="/opt/komari"
 github_proxy=""
+github_proxy_list="${KOMARI_GITHUB_PROXIES:-https://gh.llkk.cc https://gh-proxy.com https://ghproxy.net https://ghfast.top https://ghproxy.cc}"
 install_version=""
 komari_args=""
 
@@ -84,7 +85,7 @@ printf '%b\n' "${WHITE}    Komari Agent Installation Script${NC}"
 printf '%b\n' "${WHITE}===========================================${NC}"
 log_config "Service name: ${GREEN}$service_name${NC}"
 log_config "Install directory: ${GREEN}$target_dir${NC}"
-log_config "GitHub proxy: ${GREEN}${github_proxy:-"(direct)"}${NC}"
+log_config "GitHub proxy: ${GREEN}${github_proxy:-"(auto fallback)"}${NC}"
 log_config "Binary arguments: ${GREEN}$komari_args${NC}"
 log_config "Version: ${GREEN}${install_version:-Latest}${NC}"
 
@@ -181,6 +182,81 @@ download_file() {
   return 1
 }
 
+proxy_url() {
+  proxy="$1"
+  url="$2"
+  printf '%s/%s\n' "${proxy%/}" "$url"
+}
+
+probe_url() {
+  url="$1"
+  curl -fIL --connect-timeout 5 --max-time 12 -o /dev/null -w '%{time_total}' "$url" 2>/dev/null || return 1
+}
+
+time_less_than() {
+  command -v awk >/dev/null 2>&1 || return 1
+  awk "BEGIN { exit !($1 < $2) }"
+}
+
+github_proxy_items() {
+  printf '%s\n' "$github_proxy_list" | tr ',;' '  '
+}
+
+select_fastest_proxy_url() {
+  base_url="$1"
+  best_url=""
+  best_time=""
+  for proxy in $(github_proxy_items); do
+    candidate="$(proxy_url "$proxy" "$base_url")"
+    elapsed="$(probe_url "$candidate" || true)"
+    [ -n "$elapsed" ] || continue
+    log_info "Proxy probe: ${CYAN}$proxy${NC} ${elapsed}s" >&2
+    if [ -z "$best_time" ] || time_less_than "$elapsed" "$best_time"; then
+      best_time="$elapsed"
+      best_url="$candidate"
+    fi
+  done
+  [ -n "$best_url" ] || return 1
+  printf '%s\n' "$best_url"
+}
+
+try_download_binary() {
+  url="$1"
+  out="$2"
+  log_info "Downloading: ${CYAN}$url${NC}"
+  download_file "$url" "$out" || return 1
+  chmod +x "$out"
+  "$out" --show-warning >/dev/null 2>&1 && return 0
+  rm -f "$out"
+  log_warning "Downloaded file failed binary preflight"
+  return 1
+}
+
+download_binary_with_fallback() {
+  base_url="$1"
+  out="$2"
+  if [ -n "$github_proxy" ]; then
+    try_download_binary "$(proxy_url "$github_proxy" "$base_url")" "$out"
+    return
+  fi
+
+  try_download_binary "$base_url" "$out" && return 0
+  log_warning "Direct GitHub download failed, probing GitHub proxy mirrors"
+
+  fastest="$(select_fastest_proxy_url "$base_url" || true)"
+  if [ -n "$fastest" ]; then
+    try_download_binary "$fastest" "$out" && return 0
+    log_warning "Fastest proxy failed, trying remaining proxy mirrors"
+  fi
+
+  for proxy in $(github_proxy_items); do
+    candidate="$(proxy_url "$proxy" "$base_url")"
+    [ "$candidate" = "$fastest" ] && continue
+    try_download_binary "$candidate" "$out" && return 0
+  done
+  return 1
+}
+
 asset="komari-agent-${os_name}-${arch}"
 if [ -n "$install_version" ]; then
   release_path="download/${install_version}"
@@ -188,18 +264,10 @@ else
   release_path="latest/download"
 fi
 download_url="https://github.com/${repo}/releases/${release_path}/${asset}"
-[ -n "$github_proxy" ] && download_url="${github_proxy}/${download_url}"
 
 log_info "Detected OS: ${GREEN}$os_name${NC}, Architecture: ${GREEN}$arch${NC}"
-log_info "Downloading: ${CYAN}$download_url${NC}"
-download_file "$download_url" "$agent_path" || {
+download_binary_with_fallback "$download_url" "$agent_path" || {
   log_error "Failed to download release asset"
-  exit 1
-}
-chmod +x "$agent_path"
-"$agent_path" --show-warning >/dev/null 2>&1 || {
-  rm -f "$agent_path"
-  log_error "Downloaded binary cannot run on this system"
   exit 1
 }
 log_success "Installed binary: $agent_path"

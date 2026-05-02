@@ -109,7 +109,7 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/inst
 ```text
 --install-dir <dir>            安装目录，默认 Linux/FreeBSD 为 /opt/komari
 --install-service-name <name>  服务名，默认 komari-agent
---install-ghproxy <url>        GitHub 下载代理
+--install-ghproxy <url>        指定 GitHub 下载代理；不指定时直连失败会自动测速代理池
 --install-version <tag>        指定 Release tag；不填则用 latest
 ```
 
@@ -148,7 +148,7 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/repl
 ```text
 --repo <owner/repo>      Release 仓库，默认 luodaoyi/komari-zig-agent
 --version <tag>          指定版本；不填则用 latest
---ghproxy <url>          GitHub 下载代理
+--ghproxy <url>          指定 GitHub 下载代理；不指定时直连失败会自动测速代理池
 --service <name>         服务名，默认 komari-agent
 --binary <path>          直接指定原 agent 二进制路径
 --install-dir <dir>      找不到服务路径时的默认目录，默认 /opt/komari
@@ -157,10 +157,18 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/repl
 替换行为：
 
 - 自动识别 CPU 架构并下载对应 Release 资产。
+- 下载优先直连 GitHub；直连失败后自动测速多个 GitHub 代理并选择可用源。
 - 下载失败会重试；下载后会先试运行二进制，避免把错误架构或错误页面写入服务。
 - 停止原服务，备份原二进制为 `*.go-backup.<timestamp>`。
 - 替换二进制并重启原服务；systemd 服务启动失败会自动回滚到备份。
 - 不改 endpoint、token、上报间隔等业务参数。
+
+自动代理池可通过环境变量覆盖：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | \
+  sudo env KOMARI_GITHUB_PROXIES="https://gh.llkk.cc https://gh-proxy.com https://ghproxy.net" sh
+```
 
 ## 自更新
 
@@ -190,6 +198,8 @@ komari-agent-windows-amd64.exe
 komari-agent-windows-arm64.exe
 komari-agent-windows-386.exe
 ```
+
+自更新同样优先直连 GitHub；直连失败后按内置代理池回退。可用 `KOMARI_GITHUB_PROXIES` 覆盖代理池。
 
 可用参数关闭自更新：
 

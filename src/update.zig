@@ -5,6 +5,13 @@ const http = @import("protocol/http.zig");
 const version = @import("version.zig");
 
 pub const repo = version.repo;
+pub const default_github_proxies = [_][]const u8{
+    "https://gh.llkk.cc",
+    "https://gh-proxy.com",
+    "https://ghproxy.net",
+    "https://ghfast.top",
+    "https://ghproxy.cc",
+};
 
 pub const PendingAction = enum {
     allow_start,
@@ -193,7 +200,7 @@ fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
 }
 
 fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, target_version: []const u8) !void {
-    const body = try http.getReadCfg(allocator, url, cfg);
+    const body = try downloadReleaseAsset(allocator, url, cfg);
     defer allocator.free(body);
     const exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe);
@@ -221,6 +228,35 @@ fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config
     errdefer deleteFileIgnoreMissing(state_path);
     try std.fs.renameAbsolute(tmp, exe);
     std.process.exit(42);
+}
+
+fn downloadReleaseAsset(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
+    if (http.getReadCfg(allocator, url, cfg)) |body| return body else |err| {
+        var last_err = err;
+        if (std.process.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
+            defer allocator.free(env_value);
+            var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
+            while (it.next()) |proxy| {
+                const proxied = try githubProxyUrl(allocator, proxy, url);
+                defer allocator.free(proxied);
+                if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |proxy_err| last_err = proxy_err;
+            }
+        } else |env_err| switch (env_err) {
+            error.EnvironmentVariableNotFound => {
+                for (&default_github_proxies) |proxy| {
+                    const proxied = try githubProxyUrl(allocator, proxy, url);
+                    defer allocator.free(proxied);
+                    if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |proxy_err| last_err = proxy_err;
+                }
+            },
+            else => return env_err,
+        }
+        return last_err;
+    }
+}
+
+pub fn githubProxyUrl(allocator: std.mem.Allocator, proxy: []const u8, url: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.trimRight(u8, proxy, "/"), url });
 }
 
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {

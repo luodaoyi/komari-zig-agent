@@ -26,6 +26,16 @@ test "self update asset name matches release assets" {
     try std.testing.expect(std.mem.count(u8, name, "-") >= 2);
 }
 
+test "self update github proxy urls do not include closed mirrors" {
+    for (&update.default_github_proxies) |proxy| {
+        try std.testing.expect(std.mem.indexOf(u8, proxy, "hub.gitmirror.com") == null);
+    }
+
+    const url = try update.githubProxyUrl(std.testing.allocator, "https://gh.example.com/", "https://github.com/o/r/releases/latest/download/a");
+    defer std.testing.allocator.free(url);
+    try std.testing.expectEqualStrings("https://gh.example.com/https://github.com/o/r/releases/latest/download/a", url);
+}
+
 test "pending update allows first start then rolls back next unconfirmed start" {
     var state = update.PendingUpdateState{
         .previous_version = "v0.1.2",

@@ -5,6 +5,7 @@ repo="luodaoyi/komari-zig-agent"
 service_name="komari-agent"
 install_version=""
 github_proxy=""
+github_proxy_list="${KOMARI_GITHUB_PROXIES:-https://gh.llkk.cc https://gh-proxy.com https://ghproxy.net https://ghfast.top https://ghproxy.cc}"
 binary_path=""
 install_dir="/opt/komari"
 tmp=""
@@ -82,6 +83,82 @@ download() {
   else
     die "curl or wget is required"
   fi
+}
+
+proxy_url() {
+  proxy="$1"
+  url="$2"
+  printf '%s/%s\n' "${proxy%/}" "$url"
+}
+
+probe_url() {
+  url="$1"
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fIL --connect-timeout 5 --max-time 12 -o /dev/null -w '%{time_total}' "$url" 2>/dev/null || return 1
+}
+
+time_less_than() {
+  command -v awk >/dev/null 2>&1 || return 1
+  awk "BEGIN { exit !($1 < $2) }"
+}
+
+github_proxy_items() {
+  printf '%s\n' "$github_proxy_list" | tr ',;' '  '
+}
+
+select_fastest_proxy_url() {
+  base_url="$1"
+  best_url=""
+  best_time=""
+  for proxy in $(github_proxy_items); do
+    candidate="$(proxy_url "$proxy" "$base_url")"
+    elapsed="$(probe_url "$candidate" || true)"
+    [ -n "$elapsed" ] || continue
+    log "proxy probe: ${proxy} ${elapsed}s" >&2
+    if [ -z "$best_time" ] || time_less_than "$elapsed" "$best_time"; then
+      best_time="$elapsed"
+      best_url="$candidate"
+    fi
+  done
+  [ -n "$best_url" ] || return 1
+  printf '%s\n' "$best_url"
+}
+
+try_download_binary() {
+  url="$1"
+  out="$2"
+  log "download: ${url}"
+  download "$url" "$out" || return 1
+  chmod 0755 "$out"
+  "$out" --show-warning >/dev/null 2>&1 && return 0
+  rm -f "$out"
+  log "downloaded file failed binary preflight"
+  return 1
+}
+
+download_binary_with_fallback() {
+  base_url="$1"
+  out="$2"
+  if [ -n "$github_proxy" ]; then
+    try_download_binary "$(proxy_url "$github_proxy" "$base_url")" "$out"
+    return
+  fi
+
+  try_download_binary "$base_url" "$out" && return 0
+  log "direct GitHub download failed, probing GitHub proxy mirrors"
+
+  fastest="$(select_fastest_proxy_url "$base_url" || true)"
+  if [ -n "$fastest" ]; then
+    try_download_binary "$fastest" "$out" && return 0
+    log "fastest proxy failed, trying remaining proxy mirrors"
+  fi
+
+  for proxy in $(github_proxy_items); do
+    candidate="$(proxy_url "$proxy" "$base_url")"
+    [ "$candidate" = "$fastest" ] && continue
+    try_download_binary "$candidate" "$out" && return 0
+  done
+  return 1
 }
 
 parse_exec_binary() {
@@ -194,7 +271,6 @@ else
   release_path="latest/download"
 fi
 url="https://github.com/${repo}/releases/${release_path}/${asset}"
-[ -n "$github_proxy" ] && url="${github_proxy}/${url}"
 
 target="$(find_binary)"
 target_dir="$(dirname "$target")"
@@ -204,12 +280,9 @@ backup="${target}.go-backup.$(date +%Y%m%d%H%M%S)"
 log "repo: ${repo}"
 log "asset: ${asset}"
 log "target: ${target}"
-log "download: ${url}"
 
 mkdir -p "$target_dir"
-download "$url" "$tmp" || die "failed to download release asset"
-chmod 0755 "$tmp"
-"$tmp" --show-warning >/dev/null 2>&1 || die "downloaded binary cannot run on this system"
+download_binary_with_fallback "$url" "$tmp" || die "failed to download release asset"
 
 stop_service
 if [ -f "$target" ]; then
