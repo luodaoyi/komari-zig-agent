@@ -5,6 +5,7 @@ const provider = @import("../platform/provider.zig");
 const report = @import("../report/report.zig");
 const ping = @import("ping.zig");
 const task = @import("task.zig");
+const terminal = @import("../terminal/terminal.zig");
 pub const ws_message = @import("ws_message.zig");
 
 pub const ServerMessageKind = ws_message.ServerMessageKind;
@@ -140,8 +141,8 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *OpenSslWs, cfg: conf
             try task.uploadExecResult(allocator, cfg, msg.task_id, msg.command);
         },
         .terminal => {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.print("Terminal request {s} received; terminal bridge not ready\n", .{msg.request_id});
+            const thread = try std.Thread.spawn(.{}, terminal.startSession, .{ allocator, cfg, msg.request_id });
+            thread.detach();
         },
         .unknown => {},
     }
