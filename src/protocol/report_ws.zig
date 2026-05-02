@@ -129,14 +129,20 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
 }
 
 fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, readerLoop, .{ allocator, conn, cfg }) catch return;
+    conn.acquire();
+    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, readerLoop, .{ allocator, conn, cfg }) catch {
+        conn.release(allocator);
+        return;
+    };
     thread.detach();
 }
 
 fn readerLoop(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
+    defer conn.release(allocator);
     var stdout = std.fs.File.stdout().deprecatedWriter();
     while (true) {
         const payload = conn.readText(allocator) catch |err| {
+            conn.shutdown();
             stdout.print("WebSocket read failed: {s}\n", .{@errorName(err)}) catch {};
             return;
         };
@@ -165,11 +171,36 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
             thread.detach();
         },
         .terminal => {
-            const thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, terminal.startSession, .{ allocator, cfg, msg.request_id });
+            const args = try TerminalTaskArgs.init(allocator, cfg, msg);
+            const thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, runTerminalTask, .{ allocator, args });
             thread.detach();
         },
         .unknown => {},
     }
+}
+
+const TerminalTaskArgs = struct {
+    cfg: config.Config,
+    request_id: []const u8,
+
+    fn init(allocator: std.mem.Allocator, cfg: config.Config, msg: ServerMessage) !TerminalTaskArgs {
+        return .{
+            .cfg = cfg,
+            .request_id = try allocator.dupe(u8, msg.request_id),
+        };
+    }
+
+    fn deinit(self: TerminalTaskArgs, allocator: std.mem.Allocator) void {
+        allocator.free(self.request_id);
+    }
+};
+
+fn runTerminalTask(allocator: std.mem.Allocator, args: TerminalTaskArgs) void {
+    defer args.deinit(allocator);
+    terminal.startSession(allocator, args.cfg, args.request_id) catch |err| {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        stdout.print("Terminal session failed: {s}\n", .{@errorName(err)}) catch {};
+    };
 }
 
 const PingTaskArgs = struct {
@@ -180,6 +211,7 @@ const PingTaskArgs = struct {
     ping_target: []const u8,
 
     fn init(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config, msg: ServerMessage) !PingTaskArgs {
+        conn.acquire();
         return .{
             .conn = conn,
             .cfg = cfg,
@@ -192,6 +224,7 @@ const PingTaskArgs = struct {
     fn deinit(self: PingTaskArgs, allocator: std.mem.Allocator) void {
         allocator.free(self.ping_type);
         allocator.free(self.ping_target);
+        self.conn.release(allocator);
     }
 };
 

@@ -20,8 +20,31 @@ pub const Client = struct {
     request: ?std.http.Client.Request = null,
     raw: ?*raw_conn.RawConn = null,
     write_mutex: std.Thread.Mutex = .{},
+    refs: std.atomic.Value(usize) = std.atomic.Value(usize).init(1),
+    closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn close(self: *Client, allocator: std.mem.Allocator) void {
+        self.shutdown();
+        self.release(allocator);
+    }
+
+    pub fn acquire(self: *Client) void {
+        _ = self.refs.fetchAdd(1, .monotonic);
+    }
+
+    pub fn release(self: *Client, allocator: std.mem.Allocator) void {
+        if (self.refs.fetchSub(1, .acq_rel) == 1) self.deinit(allocator);
+    }
+
+    pub fn shutdown(self: *Client) void {
+        if (self.closed.swap(true, .acq_rel)) return;
+        if (self.raw) |raw| raw.shutdown();
+        if (self.request) |*request| {
+            if (request.connection) |conn| conn.closing = true;
+        }
+    }
+
+    fn deinit(self: *Client, allocator: std.mem.Allocator) void {
         if (self.request) |*request| {
             if (request.connection) |conn| conn.closing = true;
             request.deinit();
@@ -46,6 +69,7 @@ pub const Client = struct {
     pub fn writeFrame(self: *Client, opcode: u8, payload: []const u8) !void {
         self.write_mutex.lock();
         defer self.write_mutex.unlock();
+        if (self.closed.load(.acquire)) return error.WebSocketClosed;
         if (self.raw) |raw| {
             try writeMaskedFrame(raw.writer(), opcode, payload);
             try raw.flush();
@@ -58,6 +82,7 @@ pub const Client = struct {
     }
 
     pub fn readFrame(self: *Client, allocator: std.mem.Allocator) !Frame {
+        if (self.closed.load(.acquire)) return error.WebSocketClosed;
         if (self.raw) |raw| return readFrameFromReader(allocator, raw.reader());
         const req = self.request orelse return error.WebSocketClosed;
         const conn = req.connection orelse return error.WebSocketClosed;

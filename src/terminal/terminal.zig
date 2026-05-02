@@ -74,7 +74,11 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
     };
     defer session.close();
 
-    const out_thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, pipeShellOutputToWs, .{ session.output, ws });
+    ws.acquire();
+    const out_thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, pipeShellOutputToWs, .{ allocator, session.output, ws }) catch |err| {
+        ws.release(allocator);
+        return err;
+    };
     out_thread.detach();
 
     while (true) {
@@ -338,7 +342,8 @@ fn terminalEnv(allocator: std.mem.Allocator) !*std.process.EnvMap {
     return env;
 }
 
-fn pipeShellOutputToWs(from: std.fs.File, ws: *ws_client.Client) void {
+fn pipeShellOutputToWs(allocator: std.mem.Allocator, from: std.fs.File, ws: *ws_client.Client) void {
+    defer ws.release(allocator);
     var reader = from.deprecatedReader();
     var buf: [4096]u8 = undefined;
     while (true) {

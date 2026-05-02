@@ -20,6 +20,7 @@ pub const RawConn = struct {
     socket_write_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
     tls_read_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
     tls_write_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
+    closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn connect(
         allocator: std.mem.Allocator,
@@ -107,9 +108,13 @@ pub const RawConn = struct {
         return raw;
     }
 
-    pub fn close(self: *RawConn) void {
-        if (self.tls_client) |*tls| tls.end() catch {};
+    pub fn shutdown(self: *RawConn) void {
+        if (self.closed.swap(true, .acq_rel)) return;
         self.stream.close();
+    }
+
+    pub fn close(self: *RawConn) void {
+        self.shutdown();
         if (!std.http.Client.disable_tls and self.verify_ca) self.ca_bundle.deinit(self.allocator);
         self.allocator.destroy(self);
     }
