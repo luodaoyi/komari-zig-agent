@@ -1,0 +1,1 @@
+{"cpu_name":"CPU","cpu_cores":4,"arch":"amd64","os":"linux","kernel_version":"6.1.0","ipv4":"192.0.2.1","ipv6":"2001:db8::1","mem_total":1024,"swap_total":2048,"disk_total":4096,"gpu_name":"GPU","virtualization":"kvm","version":"0.0.1"}

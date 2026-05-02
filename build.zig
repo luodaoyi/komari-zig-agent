@@ -29,6 +29,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     addTest(b, test_step, "test/bootstrap_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/config_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/protocol_json_test.zig", target, optimize, opts, version_module);
 }
 
 fn addTest(
@@ -51,6 +52,11 @@ fn addTest(
     tests.root_module.addImport("version", version_module);
     tests.root_module.addImport("config", b.createModule(.{
         .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    tests.root_module.addImport("protocol_types", b.createModule(.{
+        .root_source_file = b.path("src/protocol/types.zig"),
         .target = target,
         .optimize = optimize,
     }));

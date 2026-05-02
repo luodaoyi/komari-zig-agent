@@ -1,0 +1,1 @@
+{"cpu":{"usage":0.001},"ram":{"total":1024,"used":512},"swap":{"total":2048,"used":256},"load":{"load1":0.1,"load5":0.2,"load15":0.3},"disk":{"total":4096,"used":1024},"network":{"up":10,"down":20,"totalUp":100,"totalDown":200},"connections":{"tcp":3,"udp":4},"uptime":99,"process":8,"message":""}
