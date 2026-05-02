@@ -16,6 +16,7 @@ pub fn assetName(allocator: std.mem.Allocator) ![]const u8 {
         .linux => "linux",
         .freebsd => "freebsd",
         .macos => "darwin",
+        .windows => "windows",
         else => "linux",
     };
     const arch = switch (builtin.cpu.arch) {
@@ -25,7 +26,8 @@ pub fn assetName(allocator: std.mem.Allocator) ![]const u8 {
         .arm => "arm",
         else => @tagName(builtin.cpu.arch),
     };
-    return std.fmt.allocPrint(allocator, "komari-agent-{s}-{s}", .{ os, arch });
+    const ext = if (builtin.os.tag == .windows) ".exe" else "";
+    return std.fmt.allocPrint(allocator, "komari-agent-{s}-{s}{s}", .{ os, arch, ext });
 }
 
 pub fn newerThan(current_raw: []const u8, latest_raw: []const u8) bool {

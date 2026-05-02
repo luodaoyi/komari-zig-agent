@@ -109,6 +109,15 @@ jobs:
           - os: darwin
             arch: arm64
             target: aarch64-macos
+          - os: windows
+            arch: amd64
+            target: x86_64-windows-gnu
+          - os: windows
+            arch: arm64
+            target: aarch64-windows-gnu
+          - os: windows
+            arch: "386"
+            target: x86-windows-gnu
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,11 +133,17 @@ jobs:
           set -eu
           zig build -Doptimize=ReleaseSmall -Dversion=${{ needs.prepare.outputs.tag }} -Dtarget=${{ matrix.target }}
           mkdir -p dist
-          cp zig-out/bin/komari-agent dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+          binary="komari-agent"
+          asset="komari-agent-${{ matrix.os }}-${{ matrix.arch }}"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            binary="komari-agent.exe"
+            asset="${asset}.exe"
+          fi
+          cp "zig-out/bin/${binary}" "dist/${asset}"
       - uses: actions/upload-artifact@v4
         with:
           name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}*
           if-no-files-found: error
 
   publish:
