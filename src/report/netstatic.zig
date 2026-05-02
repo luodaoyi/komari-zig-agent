@@ -32,7 +32,7 @@ pub fn writeEmptyStore(allocator: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{{\"interfaces\":{{}},\"config\":{{\"data_preserve_day\":31,\"detect_interval\":2,\"save_interval\":600,\"nics\":[]}}}}", .{});
 }
 
-const CivilDate = struct {
+pub const CivilDate = struct {
     year: i32,
     month: i32,
     day: i32,
@@ -68,7 +68,7 @@ fn isLeapYear(year: i32) bool {
     return @mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0);
 }
 
-fn civilFromTimestamp(timestamp: i64) CivilDate {
+pub fn civilFromTimestamp(timestamp: i64) CivilDate {
     return civilFromDays(@divFloor(timestamp, std.time.s_per_day));
 }
 
