@@ -7,6 +7,7 @@ const report = @import("../report/report.zig");
 const ping = @import("ping.zig");
 const task = @import("task.zig");
 const terminal = @import("../terminal/terminal.zig");
+const update = @import("../update.zig");
 const ws_client = @import("ws_client.zig");
 pub const ws_message = @import("ws_message.zig");
 
@@ -62,6 +63,7 @@ pub fn reconnectSleepSeconds(value: i32) u64 {
 
 pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*const std.atomic.Value(bool)) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
+    var update_confirmed = false;
     while (!isStopRequested(stop_requested)) {
         var ws = connectReportWsWithRetries(allocator, cfg, stop_requested) catch |err| {
             if (isStopRequested(stop_requested)) return;
@@ -89,6 +91,9 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
                 closed = true;
                 break;
             };
+            if (!update_confirmed) {
+                update_confirmed = update.confirmPendingUpdate(allocator) catch false;
+            }
             if (sleepOrStop(reportSleepSeconds(cfg.interval), stop_requested)) return;
         }
         if (!closed and isStopRequested(stop_requested)) return;

@@ -6,6 +6,24 @@ const version = @import("version.zig");
 
 pub const repo = version.repo;
 
+pub const PendingAction = enum {
+    allow_start,
+    rollback,
+};
+
+pub const PendingUpdateState = struct {
+    previous_version: []const u8,
+    target_version: []const u8,
+    backup_path: []const u8,
+    attempts: u32,
+
+    pub fn deinit(self: PendingUpdateState, allocator: std.mem.Allocator) void {
+        allocator.free(self.previous_version);
+        allocator.free(self.target_version);
+        allocator.free(self.backup_path);
+    }
+};
+
 pub fn parseVersionPrefixless(value: []const u8) []const u8 {
     if (value.len > 0 and (value[0] == 'v' or value[0] == 'V')) return value[1..];
     return value;
@@ -36,6 +54,115 @@ pub fn newerThan(current_raw: []const u8, latest_raw: []const u8) bool {
     return compareVersion(latest, current) > 0;
 }
 
+pub fn pendingAction(state: PendingUpdateState) PendingAction {
+    return if (state.attempts == 0) .allow_start else .rollback;
+}
+
+pub fn allocPendingStateJson(allocator: std.mem.Allocator, state: PendingUpdateState) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.writer(allocator).print("{f}", .{std.json.fmt(.{
+        .previous_version = state.previous_version,
+        .target_version = state.target_version,
+        .backup_path = state.backup_path,
+        .attempts = state.attempts,
+    }, .{})});
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn parsePendingState(allocator: std.mem.Allocator, body: []const u8) !PendingUpdateState {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidPendingUpdateState;
+    const object = parsed.value.object;
+    const previous_version = try allocator.dupe(u8, stringField(object, "previous_version") orelse return error.InvalidPendingUpdateState);
+    errdefer allocator.free(previous_version);
+    const target_version = try allocator.dupe(u8, stringField(object, "target_version") orelse return error.InvalidPendingUpdateState);
+    errdefer allocator.free(target_version);
+    const backup_path = try allocator.dupe(u8, stringField(object, "backup_path") orelse return error.InvalidPendingUpdateState);
+    errdefer allocator.free(backup_path);
+    return .{
+        .previous_version = previous_version,
+        .target_version = target_version,
+        .backup_path = backup_path,
+        .attempts = intField(object, "attempts") orelse return error.InvalidPendingUpdateState,
+    };
+}
+
+pub fn recoverPendingUpdate(allocator: std.mem.Allocator) !void {
+    const exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe);
+    const state_path = try pendingStatePath(allocator, exe);
+    defer allocator.free(state_path);
+
+    const state_body = readSmallFile(allocator, state_path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer allocator.free(state_body);
+
+    var state = parsePendingState(allocator, state_body) catch {
+        deleteFileIgnoreMissing(state_path);
+        return;
+    };
+    defer state.deinit(allocator);
+
+    if (!std.mem.eql(u8, state.target_version, version.current)) {
+        deleteFileIgnoreMissing(state_path);
+        return;
+    }
+
+    switch (pendingAction(state)) {
+        .allow_start => {
+            state.attempts += 1;
+            try writePendingStateFile(allocator, state_path, state);
+        },
+        .rollback => {
+            std.fs.renameAbsolute(state.backup_path, exe) catch |err| switch (err) {
+                error.FileNotFound => {
+                    deleteFileIgnoreMissing(state_path);
+                    return;
+                },
+                else => return err,
+            };
+            deleteFileIgnoreMissing(state_path);
+            std.process.exit(42);
+        },
+    }
+}
+
+pub fn hasPendingUpdate(allocator: std.mem.Allocator) bool {
+    const exe = std.fs.selfExePathAlloc(allocator) catch return false;
+    defer allocator.free(exe);
+    const state_path = pendingStatePath(allocator, exe) catch return false;
+    defer allocator.free(state_path);
+    var file = std.fs.openFileAbsolute(state_path, .{}) catch return false;
+    file.close();
+    return true;
+}
+
+pub fn confirmPendingUpdate(allocator: std.mem.Allocator) !bool {
+    const exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe);
+    const state_path = try pendingStatePath(allocator, exe);
+    defer allocator.free(state_path);
+    const state_body = readSmallFile(allocator, state_path) catch |err| switch (err) {
+        error.FileNotFound => return true,
+        else => return err,
+    };
+    defer allocator.free(state_body);
+
+    var state = parsePendingState(allocator, state_body) catch {
+        deleteFileIgnoreMissing(state_path);
+        return true;
+    };
+    defer state.deinit(allocator);
+    if (!std.mem.eql(u8, state.target_version, version.current)) return false;
+    deleteFileIgnoreMissing(state.backup_path);
+    deleteFileIgnoreMissing(state_path);
+    return true;
+}
+
 pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
     if (!isNumericVersion(version.current)) return;
     const release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
@@ -50,7 +177,7 @@ pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
     const wanted = try assetName(allocator);
     defer allocator.free(wanted);
     const url = findAssetUrl(parsed.value.object, wanted) orelse return;
-    try downloadAndReplace(allocator, url, cfg);
+    try downloadAndReplace(allocator, url, cfg, tag);
 }
 
 pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
@@ -65,18 +192,33 @@ fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     }
 }
 
-fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) !void {
+fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, target_version: []const u8) !void {
     const body = try http.getReadCfg(allocator, url, cfg);
     defer allocator.free(body);
     const exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe);
     const tmp = try std.fmt.allocPrint(allocator, "{s}.update", .{exe});
     defer allocator.free(tmp);
+    errdefer deleteFileIgnoreMissing(tmp);
+    const backup = try backupPath(allocator, exe);
+    defer allocator.free(backup);
+    const state_path = try pendingStatePath(allocator, exe);
+    defer allocator.free(state_path);
     {
         var file = try std.fs.createFileAbsolute(tmp, .{ .truncate = true, .mode = 0o755 });
         defer file.close();
         try file.writeAll(body);
     }
+    try runBinaryPreflight(allocator, tmp);
+    try copyFileAbsolute(exe, backup);
+    errdefer deleteFileIgnoreMissing(backup);
+    try writePendingStateFile(allocator, state_path, .{
+        .previous_version = version.current,
+        .target_version = target_version,
+        .backup_path = backup,
+        .attempts = 0,
+    });
+    errdefer deleteFileIgnoreMissing(state_path);
     try std.fs.renameAbsolute(tmp, exe);
     std.process.exit(42);
 }
@@ -84,6 +226,13 @@ fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     if (object.get(name)) |value| {
         if (value == .string) return value.string;
+    }
+    return null;
+}
+
+fn intField(object: std.json.ObjectMap, name: []const u8) ?u32 {
+    if (object.get(name)) |value| {
+        if (value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u32)) return @intCast(value.integer);
     }
     return null;
 }
@@ -121,4 +270,59 @@ fn isNumericVersion(value_raw: []const u8) bool {
 fn parseVersionPart(part: []const u8) u64 {
     const end = std.mem.indexOfAny(u8, part, "-+") orelse part.len;
     return std.fmt.parseInt(u64, part[0..end], 10) catch 0;
+}
+
+fn pendingStatePath(allocator: std.mem.Allocator, exe: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.update-state.json", .{exe});
+}
+
+fn backupPath(allocator: std.mem.Allocator, exe: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}.bak", .{exe});
+}
+
+fn writePendingStateFile(allocator: std.mem.Allocator, path: []const u8, state: PendingUpdateState) !void {
+    const body = try allocPendingStateJson(allocator, state);
+    defer allocator.free(body);
+    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close();
+    try file.writeAll(body);
+}
+
+fn readSmallFile(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(allocator, 64 * 1024);
+}
+
+fn copyFileAbsolute(src: []const u8, dst: []const u8) !void {
+    var in_file = try std.fs.openFileAbsolute(src, .{});
+    defer in_file.close();
+    var out_file = try std.fs.createFileAbsolute(dst, .{ .truncate = true, .mode = 0o755 });
+    defer out_file.close();
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = try in_file.read(&buf);
+        if (n == 0) break;
+        try out_file.writeAll(buf[0..n]);
+    }
+}
+
+fn runBinaryPreflight(allocator: std.mem.Allocator, path: []const u8) !void {
+    var child = std.process.Child.init(&.{ path, "--show-warning" }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    try child.spawn();
+    const term = try child.wait();
+    switch (term) {
+        .Exited => |code| if (code != 0) return error.UpdatePreflightFailed,
+        else => return error.UpdatePreflightFailed,
+    }
+}
+
+fn deleteFileIgnoreMissing(path: []const u8) void {
+    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => {},
+    };
 }

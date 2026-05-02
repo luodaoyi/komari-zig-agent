@@ -50,6 +50,7 @@ pub fn main() !void {
 
     if (cfg.show_warning) return;
 
+    try update.recoverPendingUpdate(allocator);
     try autodiscovery.applyExistingToken(config_allocator, &cfg);
 
     var stdout = std.fs.File.stdout().deprecatedWriter();
@@ -68,7 +69,7 @@ pub fn main() !void {
     }
     defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
 
-    if (!cfg.disable_auto_update) {
+    if (!cfg.disable_auto_update and !update.hasPendingUpdate(allocator)) {
         try update.checkAndUpdate(allocator, cfg);
         update.startBackground(allocator, cfg);
     }
