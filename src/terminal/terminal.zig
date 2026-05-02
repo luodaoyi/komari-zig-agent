@@ -26,6 +26,21 @@ pub fn parseInput(bytes: []const u8) Input {
     return .{ .raw = bytes };
 }
 
+pub fn isCloseInput(input: Input) bool {
+    return switch (input) {
+        .input => |bytes| isCloseBytes(bytes),
+        .raw => |bytes| isCloseBytes(bytes),
+        .resize => false,
+    };
+}
+
+fn isCloseBytes(bytes: []const u8) bool {
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    return std.mem.eql(u8, trimmed, "exit") or
+        std.mem.eql(u8, trimmed, "logout") or
+        std.mem.eql(u8, bytes, "\x04");
+}
+
 pub fn startDisabledMessage() []const u8 {
     return "\n\nWeb SSH is disabled. Enable it by running without the --disable-web-ssh flag.";
 }
@@ -34,7 +49,7 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
     if (cfg.disable_web_ssh) return;
     const url = try http.terminalWsUrl(allocator, cfg.endpoint, cfg.token, request_id);
     defer allocator.free(url);
-    const ws = try ws_client.connect(allocator, url);
+    const ws = try ws_client.connect(allocator, url, cfg);
     defer ws.close(allocator);
 
     var session = try ShellSession.start(allocator);
@@ -49,6 +64,7 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
         if (frame.opcode == 0x8) return;
         if (frame.opcode != 0x1 and frame.opcode != 0x2) continue;
         const input = parseInput(frame.payload);
+        if (isCloseInput(input)) return;
         switch (input) {
             .input => |bytes| try session.input.writeAll(bytes),
             .raw => |bytes| try session.input.writeAll(bytes),
@@ -68,12 +84,29 @@ const ShellSession = struct {
     }
 
     fn close(self: *ShellSession) void {
+        self.gracefulShutdown();
         if (builtin.os.tag != .windows and @TypeOf(self.pid) != void) {
-            _ = std.posix.kill(self.pid, std.posix.SIG.TERM) catch {};
+            _ = std.posix.kill(-self.pid, std.posix.SIG.TERM) catch {
+                _ = std.posix.kill(self.pid, std.posix.SIG.TERM) catch {};
+            };
             _ = std.posix.waitpid(self.pid, 0);
         }
         if (self.input.handle != self.output.handle) self.input.close();
         self.output.close();
+    }
+
+    fn gracefulShutdown(self: *ShellSession) void {
+        var writer = self.input.deprecatedWriter();
+        var i: u8 = 0;
+        while (i < 3) : (i += 1) {
+            writer.writeAll(&.{3}) catch return;
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+        }
+        std.Thread.sleep(200 * std.time.ns_per_ms);
+        writer.writeAll(&.{4}) catch {};
+        std.Thread.sleep(100 * std.time.ns_per_ms);
+        writer.writeAll("exit\n") catch {};
+        std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
     fn resize(self: *ShellSession, cols: u16, rows: u16) !void {
@@ -99,8 +132,13 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     defer allocator.free(slave_path);
     const shell = try allocator.dupeZ(u8, shellPath());
     defer allocator.free(shell);
-    var argv = [_:null]?[*:0]const u8{ shell.ptr };
-    const empty_env = [_:null]?[*:0]const u8{};
+    const prelude = try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"");
+    defer allocator.free(prelude);
+    var argv = [_:null]?[*:0]const u8{ shell.ptr, "-c", prelude.ptr, shell.ptr };
+    const env = [_:null]?[*:0]const u8{
+        "TERM=xterm-256color",
+        "LANG=C.UTF-8",
+    };
 
     const pid = try std.posix.fork();
     if (pid == 0) {
@@ -112,7 +150,7 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
         std.posix.dup2(slave, std.posix.STDERR_FILENO) catch std.posix.exit(127);
         if (slave > 2) std.posix.close(slave);
         std.posix.close(master);
-        std.posix.execveZ(shell.ptr, &argv, &empty_env) catch std.posix.exit(127);
+        std.posix.execveZ(shell.ptr, &argv, &env) catch std.posix.exit(127);
     }
 
     const pty_file = std.fs.File{ .handle = master };
@@ -129,6 +167,7 @@ fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
     sh.stdin_behavior = .Pipe;
     sh.stdout_behavior = .Pipe;
     sh.stderr_behavior = .Ignore;
+    sh.env_map = try terminalEnv(allocator);
     try sh.spawn();
     if (sh.stdin == null or sh.stdout == null) return error.ShellPipeFailed;
     return .{ .input = sh.stdin.?, .output = sh.stdout.?, .pid = if (builtin.os.tag == .windows) {} else sh.id };
@@ -139,6 +178,14 @@ fn shellPath() []const u8 {
         if (value.len != 0) return value;
     } else |_| {}
     return "/bin/sh";
+}
+
+fn terminalEnv(allocator: std.mem.Allocator) !*std.process.EnvMap {
+    var env = try allocator.create(std.process.EnvMap);
+    env.* = std.process.EnvMap.init(allocator);
+    try env.put("TERM", "xterm-256color");
+    try env.put("LANG", "C.UTF-8");
+    return env;
 }
 
 fn pipeShellOutputToWs(from: std.fs.File, ws: *ws_client.Client) void {

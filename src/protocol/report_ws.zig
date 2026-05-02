@@ -20,38 +20,55 @@ pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .include_mountpoints = cfg.include_mountpoints,
         .month_rotate = cfg.month_rotate,
         .enable_gpu = cfg.enable_gpu,
+        .host_proc = cfg.host_proc,
+        .memory_include_cache = cfg.memory_include_cache,
+        .memory_report_raw_used = cfg.memory_report_raw_used,
     }));
+}
+
+pub fn reportSleepSeconds(interval: f64) u64 {
+    return if (interval <= 1) 1 else @intFromFloat(interval - 1);
+}
+
+pub fn reconnectSleepSeconds(value: i32) u64 {
+    return if (value <= 0) 5 else @intCast(value);
 }
 
 pub fn loop(allocator: std.mem.Allocator, cfg: config.Config) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
-    const seconds: u64 = if (cfg.interval <= 1) 1 else @intFromFloat(cfg.interval - 1);
-    var ws = connectReportWs(allocator, cfg) catch |err| blk: {
-        try stdout.print("WebSocket connect failed: {s}; generating reports locally\n", .{@errorName(err)});
-        break :blk null;
-    };
-    if (ws) |conn| startReader(allocator, conn, cfg);
-    defer if (ws) |conn| conn.close(allocator);
-
     while (true) {
-        const payload = try runOnce(allocator, cfg);
-        defer allocator.free(payload);
-        if (ws) |conn| {
-            conn.writeText(payload) catch |err| {
+        var ws = connectReportWs(allocator, cfg) catch |err| blk: {
+            try stdout.print("WebSocket connect failed: {s}; retrying later\n", .{@errorName(err)});
+            break :blk null;
+        };
+        if (ws) |conn| startReader(allocator, conn, cfg);
+
+        while (ws != null) {
+            const payload = try runOnce(allocator, cfg);
+            defer allocator.free(payload);
+            ws.?.writeText(payload) catch |err| {
                 try stdout.print("WebSocket write failed: {s}\n", .{@errorName(err)});
-                conn.close(allocator);
+                ws.?.close(allocator);
                 ws = null;
+                break;
             };
+            try stdout.print("Report generated: {d} bytes sent\n", .{payload.len});
+            std.Thread.sleep(reportSleepSeconds(cfg.interval) * std.time.ns_per_s);
         }
-        try stdout.print("Report generated: {d} bytes{s}\n", .{ payload.len, if (ws != null) " sent" else "" });
-        std.Thread.sleep(seconds * std.time.ns_per_s);
+
+        if (ws == null) {
+            const payload = try runOnce(allocator, cfg);
+            defer allocator.free(payload);
+            try stdout.print("Report generated: {d} bytes\n", .{payload.len});
+            std.Thread.sleep(reconnectSleepSeconds(cfg.reconnect_interval) * std.time.ns_per_s);
+        }
     }
 }
 
 fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client.Client {
     const url = try http.reportWsUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
-    return ws_client.connect(allocator, url);
+    return ws_client.connect(allocator, url, cfg);
 }
 
 fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
@@ -81,7 +98,7 @@ fn readerLoop(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config
 fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config, msg: ServerMessage) !void {
     switch (msg.kind) {
         .ping => {
-            const value = ping.measure(allocator, msg.ping_type, msg.ping_target);
+            const value = ping.measure(allocator, msg.ping_type, msg.ping_target, cfg.custom_dns);
             const finished = try task.utcNow(allocator);
             defer allocator.free(finished);
             const payload = try ping.allocPingResultJson(allocator, msg.ping_task_id, msg.ping_type, value, finished);

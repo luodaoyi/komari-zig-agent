@@ -20,3 +20,14 @@ test "icmp checksum is deterministic" {
     std.mem.writeInt(u16, packet[2..4], sum, .big);
     try std.testing.expectEqual(@as(u16, 0), ping.icmpChecksum(&packet));
 }
+
+test "icmp6 echo reply parser accepts ipv6 payload" {
+    var packet = [_]u8{0} ** 48;
+    packet[0] = 0x60;
+    packet[40] = 129;
+    packet[41] = 0;
+    packet[44] = 0x12;
+    packet[45] = 0x34;
+    packet[47] = 1;
+    try std.testing.expect(ping.isIcmp6EchoReplyForTest(&packet, 0x1234, 1));
+}

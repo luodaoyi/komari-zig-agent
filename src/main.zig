@@ -43,8 +43,8 @@ pub fn main() !void {
     }
 
     if (!cfg.disable_auto_update) {
-        try update.checkAndUpdate(allocator);
-        update.startBackground(allocator);
+        try update.checkAndUpdate(allocator, cfg);
+        update.startBackground(allocator, cfg);
     }
 
     var info = try provider.basicInfo(allocator);
@@ -58,10 +58,27 @@ pub fn main() !void {
         return;
     };
     try stdout.writeAll("Basic info uploaded successfully\n");
+    startBasicInfoLoop(allocator, cfg);
 
     const report_json = try report_ws.runOnce(allocator, cfg);
     defer allocator.free(report_json);
     try stdout.print("Report ready: {d} bytes\n", .{report_json.len});
 
     try report_ws.loop(allocator, cfg);
+}
+
+fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
+    const thread = std.Thread.spawn(.{}, basicInfoLoop, .{ allocator, cfg }) catch return;
+    thread.detach();
+}
+
+fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
+    const mins: u64 = if (cfg.info_report_interval <= 0) 5 else @intCast(cfg.info_report_interval);
+    while (true) {
+        std.Thread.sleep(mins * 60 * std.time.ns_per_s);
+        var info = provider.basicInfo(allocator) catch continue;
+        if (cfg.custom_ipv4.len != 0) info.ipv4 = cfg.custom_ipv4;
+        if (cfg.custom_ipv6.len != 0) info.ipv6 = cfg.custom_ipv6;
+        basic_info.upload(allocator, cfg, info) catch {};
+    }
 }

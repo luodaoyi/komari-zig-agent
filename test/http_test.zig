@@ -46,6 +46,11 @@ test "cloudflare access headers are added when both values exist" {
 
     try std.testing.expectEqualStrings("id", headers.cf_access_client_id.?);
     try std.testing.expectEqualStrings("secret", headers.cf_access_client_secret.?);
+
+    var raw: [2]std.http.Header = undefined;
+    const built = http.cloudflareHeaders(cfg, &raw);
+    try std.testing.expectEqual(@as(usize, 2), built.len);
+    try std.testing.expectEqualStrings("CF-Access-Client-Id", built[0].name);
 }
 
 test "http client shell keeps timeout tls and retry settings" {

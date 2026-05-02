@@ -97,6 +97,34 @@ EOF
   chmod +x "/etc/init.d/$service_name"
   rc-update add "$service_name" default
   rc-service "$service_name" restart
+elif [ "$os_name" = "freebsd" ] && [ -d /usr/local/etc/rc.d ]; then
+  rc_file="/usr/local/etc/rc.d/$service_name"
+  rc_name="$(printf '%s' "$service_name" | tr -c 'A-Za-z0-9_' '_')"
+  daemon_bin="/usr/sbin/daemon"
+  cat > "$rc_file" <<EOF
+#!/bin/sh
+
+# PROVIDE: $rc_name
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="$rc_name"
+rcvar="${rc_name}_enable"
+command="$daemon_bin"
+pidfile="/var/run/$service_name.pid"
+procname="$agent_path"
+command_args="-f -p \$pidfile $agent_path $komari_args"
+
+load_rc_config "\$name"
+: \${${rc_name}_enable:="YES"}
+
+run_rc_command "\$1"
+EOF
+  chmod +x "$rc_file"
+  sysrc "${rc_name}_enable=YES" >/dev/null 2>&1 || true
+  service "$service_name" restart
 elif [ "$os_name" = "darwin" ] && command -v launchctl >/dev/null 2>&1; then
   plist="/Library/LaunchDaemons/com.komari.$service_name.plist"
   cat > "$plist" <<EOF

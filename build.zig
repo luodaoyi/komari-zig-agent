@@ -17,6 +17,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", opts);
+    exe.root_module.addImport("idna", b.createModule(.{
+        .root_source_file = b.path("src/idna.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    exe.root_module.addImport("dns", b.createModule(.{
+        .root_source_file = b.path("src/dns.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
     exe.root_module.addImport("report_netstatic", b.createModule(.{
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
@@ -75,21 +85,26 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     }));
-    tests.root_module.addImport("protocol_http", b.createModule(.{
-        .root_source_file = b.path("src/protocol/http.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
-    tests.root_module.addImport("dns", b.createModule(.{
-        .root_source_file = b.path("src/dns.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
-    tests.root_module.addImport("idna", b.createModule(.{
+    const idna_module = b.createModule(.{
         .root_source_file = b.path("src/idna.zig"),
         .target = target,
         .optimize = optimize,
-    }));
+    });
+    const dns_module = b.createModule(.{
+        .root_source_file = b.path("src/dns.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const protocol_http = b.createModule(.{
+        .root_source_file = b.path("src/protocol/http.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    protocol_http.addImport("idna", idna_module);
+    protocol_http.addImport("dns", dns_module);
+    tests.root_module.addImport("protocol_http", protocol_http);
+    tests.root_module.addImport("dns", dns_module);
+    tests.root_module.addImport("idna", idna_module);
     const report_netstatic = b.createModule(.{
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
@@ -107,11 +122,13 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     }));
-    tests.root_module.addImport("protocol_ping", b.createModule(.{
+    const protocol_ping = b.createModule(.{
         .root_source_file = b.path("src/protocol/ping.zig"),
         .target = target,
         .optimize = optimize,
-    }));
+    });
+    protocol_ping.addImport("dns", dns_module);
+    tests.root_module.addImport("protocol_ping", protocol_ping);
     tests.root_module.addImport("protocol_ws_message", b.createModule(.{
         .root_source_file = b.path("src/protocol/ws_message.zig"),
         .target = target,

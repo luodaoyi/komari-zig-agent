@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const config = @import("config.zig");
 const http = @import("protocol/http.zig");
 const version = @import("version.zig");
 
@@ -33,10 +34,10 @@ pub fn newerThan(current_raw: []const u8, latest_raw: []const u8) bool {
     return compareVersion(latest, current) > 0;
 }
 
-pub fn checkAndUpdate(allocator: std.mem.Allocator) !void {
+pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
     if (!isNumericVersion(version.current)) return;
     const release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
-    const release = http.getRead(allocator, release_url) catch return;
+    const release = http.getReadCfg(allocator, release_url, cfg) catch return;
     defer allocator.free(release);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
     defer parsed.deinit();
@@ -47,23 +48,23 @@ pub fn checkAndUpdate(allocator: std.mem.Allocator) !void {
     const wanted = try assetName(allocator);
     defer allocator.free(wanted);
     const url = findAssetUrl(parsed.value.object, wanted) orelse return;
-    try downloadAndReplace(allocator, url);
+    try downloadAndReplace(allocator, url, cfg);
 }
 
-pub fn startBackground(allocator: std.mem.Allocator) void {
-    const thread = std.Thread.spawn(.{}, updateLoop, .{allocator}) catch return;
+pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
+    const thread = std.Thread.spawn(.{}, updateLoop, .{ allocator, cfg }) catch return;
     thread.detach();
 }
 
-fn updateLoop(allocator: std.mem.Allocator) void {
+fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     while (true) {
         std.Thread.sleep(6 * 60 * 60 * std.time.ns_per_s);
-        checkAndUpdate(allocator) catch {};
+        checkAndUpdate(allocator, cfg) catch {};
     }
 }
 
-fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8) !void {
-    const body = try http.getRead(allocator, url);
+fn downloadAndReplace(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) !void {
+    const body = try http.getReadCfg(allocator, url, cfg);
     defer allocator.free(body);
     const exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe);

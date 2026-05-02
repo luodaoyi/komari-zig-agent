@@ -37,18 +37,18 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
 }
 
 pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
-    const mem = try memInfo();
-    const swap = try swapInfo();
+    const mem = try memInfoWithOptions(options);
+    const swap = try swapInfoWithRoot(options.host_proc);
     return .{
-        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(try std.Thread.getCpuCount()), .usage = try cpuUsage() },
+        .cpu = .{ .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)), .cores = @intCast(try std.Thread.getCpuCount()), .usage = try cpuUsage(options.host_proc) },
         .ram = mem,
         .swap = swap,
-        .load = try loadInfo(),
+        .load = try loadInfo(options.host_proc),
         .disk = try diskInfoWithMountpoints(options.include_mountpoints),
         .network = try networkInfo(options),
-        .connections = try connectionsInfo(),
-        .uptime = try uptime(),
-        .process = try processCount(),
+        .connections = try connectionsInfo(options.host_proc),
+        .uptime = try uptime(options.host_proc),
+        .process = try processCount(options.host_proc),
         .gpu_json = if (options.enable_gpu) detailedGpuJson(std.heap.page_allocator) catch "" else "",
     };
 }
@@ -433,7 +433,9 @@ fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common
 }
 
 fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/net/dev", 1024 * 1024) catch return .{};
+    const path = try procPath(std.heap.page_allocator, options.host_proc, "net/dev");
+    defer std.heap.page_allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return .{};
     defer std.heap.page_allocator.free(bytes);
     var current = parseProcNetDev(bytes, options.include_nics, options.exclude_nics);
     const now = std.time.milliTimestamp();
@@ -455,8 +457,10 @@ fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
     return current;
 }
 
-fn cpuUsage() !f64 {
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/stat", 64 * 1024) catch return 0.001;
+fn cpuUsage(host_proc: []const u8) !f64 {
+    const path = try procPath(std.heap.page_allocator, host_proc, "stat");
+    defer std.heap.page_allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return 0.001;
     defer std.heap.page_allocator.free(bytes);
     const current = parseCpuStat(bytes) orelse return 0.001;
     defer previous_cpu = current;
@@ -495,14 +499,16 @@ pub fn cpuUsagePercent(previous: CpuStat, current: CpuStat) f64 {
     return (@as(f64, @floatFromInt(total_delta - idle_delta)) / @as(f64, @floatFromInt(total_delta))) * 100.0;
 }
 
-fn connectionsInfo() !common.ConnectionInfo {
+fn connectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
     return .{
-        .tcp = countProcNetFile("/proc/net/tcp") + countProcNetFile("/proc/net/tcp6"),
-        .udp = countProcNetFile("/proc/net/udp") + countProcNetFile("/proc/net/udp6"),
+        .tcp = countProcNetFile(host_proc, "net/tcp") + countProcNetFile(host_proc, "net/tcp6"),
+        .udp = countProcNetFile(host_proc, "net/udp") + countProcNetFile(host_proc, "net/udp6"),
     };
 }
 
-fn countProcNetFile(path: []const u8) u64 {
+fn countProcNetFile(host_proc: []const u8, suffix: []const u8) u64 {
+    const path = procPath(std.heap.page_allocator, host_proc, suffix) catch return 0;
+    defer std.heap.page_allocator.free(path);
     const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return 0;
     defer std.heap.page_allocator.free(bytes);
     return countProcNetConnections(bytes);
@@ -552,17 +558,27 @@ pub fn shouldIncludeNetworkInterface(name: []const u8, include_nics: []const u8,
     for (&excluded_prefixes) |prefix| {
         if (std.mem.startsWith(u8, name, prefix)) return false;
     }
-    if (include_nics.len != 0) return csvContains(include_nics, name);
-    if (exclude_nics.len != 0 and csvContains(exclude_nics, name)) return false;
+    if (include_nics.len != 0) return csvMatches(include_nics, name);
+    if (exclude_nics.len != 0 and csvMatches(exclude_nics, name)) return false;
     return true;
 }
 
-fn csvContains(csv: []const u8, needle: []const u8) bool {
+fn csvMatches(csv: []const u8, needle: []const u8) bool {
     var it = std.mem.splitScalar(u8, csv, ',');
     while (it.next()) |part| {
-        if (std.mem.eql(u8, std.mem.trim(u8, part, " \t"), needle)) return true;
+        if (globMatch(std.mem.trim(u8, part, " \t"), needle)) return true;
     }
     return false;
+}
+
+pub fn globMatch(pattern: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, pattern, "*")) return true;
+    const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return std.mem.eql(u8, pattern, value);
+    const prefix = pattern[0..star];
+    const suffix = pattern[star + 1 ..];
+    if (!std.mem.startsWith(u8, value, prefix)) return false;
+    if (suffix.len == 0) return true;
+    return std.mem.endsWith(u8, value, suffix);
 }
 
 fn cpuName(allocator: std.mem.Allocator) ![]const u8 {
@@ -578,11 +594,26 @@ fn cpuName(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn memInfo() !common.MemInfo {
+    return memInfoFromPath("/proc/meminfo", .{});
+}
+
+pub const MemMode = struct {
+    include_cache: bool = false,
+    report_raw_used: bool = false,
+};
+
+fn memInfoWithOptions(options: common.SnapshotOptions) !common.MemInfo {
+    const path = try procPath(std.heap.page_allocator, options.host_proc, "meminfo");
+    defer std.heap.page_allocator.free(path);
+    return memInfoFromPath(path, .{ .include_cache = options.memory_include_cache, .report_raw_used = options.memory_report_raw_used });
+}
+
+pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
     var total: u64 = 0;
     var free: u64 = 0;
     var available: u64 = 0;
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/meminfo", 64 * 1024) catch return .{};
-    defer std.heap.page_allocator.free(bytes);
+    var buffers: u64 = 0;
+    var cached: u64 = 0;
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t:");
@@ -592,15 +623,38 @@ fn memInfo() !common.MemInfo {
         if (std.mem.eql(u8, key, "MemTotal")) total = n;
         if (std.mem.eql(u8, key, "MemFree")) free = n;
         if (std.mem.eql(u8, key, "MemAvailable")) available = n;
+        if (std.mem.eql(u8, key, "Buffers")) buffers = n;
+        if (std.mem.eql(u8, key, "Cached")) cached = n;
     }
-    const used = if (available > 0 and total >= available) total - available else if (total >= free) total - free else 0;
+    const used = if (mode.report_raw_used)
+        if (total >= free + buffers + cached) total - free - buffers - cached else 0
+    else if (mode.include_cache)
+        if (total >= free) total - free else 0
+    else if (available > 0 and total >= available)
+        total - available
+    else if (total >= free)
+        total - free
+    else
+        0;
     return .{ .total = total, .used = used };
 }
 
+fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return .{};
+    defer std.heap.page_allocator.free(bytes);
+    return parseMemInfo(bytes, mode);
+}
+
 fn swapInfo() !common.MemInfo {
+    return swapInfoWithRoot("");
+}
+
+fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {
     var total: u64 = 0;
     var free: u64 = 0;
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/meminfo", 64 * 1024) catch return .{};
+    const path = try procPath(std.heap.page_allocator, host_proc, "meminfo");
+    defer std.heap.page_allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 64 * 1024) catch return .{};
     defer std.heap.page_allocator.free(bytes);
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
@@ -614,8 +668,10 @@ fn swapInfo() !common.MemInfo {
     return .{ .total = total, .used = if (total >= free) total - free else 0 };
 }
 
-fn loadInfo() !common.LoadInfo {
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/loadavg", 4096) catch return .{};
+fn loadInfo(host_proc: []const u8) !common.LoadInfo {
+    const path = try procPath(std.heap.page_allocator, host_proc, "loadavg");
+    defer std.heap.page_allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 4096) catch return .{};
     defer std.heap.page_allocator.free(bytes);
     var fields = std.mem.tokenizeAny(u8, bytes, " \t\n");
     return .{
@@ -625,16 +681,19 @@ fn loadInfo() !common.LoadInfo {
     };
 }
 
-fn uptime() !u64 {
-    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/uptime", 4096) catch return 0;
+fn uptime(host_proc: []const u8) !u64 {
+    const path = try procPath(std.heap.page_allocator, host_proc, "uptime");
+    defer std.heap.page_allocator.free(path);
+    const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 4096) catch return 0;
     defer std.heap.page_allocator.free(bytes);
     var fields = std.mem.tokenizeAny(u8, bytes, " \t\n");
     const first = fields.next() orelse return 0;
     return @intFromFloat(std.fmt.parseFloat(f64, first) catch 0);
 }
 
-fn processCount() !u64 {
-    var dir = std.fs.cwd().openDir("/proc", .{ .iterate = true }) catch return 0;
+fn processCount(host_proc: []const u8) !u64 {
+    const path = if (host_proc.len == 0) "/proc" else host_proc;
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return 0;
     defer dir.close();
     var count: u64 = 0;
     var it = dir.iterate();
@@ -644,4 +703,9 @@ fn processCount() !u64 {
         count += 1;
     }
     return count;
+}
+
+pub fn procPath(allocator: std.mem.Allocator, root: []const u8, suffix: []const u8) ![]const u8 {
+    if (root.len == 0) return std.fmt.allocPrint(allocator, "/proc/{s}", .{suffix});
+    return std.fs.path.join(allocator, &.{ root, suffix });
 }

@@ -7,8 +7,17 @@ test "network interface filter matches go defaults" {
     try std.testing.expect(!linux.shouldIncludeNetworkInterface("vethabc", "", ""));
     try std.testing.expect(linux.shouldIncludeNetworkInterface("eth0", "", ""));
     try std.testing.expect(linux.shouldIncludeNetworkInterface("eth0", "eth0,wlan0", ""));
+    try std.testing.expect(linux.shouldIncludeNetworkInterface("eth0", "eth*", ""));
     try std.testing.expect(!linux.shouldIncludeNetworkInterface("eth1", "eth0,wlan0", ""));
     try std.testing.expect(!linux.shouldIncludeNetworkInterface("eth0", "", "eth0"));
+    try std.testing.expect(!linux.shouldIncludeNetworkInterface("ens18", "", "ens*"));
+}
+
+test "glob matcher supports simple star patterns" {
+    try std.testing.expect(linux.globMatch("*", "eth0"));
+    try std.testing.expect(linux.globMatch("eth*", "eth0"));
+    try std.testing.expect(linux.globMatch("*0", "eth0"));
+    try std.testing.expect(!linux.globMatch("enp*", "eth0"));
 }
 
 test "proc net dev parser sums included interfaces" {

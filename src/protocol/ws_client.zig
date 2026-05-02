@@ -1,4 +1,7 @@
 const std = @import("std");
+const http = @import("http.zig");
+const idna = @import("idna");
+const raw_conn = @import("raw_conn.zig");
 
 pub const Target = struct {
     host: []const u8,
@@ -13,14 +16,18 @@ pub const Frame = struct {
 };
 
 pub const Client = struct {
-    http_client: std.http.Client,
-    request: std.http.Client.Request,
+    http_client: ?std.http.Client = null,
+    request: ?std.http.Client.Request = null,
+    raw: ?*raw_conn.RawConn = null,
     write_mutex: std.Thread.Mutex = .{},
 
     pub fn close(self: *Client, allocator: std.mem.Allocator) void {
-        self.request.connection.?.closing = true;
-        self.request.deinit();
-        self.http_client.deinit();
+        if (self.request) |*request| {
+            if (request.connection) |conn| conn.closing = true;
+            request.deinit();
+        }
+        if (self.http_client) |*client| client.deinit();
+        if (self.raw) |raw| raw.close();
         allocator.destroy(self);
     }
 
@@ -35,13 +42,21 @@ pub const Client = struct {
     pub fn writeFrame(self: *Client, opcode: u8, payload: []const u8) !void {
         self.write_mutex.lock();
         defer self.write_mutex.unlock();
-        const conn = self.request.connection orelse return error.WebSocketClosed;
+        if (self.raw) |raw| {
+            try writeMaskedFrame(raw.writer(), opcode, payload);
+            try raw.flush();
+            return;
+        }
+        const req = self.request orelse return error.WebSocketClosed;
+        const conn = req.connection orelse return error.WebSocketClosed;
         try writeMaskedFrame(conn.writer(), opcode, payload);
         try conn.flush();
     }
 
     pub fn readFrame(self: *Client, allocator: std.mem.Allocator) !Frame {
-        const conn = self.request.connection orelse return error.WebSocketClosed;
+        if (self.raw) |raw| return readFrameFromReader(allocator, raw.reader());
+        const req = self.request orelse return error.WebSocketClosed;
+        const conn = req.connection orelse return error.WebSocketClosed;
         return readFrameFromReader(allocator, conn.reader());
     }
 
@@ -70,23 +85,34 @@ pub const Client = struct {
     }
 };
 
-pub fn connect(allocator: std.mem.Allocator, url: []const u8) !*Client {
-    const uri = try std.Uri.parse(url);
+pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
+    const ascii_url = try idna.convertUrlToAscii(allocator, url);
+    defer allocator.free(ascii_url);
+    if (cfg.custom_dns.len != 0 or cfg.ignore_unsafe_cert) {
+        return connectRaw(allocator, ascii_url, cfg);
+    }
+    const uri = try std.Uri.parse(ascii_url);
     var http_client = std.http.Client{ .allocator = allocator };
     errdefer http_client.deinit();
 
     const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
-    const extra = [_]std.http.Header{
-        .{ .name = "Upgrade", .value = "websocket" },
-        .{ .name = "Connection", .value = "Upgrade" },
-        .{ .name = "Sec-WebSocket-Key", .value = nonce },
-        .{ .name = "Sec-WebSocket-Version", .value = "13" },
-    };
+    var extra: [6]std.http.Header = undefined;
+    extra[0] = .{ .name = "Upgrade", .value = "websocket" };
+    extra[1] = .{ .name = "Connection", .value = "Upgrade" };
+    extra[2] = .{ .name = "Sec-WebSocket-Key", .value = nonce };
+    extra[3] = .{ .name = "Sec-WebSocket-Version", .value = "13" };
+    var cf: [2]std.http.Header = undefined;
+    const cf_headers = http.cloudflareHeaders(cfg, &cf);
+    var extra_len: usize = 4;
+    for (cf_headers) |header| {
+        extra[extra_len] = header;
+        extra_len += 1;
+    }
 
     var req = try http_client.request(.GET, uri, .{
         .keep_alive = true,
         .redirect_behavior = .unhandled,
-        .extra_headers = &extra,
+        .extra_headers = extra[0..extra_len],
     });
     errdefer req.deinit();
     try req.sendBodiless();
@@ -99,6 +125,31 @@ pub fn connect(allocator: std.mem.Allocator, url: []const u8) !*Client {
         .http_client = http_client,
         .request = req,
     };
+    return client;
+}
+
+fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
+    const target = try parseUrl(url);
+    const raw = try raw_conn.RawConn.connect(allocator, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns);
+    errdefer raw.close();
+    const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
+    var req = std.Io.Writer.Allocating.init(allocator);
+    defer req.deinit();
+    try req.writer.print(
+        "GET {s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\nUser-Agent: komari-zig-agent\r\n",
+        .{ target.path, target.host, nonce },
+    );
+    var cf: [2]std.http.Header = undefined;
+    for (http.cloudflareHeaders(cfg, &cf)) |header| try req.writer.print("{s}: {s}\r\n", .{ header.name, header.value });
+    try req.writer.writeAll("\r\n");
+    const request = try req.toOwnedSlice();
+    defer allocator.free(request);
+    try raw.writer().writeAll(request);
+    try raw.flush();
+    const code = try readHandshake(raw.reader());
+    if (code != 101) return error.WebSocketHandshakeFailed;
+    const client = try allocator.create(Client);
+    client.* = .{ .raw = raw };
     return client;
 }
 
@@ -140,6 +191,33 @@ fn readFrameFromReader(allocator: std.mem.Allocator, reader: anytype) !Frame {
         for (payload, 0..) |*b, i| b.* ^= mask[i % 4];
     }
     return .{ .opcode = opcode, .payload = payload };
+}
+
+fn readHandshake(reader: *std.Io.Reader) !u16 {
+    var line: [1024]u8 = undefined;
+    const n = try readLine(reader, &line);
+    const first = line[0..n];
+    if (first.len < 12 or !std.mem.startsWith(u8, first, "HTTP/1.")) return error.WebSocketHandshakeFailed;
+    const code = try std.fmt.parseInt(u16, first[9..12], 10);
+    while (true) {
+        const len = try readLine(reader, &line);
+        if (len == 0) break;
+    }
+    return code;
+}
+
+fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {
+    var i: usize = 0;
+    while (i < buf.len) {
+        const b = try reader.takeByte();
+        if (b == '\n') {
+            if (i > 0 and buf[i - 1] == '\r') i -= 1;
+            return i;
+        }
+        buf[i] = b;
+        i += 1;
+    }
+    return error.LineTooLong;
 }
 
 fn writeMaskedFrame(writer: anytype, opcode: u8, payload: []const u8) !void {

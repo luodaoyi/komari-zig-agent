@@ -32,6 +32,9 @@ pub const SnapshotOptions = struct {
     include_mountpoints: []const u8 = "",
     month_rotate: i32 = 0,
     enable_gpu: bool = false,
+    host_proc: []const u8 = "",
+    memory_include_cache: bool = false,
+    memory_report_raw_used: bool = false,
 };
 
 pub const NetworkInfo = struct {
