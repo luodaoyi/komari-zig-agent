@@ -65,7 +65,6 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
                 closed = true;
                 break;
             };
-            try stdout.print("Report generated: {d} bytes sent\n", .{payload.len});
             if (sleepOrStop(reportSleepSeconds(cfg.interval), stop_requested)) return;
         }
         if (!closed and isStopRequested(stop_requested)) return;

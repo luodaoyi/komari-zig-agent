@@ -15,9 +15,7 @@ var shutdown_requested = std.atomic.Value(bool).init(false);
 var netstatic_active = std.atomic.Value(bool).init(false);
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.smp_allocator;
     installSignalHandlers();
 
     const args = try std.process.argsAlloc(allocator);
@@ -70,9 +68,6 @@ pub fn main() !void {
     if (shutdown_requested.load(.acquire)) return;
     startBasicInfoLoop(allocator, cfg);
 
-    const report_json = try report_ws.runOnce(allocator, cfg);
-    defer allocator.free(report_json);
-    try stdout.print("Report ready: {d} bytes\n", .{report_json.len});
     if (shutdown_requested.load(.acquire)) return;
 
     while (!shutdown_requested.load(.acquire)) {
