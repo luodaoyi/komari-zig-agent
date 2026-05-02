@@ -94,15 +94,15 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/protocol/basic_info.zig`
 - Add: `test/linux_basic_info_test.zig`
 
-- [ ] Implement distro name from `/etc/os-release` using `PRETTY_NAME`, fallback to `ID`, fallback `linux`.
+- [x] Implement distro name from `/etc/os-release` using `PRETTY_NAME`, fallback to `ID`, fallback `linux`.
 - [ ] Implement kernel from `/proc/sys/kernel/osrelease` and `uname` fallback.
-- [ ] Implement arch mapping compatible with Go/runtime labels: `amd64`, `arm64`, `386`, `arm`.
+- [x] Implement arch mapping compatible with Go/runtime labels: `amd64`, `arm64`, `386`, `arm`.
 - [ ] Implement IPv4/IPv6 public/local discovery with the same “return string or empty” behavior.
-- [ ] Implement virtualization detection from `/proc/1/environ`, `/proc/cpuinfo`, `/sys/class/dmi/id/product_name`, `systemd-detect-virt` only as last optional child process.
+- [x] Implement virtualization detection from `/proc/1/environ`, `/proc/cpuinfo`, `/sys/class/dmi/id/product_name`, `systemd-detect-virt` only as last optional child process.
 - [ ] Implement GPU name discovery from `nvidia-smi`, `rocm-smi`, `/sys/class/drm`, keeping failure silent.
-- [ ] Run: `zig build test`
+- [x] Run: `zig build test`
 - [ ] Run on `ccs2`: `/opt/komari/agent --list-disk` after redeploy when ready.
-- [ ] Commit: `feat: complete linux basic info collectors`
+- [x] Commit: `feat: complete linux basic info collectors`
 
 ## Task 4: Linux Disk Collector
 
@@ -111,16 +111,16 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/platform/common.zig`
 - Add: `test/disk_filter_test.zig`
 
-- [ ] Parse `/proc/self/mountinfo` or `/proc/mounts`.
+- [x] Parse `/proc/self/mountinfo` or `/proc/mounts`.
 - [ ] Use `statvfs` for total/used bytes.
-- [ ] Include `/` even under containers.
-- [ ] Exclude Go-equivalent pseudo/network/tmp filesystems: `tmpfs`, `devtmpfs`, `nfs`, `cifs`, `smb`, `vboxsf`, `9p`, `fuse`, `overlay`, `proc`, `devpts`, `sysfs`, `cgroup`, `mqueue`, `hugetlbfs`, `debugfs`, `binfmt_misc`, `securityfs`.
-- [ ] Exclude mount prefixes: `/tmp`, `/var/tmp`, `/dev`, `/run`, `/var/lib/containers`, `/var/lib/docker`, `/proc`, `/sys`, `/sys/fs/cgroup`, `/etc/resolv.conf`, `/etc/host`, `/nix/store`.
-- [ ] Respect `--include-mountpoint` semicolon list.
-- [ ] Deduplicate ZFS by pool name.
+- [x] Include `/` even under containers.
+- [x] Exclude Go-equivalent pseudo/network/tmp filesystems: `tmpfs`, `devtmpfs`, `nfs`, `cifs`, `smb`, `vboxsf`, `9p`, `fuse`, `overlay`, `proc`, `devpts`, `sysfs`, `cgroup`, `mqueue`, `hugetlbfs`, `debugfs`, `binfmt_misc`, `securityfs`.
+- [x] Exclude mount prefixes: `/tmp`, `/var/tmp`, `/dev`, `/run`, `/var/lib/containers`, `/var/lib/docker`, `/proc`, `/sys`, `/sys/fs/cgroup`, `/etc/resolv.conf`, `/etc/host`, `/nix/store`.
+- [x] Respect `--include-mountpoint` semicolon list.
+- [x] Deduplicate ZFS by pool name.
 - [ ] Add `listDisk` output matching Go style: `mountpoint (fstype)`.
-- [ ] Run: `zig build test`
-- [ ] Commit: `feat: add linux disk collector`
+- [x] Run: `zig build test`
+- [x] Commit: `feat: add linux disk collector`
 
 ## Task 5: Linux Network Speed And Traffic
 
@@ -131,15 +131,15 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Add: `test/network_filter_test.zig`
 - Add: `test/netstatic_test.zig`
 
-- [ ] Parse `/proc/net/dev`.
-- [ ] Exclude default virtual prefixes: `br`, `cni`, `docker`, `podman`, `flannel`, `lo`, `veth`, `virbr`, `vmbr`, `tap`, `fwbr`, `fwpr`.
-- [ ] Respect include-nics whitelist and exclude-nics blacklist.
-- [ ] Compute speed by delta over the report interval without sleeping inside collector.
+- [x] Parse `/proc/net/dev`.
+- [x] Exclude default virtual prefixes: `br`, `cni`, `docker`, `podman`, `flannel`, `lo`, `veth`, `virbr`, `vmbr`, `tap`, `fwbr`, `fwpr`.
+- [x] Respect include-nics whitelist and exclude-nics blacklist.
+- [x] Compute speed by delta over the report interval without sleeping inside collector.
 - [ ] Persist total counters in `netstatic` when `month_rotate != 0`.
-- [ ] Implement reset day with same rule as Go `utils.GetLastResetDate`.
+- [x] Implement reset day with same rule as Go `utils.GetLastResetDate`.
 - [ ] Fall back to live total counters if persistence fails, and append message text.
-- [ ] Run: `zig build test`
-- [ ] Commit: `feat: add linux network traffic collector`
+- [x] Run: `zig build test`
+- [x] Commit: `feat: add linux network traffic collector`
 
 ## Task 6: Linux CPU, Load, Process, Connections
 
@@ -148,14 +148,14 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/platform/provider.zig`
 - Add: `test/cpu_proc_test.zig`
 
-- [ ] Replace fixed CPU usage with `/proc/stat` delta calculation.
-- [ ] Keep minimum CPU usage at `0.001`, matching Go report behavior.
-- [ ] Keep load from `/proc/loadavg`.
-- [ ] Keep process count from numeric dirs in `/proc`.
-- [ ] Count TCP from `/proc/net/tcp` and `/proc/net/tcp6`.
-- [ ] Count UDP from `/proc/net/udp` and `/proc/net/udp6`.
-- [ ] Run: `zig build test`
-- [ ] Commit: `feat: add linux cpu and connection collectors`
+- [x] Replace fixed CPU usage with `/proc/stat` delta calculation.
+- [x] Keep minimum CPU usage at `0.001`, matching Go report behavior.
+- [x] Keep load from `/proc/loadavg`.
+- [x] Keep process count from numeric dirs in `/proc`.
+- [x] Count TCP from `/proc/net/tcp` and `/proc/net/tcp6`.
+- [x] Count UDP from `/proc/net/udp` and `/proc/net/udp6`.
+- [x] Run: `zig build test`
+- [x] Commit: `feat: add linux cpu and connection collectors`
 
 ## Task 7: Complete Report JSON
 
@@ -218,13 +218,13 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/terminal/terminal.zig`
 - Add: `test/ws_message_test.zig`
 
-- [ ] Parse unknown WS messages without crashing.
-- [ ] Dispatch terminal when `message == "terminal"` or `request_id != ""`.
-- [ ] Dispatch exec when `message == "exec"`.
-- [ ] Dispatch ping when `message == "ping"` or ping fields exist.
-- [ ] Ensure report sending continues while tasks run.
-- [ ] Run: `zig build test`
-- [ ] Commit: `feat: dispatch websocket tasks`
+- [x] Parse unknown WS messages without crashing.
+- [x] Dispatch terminal when `message == "terminal"` or `request_id != ""`.
+- [x] Dispatch exec when `message == "exec"`.
+- [x] Dispatch ping when `message == "ping"` or ping fields exist.
+- [x] Ensure report sending continues while tasks run.
+- [x] Run: `zig build test`
+- [x] Commit: `feat: dispatch websocket tasks`
 
 ## Task 11: Exec Task Protocol
 
@@ -233,14 +233,14 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/protocol/http.zig`
 - Add: `test/task_test.zig`
 
-- [ ] On Unix run `sh -c <command>`.
-- [ ] If command empty, upload result `No command provided` with exit code `0`.
-- [ ] If remote control disabled, upload result `Remote control is disabled.` with exit code `-1`.
-- [ ] Merge stdout and stderr with `\n`, normalize CRLF to LF.
-- [ ] Detect exit code from child process.
-- [ ] Upload to `/api/clients/task/result?token=...`.
-- [ ] Run: `zig build test`
-- [ ] Commit: `feat: add exec task protocol`
+- [x] On Unix run `sh -c <command>`.
+- [x] If command empty, upload result `No command provided` with exit code `0`.
+- [x] If remote control disabled, upload result `Remote control is disabled.` with exit code `-1`.
+- [x] Merge stdout and stderr with `\n`, normalize CRLF to LF.
+- [x] Detect exit code from child process.
+- [x] Upload to `/api/clients/task/result?token=...`.
+- [x] Run: `zig build test`
+- [x] Commit: `feat: add exec task protocol`
 
 ## Task 12: Ping Task Protocol
 
@@ -249,13 +249,13 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/protocol/ws.zig`
 - Add: `test/ping_test.zig`
 
-- [ ] TCP ping: resolve host before timing, default port 80.
-- [ ] HTTP ping: add `http://` when scheme absent, resolve host before timing, success for status 200-399.
+- [x] TCP ping: resolve host before timing, default port 80.
+- [x] HTTP ping: add `http://` when scheme absent, resolve host before timing, success for status 200-399.
 - [ ] ICMP ping: implement raw socket where permitted; if permission denied, return `-1` and log message.
 - [ ] Timeout is 3 seconds.
 - [ ] Retry high latency over 1000 ms up to 3 times.
-- [ ] Send `ping_result` JSON over the report WS.
-- [ ] Run: `zig build test`
+- [x] Send `ping_result` JSON over the report WS.
+- [x] Run: `zig build test`
 - [ ] Commit: `feat: add ping task protocol`
 
 ## Task 13: Terminal Protocol
