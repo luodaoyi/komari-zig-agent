@@ -29,16 +29,26 @@ pub fn main() !void {
 
     if (cfg.command == .list_disk) {
         const disks = try provider.diskList(allocator);
-        defer allocator.free(disks);
+        defer freeDiskMounts(allocator, disks);
         var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll("All Disk Partitions:\n");
         try stdout.writeAll("Mountpoint\tFstype\n");
         for (disks) |disk| {
-            defer allocator.free(disk.mountpoint);
-            defer allocator.free(disk.fstype);
             try stdout.print("{s}\t{s}\n", .{ disk.mountpoint, disk.fstype });
         }
+        const monitoring = try provider.monitoringDiskList(allocator, cfg.include_mountpoints);
+        defer freeStringSlice(allocator, monitoring);
+        try printStringList(&stdout, "Monitoring Mountpoints", monitoring);
         return;
     }
+
+    if (cfg.command == .check_mem) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try provider.printMemoryCheck(allocator, &stdout, cfg.memory_include_cache, cfg.memory_report_raw_used);
+        return;
+    }
+
+    if (cfg.show_warning) return;
 
     try autodiscovery.applyExistingToken(config_allocator, &cfg);
 
@@ -101,21 +111,33 @@ fn handleSignal(_: i32) callconv(.c) void {
 fn printMonitoringLists(allocator: std.mem.Allocator, cfg: config.Config) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
     const disks = try provider.monitoringDiskList(allocator, cfg.include_mountpoints);
-    defer allocator.free(disks);
-    try stdout.writeAll("Monitoring Mountpoints: [");
-    for (disks, 0..) |disk, i| {
-        if (i != 0) try stdout.writeAll(" ");
-        try stdout.print("{s}", .{disk});
-    }
-    try stdout.writeAll("]\n");
+    defer freeStringSlice(allocator, disks);
+    try printStringList(&stdout, "Monitoring Mountpoints", disks);
     const nics = try provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics);
-    defer allocator.free(nics);
-    try stdout.writeAll("Monitoring Interfaces: [");
-    for (nics, 0..) |nic, i| {
-        if (i != 0) try stdout.writeAll(" ");
-        try stdout.print("{s}", .{nic});
+    defer freeStringSlice(allocator, nics);
+    try printStringList(&stdout, "Monitoring Interfaces", nics);
+}
+
+fn printStringList(writer: anytype, label: []const u8, values: []const []const u8) !void {
+    try writer.print("{s}: [", .{label});
+    for (values, 0..) |value, i| {
+        if (i != 0) try writer.writeAll(" ");
+        try writer.print("{s}", .{value});
     }
-    try stdout.writeAll("]\n");
+    try writer.writeAll("]\n");
+}
+
+fn freeDiskMounts(allocator: std.mem.Allocator, disks: []common.DiskMount) void {
+    for (disks) |disk| {
+        allocator.free(disk.mountpoint);
+        allocator.free(disk.fstype);
+    }
+    allocator.free(disks);
+}
+
+fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
 }
 
 fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {

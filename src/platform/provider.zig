@@ -45,3 +45,31 @@ pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const
     if (@hasDecl(impl, "localIpFromInterfaces")) return impl.localIpFromInterfaces(allocator, include_nics, exclude_nics);
     return .{ .ipv4 = "", .ipv6 = "" };
 }
+
+pub fn printMemoryCheck(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    include_cache: bool,
+    report_raw_used: bool,
+) !void {
+    if (@hasDecl(impl, "printMemoryCheck")) {
+        return impl.printMemoryCheck(allocator, writer, include_cache, report_raw_used);
+    }
+
+    try writer.writeAll("--- Memory Check ---\n");
+    const snap = try impl.snapshot(.{
+        .memory_include_cache = include_cache,
+        .memory_report_raw_used = report_raw_used,
+    });
+    try printRamInfo(writer, "current", snap.ram);
+}
+
+pub fn printRamInfo(writer: anytype, mode: []const u8, info: common.MemInfo) !void {
+    try writer.print("[{s}] Total: {d} bytes ({d} MiB), Used: {d} bytes ({d} MiB)\n", .{
+        mode,
+        info.total,
+        info.total / (1024 * 1024),
+        info.used,
+        info.used / (1024 * 1024),
+    });
+}

@@ -17,7 +17,7 @@ test "cli aliases parse" {
 
     const args = [_][]const u8{
         "komari-agent", "-t", "tok", "-e", "https://panel.example", "-i", "2.5",
-        "-u", "-r", "7", "-c", "11",
+        "-u",           "-r", "7",   "-c", "11",
     };
     const cfg = try config.parseArgs(arena.allocator(), &args);
     try std.testing.expectEqualStrings("tok", cfg.token);
@@ -34,25 +34,37 @@ test "full go-compatible cli flags parse" {
 
     const args = [_][]const u8{
         "komari-agent",
-        "--auto-discovery", "discover-key",
+        "--auto-discovery",
+        "discover-key",
         "--disable-auto-update",
         "--disable-web-ssh",
-        "--info-report-interval", "30",
-        "--include-nics", "eth0,wlan0",
-        "--exclude-nics", "docker0",
-        "--include-mountpoint", "/;/data",
-        "--month-rotate", "8",
-        "--cf-access-client-id", "cf-id",
-        "--cf-access-client-secret", "cf-secret",
+        "--info-report-interval",
+        "30",
+        "--include-nics",
+        "eth0,wlan0",
+        "--exclude-nics",
+        "docker0",
+        "--include-mountpoint",
+        "/;/data",
+        "--month-rotate",
+        "8",
+        "--cf-access-client-id",
+        "cf-id",
+        "--cf-access-client-secret",
+        "cf-secret",
         "--memory-include-cache",
         "--memory-exclude-bcf",
-        "--custom-dns", "1.1.1.1",
+        "--custom-dns",
+        "1.1.1.1",
         "--gpu",
         "--show-warning",
-        "--custom-ipv4", "192.0.2.10",
-        "--custom-ipv6", "2001:db8::10",
+        "--custom-ipv4",
+        "192.0.2.10",
+        "--custom-ipv6",
+        "2001:db8::10",
         "--get-ip-addr-from-nic",
-        "--config", "agent.json",
+        "--config",
+        "agent.json",
     };
     const cfg = try config.parseArgs(arena.allocator(), &args);
 
@@ -84,6 +96,15 @@ test "list-disk subcommand is recognized" {
     const args = [_][]const u8{ "komari-agent", "list-disk" };
     const cfg = try config.parseArgs(arena.allocator(), &args);
     try std.testing.expectEqual(config.Command.list_disk, cfg.command);
+}
+
+test "check-mem subcommand is recognized" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{ "komari-agent", "check-mem" };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+    try std.testing.expectEqual(config.Command.check_mem, cfg.command);
 }
 
 test "unknown flags are ignored" {

@@ -3,6 +3,7 @@ const std = @import("std");
 pub const Command = enum {
     run,
     list_disk,
+    check_mem,
 };
 
 pub const Config = struct {
@@ -121,6 +122,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
 
         if (std.mem.eql(u8, arg, "list-disk")) {
             cfg.command = .list_disk;
+        } else if (std.mem.eql(u8, arg, "check-mem")) {
+            cfg.command = .check_mem;
         } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--token")) {
             if (nextValue(args, &i)) |v| cfg.token = try allocator.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--endpoint")) {

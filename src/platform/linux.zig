@@ -1095,6 +1095,21 @@ const MemSwapInfo = struct {
     swap: common.MemInfo,
 };
 
+pub const ProcMemInfo = struct {
+    mem_total: u64 = 0,
+    mem_free: u64 = 0,
+    mem_available: u64 = 0,
+    buffers: u64 = 0,
+    cached: u64 = 0,
+    swap_total: u64 = 0,
+    swap_free: u64 = 0,
+    swap_cached: u64 = 0,
+    shmem: u64 = 0,
+    sreclaimable: u64 = 0,
+    zswap: u64 = 0,
+    zswapped: u64 = 0,
+};
+
 fn memAndSwapInfoWithOptions(options: common.SnapshotOptions) !MemSwapInfo {
     var buf: [16 * 1024]u8 = undefined;
     const bytes = readSmallProcFile(options.host_proc, "meminfo", &buf) orelse return .{ .ram = .{}, .swap = .{} };
@@ -1104,34 +1119,40 @@ fn memAndSwapInfoWithOptions(options: common.SnapshotOptions) !MemSwapInfo {
     };
 }
 
-pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
-    var total: u64 = 0;
-    var free: u64 = 0;
-    var buffers: u64 = 0;
-    var cached: u64 = 0;
-    var shmem: u64 = 0;
-    var sreclaimable: u64 = 0;
+pub fn parseProcMemInfo(bytes: []const u8) ProcMemInfo {
+    var info = ProcMemInfo{};
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t:");
         const key = fields.next() orelse continue;
         const val = fields.next() orelse continue;
         const n = (std.fmt.parseInt(u64, val, 10) catch 0) * 1024;
-        if (std.mem.eql(u8, key, "MemTotal")) total = n;
-        if (std.mem.eql(u8, key, "MemFree")) free = n;
-        if (std.mem.eql(u8, key, "Buffers")) buffers = n;
-        if (std.mem.eql(u8, key, "Cached")) cached = n;
-        if (std.mem.eql(u8, key, "Shmem")) shmem = n;
-        if (std.mem.eql(u8, key, "SReclaimable")) sreclaimable = n;
+        if (std.mem.eql(u8, key, "MemTotal")) info.mem_total = n;
+        if (std.mem.eql(u8, key, "MemFree")) info.mem_free = n;
+        if (std.mem.eql(u8, key, "MemAvailable")) info.mem_available = n;
+        if (std.mem.eql(u8, key, "Buffers")) info.buffers = n;
+        if (std.mem.eql(u8, key, "Cached")) info.cached = n;
+        if (std.mem.eql(u8, key, "SwapTotal")) info.swap_total = n;
+        if (std.mem.eql(u8, key, "SwapFree")) info.swap_free = n;
+        if (std.mem.eql(u8, key, "SwapCached")) info.swap_cached = n;
+        if (std.mem.eql(u8, key, "Shmem")) info.shmem = n;
+        if (std.mem.eql(u8, key, "SReclaimable")) info.sreclaimable = n;
+        if (std.mem.eql(u8, key, "Zswap")) info.zswap = n;
+        if (std.mem.eql(u8, key, "Zswapped")) info.zswapped = n;
     }
-    const htop_deductions = free + cached + sreclaimable + buffers;
-    const htop_used = (if (total >= htop_deductions) total - htop_deductions else if (total >= free) total - free else 0) + shmem;
+    return info;
+}
+
+pub fn parseMemInfo(bytes: []const u8, mode: MemMode) common.MemInfo {
+    const info = parseProcMemInfo(bytes);
+    const htop_deductions = info.mem_free + info.cached + info.sreclaimable + info.buffers;
+    const htop_used = (if (info.mem_total >= htop_deductions) info.mem_total - htop_deductions else if (info.mem_total >= info.mem_free) info.mem_total - info.mem_free else 0) + info.shmem;
     const used = if (mode.include_cache)
-        if (total >= free) total - free else 0
+        if (info.mem_total >= info.mem_free) info.mem_total - info.mem_free else 0
     else
         htop_used;
     _ = mode.report_raw_used;
-    return .{ .total = total, .used = used };
+    return .{ .total = info.mem_total, .used = used };
 }
 
 fn memInfoFromPath(path: []const u8, mode: MemMode) !common.MemInfo {
@@ -1151,21 +1172,85 @@ fn swapInfoWithRoot(host_proc: []const u8) !common.MemInfo {
 }
 
 pub fn parseSwapInfo(bytes: []const u8) common.MemInfo {
-    var total: u64 = 0;
-    var free: u64 = 0;
-    var cached: u64 = 0;
-    var it = std.mem.splitScalar(u8, bytes, '\n');
-    while (it.next()) |line| {
-        var fields = std.mem.tokenizeAny(u8, line, " \t:");
-        const key = fields.next() orelse continue;
-        const val = fields.next() orelse continue;
-        const n = (std.fmt.parseInt(u64, val, 10) catch 0) * 1024;
-        if (std.mem.eql(u8, key, "SwapTotal")) total = n;
-        if (std.mem.eql(u8, key, "SwapFree")) free = n;
-        if (std.mem.eql(u8, key, "SwapCached")) cached = n;
+    const info = parseProcMemInfo(bytes);
+    const deductions = info.swap_free + info.swap_cached;
+    return .{ .total = info.swap_total, .used = if (info.swap_total >= deductions) info.swap_total - deductions else if (info.swap_total >= info.swap_free) info.swap_total - info.swap_free else 0 };
+}
+
+pub fn printMemoryCheck(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    include_cache: bool,
+    report_raw_used: bool,
+) !void {
+    var buf: [16 * 1024]u8 = undefined;
+    const bytes = readSmallFile("/proc/meminfo", &buf) orelse "";
+
+    try writer.writeAll("--- Memory Check ---\n");
+    if (bytes.len != 0) {
+        const proc = parseProcMemInfo(bytes);
+        try writer.writeAll("--- /proc/meminfo ---\n");
+        try printMeminfoField(writer, "MemTotal", proc.mem_total);
+        try printMeminfoField(writer, "MemFree", proc.mem_free);
+        try printMeminfoField(writer, "MemAvailable", proc.mem_available);
+        try printMeminfoField(writer, "Buffers", proc.buffers);
+        try printMeminfoField(writer, "Cached", proc.cached);
+        try printMeminfoField(writer, "SwapTotal", proc.swap_total);
+        try printMeminfoField(writer, "SwapFree", proc.swap_free);
+        try printMeminfoField(writer, "SwapCached", proc.swap_cached);
+        try printMeminfoField(writer, "Shmem", proc.shmem);
+        try printMeminfoField(writer, "SReclaimable", proc.sreclaimable);
+        try printMeminfoField(writer, "Zswap", proc.zswap);
+        try printMeminfoField(writer, "Zswapped", proc.zswapped);
+        try writer.writeAll("---------------------\n");
+
+        try printRamInfo(writer, "htoplike", parseMemInfo(bytes, .{}));
+        try printRamInfo(writer, "gopsutil", memGopsutilLike(proc));
+    } else {
+        try printRamInfo(writer, "htoplike", .{});
+        try printRamInfo(writer, "gopsutil", .{});
     }
-    const deductions = free + cached;
-    return .{ .total = total, .used = if (total >= deductions) total - deductions else if (total >= free) total - free else 0 };
+    try printRamInfo(writer, "callFree", callFree(allocator) catch .{});
+    try writer.writeAll("--- Current Configured ---\n");
+    const current = if (bytes.len != 0) parseMemInfo(bytes, .{ .include_cache = include_cache, .report_raw_used = report_raw_used }) else common.MemInfo{};
+    try printRamInfo(writer, if (include_cache) "includeCache" else "htoplike", current);
+}
+
+fn printMeminfoField(writer: anytype, label: []const u8, bytes: u64) !void {
+    try writer.print("{s}: {d} MiB\n", .{ label, bytes / (1024 * 1024) });
+}
+
+fn printRamInfo(writer: anytype, mode: []const u8, info: common.MemInfo) !void {
+    try writer.print("[{s}] Total: {d} bytes ({d} MiB), Used: {d} bytes ({d} MiB)\n", .{
+        mode,
+        info.total,
+        info.total / (1024 * 1024),
+        info.used,
+        info.used / (1024 * 1024),
+    });
+}
+
+fn memGopsutilLike(info: ProcMemInfo) common.MemInfo {
+    const available = if (info.mem_available != 0) info.mem_available else info.mem_free;
+    return .{
+        .total = info.mem_total,
+        .used = if (info.mem_total >= available) info.mem_total - available else 0,
+    };
+}
+
+fn callFree(allocator: std.mem.Allocator) !common.MemInfo {
+    const output = try commandOutput(allocator, &.{ "free", "-b" });
+    defer allocator.free(output);
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "Mem:")) continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        _ = fields.next();
+        const total = std.fmt.parseInt(u64, fields.next() orelse "0", 10) catch 0;
+        const used = std.fmt.parseInt(u64, fields.next() orelse "0", 10) catch 0;
+        return .{ .total = total, .used = used };
+    }
+    return .{};
 }
 
 fn loadInfo(host_proc: []const u8) !common.LoadInfo {

@@ -54,6 +54,28 @@ test "meminfo parser honors memory modes" {
     try std.testing.expectEqual(@as(u64, 700 * 1024), raw.used);
 }
 
+test "proc meminfo parser keeps check-mem fields" {
+    const text =
+        \\MemTotal:       1000 kB
+        \\MemFree:         100 kB
+        \\MemAvailable:    400 kB
+        \\Buffers:          50 kB
+        \\Cached:          150 kB
+        \\SwapTotal:       200 kB
+        \\SwapFree:         80 kB
+        \\SwapCached:       20 kB
+        \\Shmem:            30 kB
+        \\SReclaimable:     70 kB
+        \\Zswap:             5 kB
+        \\Zswapped:          6 kB
+    ;
+    const info = linux.parseProcMemInfo(text);
+    try std.testing.expectEqual(@as(u64, 1000 * 1024), info.mem_total);
+    try std.testing.expectEqual(@as(u64, 400 * 1024), info.mem_available);
+    try std.testing.expectEqual(@as(u64, 70 * 1024), info.sreclaimable);
+    try std.testing.expectEqual(@as(u64, 6 * 1024), info.zswapped);
+}
+
 test "swap parser matches meminfo semantics" {
     const text =
         \\SwapTotal:      1000 kB
