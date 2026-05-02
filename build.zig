@@ -26,17 +26,35 @@ pub fn build(b: *std.Build) void {
     });
     version_module.addOptions("build_options", opts);
 
+    const test_step = b.step("test", "Run unit tests");
+    addTest(b, test_step, "test/bootstrap_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/config_test.zig", target, optimize, opts, version_module);
+}
+
+fn addTest(
+    b: *std.Build,
+    test_step: *std.Build.Step,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    opts: *std.Build.Step.Options,
+    version_module: *std.Build.Module,
+) void {
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("test/bootstrap_test.zig"),
+            .root_source_file = b.path(path),
             .target = target,
             .optimize = optimize,
         }),
     });
     tests.root_module.addOptions("build_options", opts);
     tests.root_module.addImport("version", version_module);
+    tests.root_module.addImport("config", b.createModule(.{
+        .root_source_file = b.path("src/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
 
     const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 }
