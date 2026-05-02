@@ -1,6 +1,12 @@
 const std = @import("std");
 
+pub const Command = enum {
+    run,
+    list_disk,
+};
+
 pub const Config = struct {
+    command: Command = .run,
     auto_discovery_key: []const u8 = "",
     disable_auto_update: bool = false,
     disable_web_ssh: bool = false,
@@ -113,7 +119,9 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             continue;
         }
 
-        if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--token")) {
+        if (std.mem.eql(u8, arg, "list-disk")) {
+            cfg.command = .list_disk;
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--token")) {
             if (nextValue(args, &i)) |v| cfg.token = try allocator.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "--endpoint")) {
             if (nextValue(args, &i)) |v| cfg.endpoint = try allocator.dupe(u8, v);

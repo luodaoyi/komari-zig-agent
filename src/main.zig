@@ -18,6 +18,20 @@ pub fn main() !void {
     var cfg = try config.parseArgs(allocator, args);
     try cfg.loadEnv(allocator);
     if (cfg.config_file.len != 0) try cfg.loadJsonFile(allocator, cfg.config_file);
+
+    if (cfg.command == .list_disk) {
+        const disks = try provider.diskList(allocator);
+        defer allocator.free(disks);
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll("Mountpoint\tFstype\n");
+        for (disks) |disk| {
+            defer allocator.free(disk.mountpoint);
+            defer allocator.free(disk.fstype);
+            try stdout.print("{s}\t{s}\n", .{ disk.mountpoint, disk.fstype });
+        }
+        return;
+    }
+
     try autodiscovery.applyExistingToken(allocator, &cfg);
 
     var stdout = std.fs.File.stdout().deprecatedWriter();

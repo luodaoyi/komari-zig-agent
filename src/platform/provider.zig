@@ -16,3 +16,7 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
 pub fn snapshot() !common.Snapshot {
     return impl.snapshot();
 }
+
+pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
+    return impl.diskList(allocator);
+}

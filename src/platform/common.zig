@@ -21,6 +21,11 @@ pub const DiskInfo = struct {
     used: u64 = 0,
 };
 
+pub const DiskMount = struct {
+    mountpoint: []const u8,
+    fstype: []const u8,
+};
+
 pub const NetworkInfo = struct {
     up: u64 = 0,
     down: u64 = 0,

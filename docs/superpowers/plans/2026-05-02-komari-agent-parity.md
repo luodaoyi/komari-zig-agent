@@ -79,12 +79,12 @@ The Zig agent must preserve these Go agent endpoints and payloads:
 - Modify: `src/config.zig`
 - Modify: `test/config_test.zig`
 
-- [ ] Compare `D:\sources\repos-new\gh\komari-agent\cmd\flags\flag.go`, `cmd\root.go`, `cmd\autodiscovery.go`, `cmd\listDisk.go`.
-- [ ] Ensure Zig accepts: endpoint, token, interval, max retries, reconnect interval, info report interval, disable web ssh, ignore unsafe cert, include/exclude nics, include mountpoints, month rotate, enable gpu, custom dns, ipv4/ipv6 preference, CF Access headers, host proc.
-- [ ] Keep Windows-only warning behavior out of scope.
-- [ ] Add `listDisk` equivalent command for Unix.
-- [ ] Run: `zig build test`
-- [ ] Commit: `feat: complete config and cli parity`
+- [x] Compare `D:\sources\repos-new\gh\komari-agent\cmd\flags\flag.go`, `cmd\root.go`, `cmd\autodiscovery.go`, `cmd\listDisk.go`.
+- [x] Ensure Zig accepts: endpoint, token, interval, max retries, reconnect interval, info report interval, disable web ssh, ignore unsafe cert, include/exclude nics, include mountpoints, month rotate, enable gpu, custom dns, ipv4/ipv6 preference, CF Access headers, host proc.
+- [x] Keep Windows-only warning behavior out of scope.
+- [x] Add `listDisk` equivalent command for Unix.
+- [x] Run: `zig build test`
+- [x] Commit: `feat: complete config and cli parity`
 
 ## Task 3: Linux BasicInfo Collectors
 

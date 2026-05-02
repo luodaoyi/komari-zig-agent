@@ -28,6 +28,64 @@ test "cli aliases parse" {
     try std.testing.expectEqual(@as(i32, 11), cfg.reconnect_interval);
 }
 
+test "full go-compatible cli flags parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{
+        "komari-agent",
+        "--auto-discovery", "discover-key",
+        "--disable-auto-update",
+        "--disable-web-ssh",
+        "--info-report-interval", "30",
+        "--include-nics", "eth0,wlan0",
+        "--exclude-nics", "docker0",
+        "--include-mountpoint", "/;/data",
+        "--month-rotate", "8",
+        "--cf-access-client-id", "cf-id",
+        "--cf-access-client-secret", "cf-secret",
+        "--memory-include-cache",
+        "--memory-exclude-bcf",
+        "--custom-dns", "1.1.1.1",
+        "--gpu",
+        "--show-warning",
+        "--custom-ipv4", "192.0.2.10",
+        "--custom-ipv6", "2001:db8::10",
+        "--get-ip-addr-from-nic",
+        "--config", "agent.json",
+    };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+
+    try std.testing.expectEqualStrings("discover-key", cfg.auto_discovery_key);
+    try std.testing.expect(cfg.disable_auto_update);
+    try std.testing.expect(cfg.disable_web_ssh);
+    try std.testing.expectEqual(@as(i32, 30), cfg.info_report_interval);
+    try std.testing.expectEqualStrings("eth0,wlan0", cfg.include_nics);
+    try std.testing.expectEqualStrings("docker0", cfg.exclude_nics);
+    try std.testing.expectEqualStrings("/;/data", cfg.include_mountpoints);
+    try std.testing.expectEqual(@as(i32, 8), cfg.month_rotate);
+    try std.testing.expectEqualStrings("cf-id", cfg.cf_access_client_id);
+    try std.testing.expectEqualStrings("cf-secret", cfg.cf_access_client_secret);
+    try std.testing.expect(cfg.memory_include_cache);
+    try std.testing.expect(cfg.memory_report_raw_used);
+    try std.testing.expectEqualStrings("1.1.1.1", cfg.custom_dns);
+    try std.testing.expect(cfg.enable_gpu);
+    try std.testing.expect(cfg.show_warning);
+    try std.testing.expectEqualStrings("192.0.2.10", cfg.custom_ipv4);
+    try std.testing.expectEqualStrings("2001:db8::10", cfg.custom_ipv6);
+    try std.testing.expect(cfg.get_ip_addr_from_nic);
+    try std.testing.expectEqualStrings("agent.json", cfg.config_file);
+}
+
+test "list-disk subcommand is recognized" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{ "komari-agent", "list-disk" };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+    try std.testing.expectEqual(config.Command.list_disk, cfg.command);
+}
+
 test "unknown flags are ignored" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

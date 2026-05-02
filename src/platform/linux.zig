@@ -31,6 +31,26 @@ pub fn snapshot() !common.Snapshot {
     };
 }
 
+pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return &.{};
+    defer allocator.free(bytes);
+
+    var mounts: std.ArrayList(common.DiskMount) = .empty;
+    var it = std.mem.splitScalar(u8, bytes, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        _ = fields.next() orelse continue;
+        const mountpoint = fields.next() orelse continue;
+        const fstype = fields.next() orelse continue;
+        try mounts.append(allocator, .{
+            .mountpoint = try allocator.dupe(u8, mountpoint),
+            .fstype = try allocator.dupe(u8, fstype),
+        });
+    }
+    return mounts.toOwnedSlice(allocator);
+}
+
 fn readFirstLine(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     const bytes = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch return allocator.dupe(u8, "");
     if (std.mem.indexOfScalar(u8, bytes, '\n')) |idx| return bytes[0..idx];
