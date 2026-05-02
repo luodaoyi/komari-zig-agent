@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/netstatic_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/update_test.zig", target, optimize, opts, version_module);
 }
 
 fn addTest(
@@ -110,6 +111,15 @@ fn addTest(
     protocol_http.addImport("idna", idna_module);
     protocol_http.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_http", protocol_http);
+    const update_module = b.createModule(.{
+        .root_source_file = b.path("src/update.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    update_module.addOptions("build_options", opts);
+    update_module.addImport("idna", idna_module);
+    update_module.addImport("dns", dns_module);
+    tests.root_module.addImport("update", update_module);
     tests.root_module.addImport("dns", dns_module);
     tests.root_module.addImport("idna", idna_module);
     const report_netstatic = b.createModule(.{

@@ -60,4 +60,5 @@ komari-agent-darwin-arm64
 Release:
 
 - Pushing tag `v*` builds all assets and publishes a GitHub Release.
+- Or open GitHub Actions -> `Release` -> `Run workflow`, input `v0.1.0` or `0.1.0`; the workflow creates the tag, builds all binaries, and publishes the Release.
 - The agent self-update checks `https://api.github.com/repos/luodaoyi/komari-zig-agent/releases/latest`.
