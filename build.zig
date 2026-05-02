@@ -36,6 +36,8 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/disk_filter_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/network_filter_test.zig", target, optimize, opts, version_module);
     addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/task_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module);
 }
 
 fn addTest(
@@ -83,6 +85,16 @@ fn addTest(
     }));
     tests.root_module.addImport("platform_linux", b.createModule(.{
         .root_source_file = b.path("src/platform/linux.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    tests.root_module.addImport("protocol_task", b.createModule(.{
+        .root_source_file = b.path("src/protocol/task.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    tests.root_module.addImport("protocol_ping", b.createModule(.{
+        .root_source_file = b.path("src/protocol/ping.zig"),
         .target = target,
         .optimize = optimize,
     }));
