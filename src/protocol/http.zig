@@ -35,6 +35,11 @@ pub const Client = struct {
 };
 
 pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
+    const body = try postJsonRead(allocator, url, payload, cfg);
+    allocator.free(body);
+}
+
+pub fn postJsonRead(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) ![]u8 {
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
@@ -49,12 +54,15 @@ pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const 
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
+        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        defer response_writer.deinit();
         const result = client.fetch(.{
             .location = .{ .url = url },
             .method = .POST,
             .payload = payload,
             .headers = .{ .content_type = .{ .override = "application/json" } },
             .extra_headers = extra[0..extra_len],
+            .response_writer = &response_writer.writer,
             .keep_alive = false,
         }) catch |err| {
             if (attempt < max_retries) {
@@ -64,7 +72,7 @@ pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const 
             return err;
         };
         const code = @intFromEnum(result.status);
-        if (code >= 200 and code < 300) return;
+        if (code >= 200 and code < 300) return response_writer.toOwnedSlice();
         if (attempt < max_retries) {
             std.Thread.sleep(2 * std.time.ns_per_s);
             continue;
