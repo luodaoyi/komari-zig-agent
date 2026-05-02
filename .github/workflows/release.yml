@@ -1,0 +1,41 @@
+name: Release Binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            target: x86_64-linux-musl
+          - os: linux
+            arch: arm64
+            target: aarch64-linux-musl
+          - os: freebsd
+            arch: amd64
+            target: x86_64-freebsd
+          - os: darwin
+            arch: amd64
+            target: x86_64-macos
+          - os: darwin
+            arch: arm64
+            target: aarch64-macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - run: zig build -Doptimize=ReleaseSmall -Dversion=${{ github.event.release.tag_name }} -Dtarget=${{ matrix.target }}
+      - run: cp zig-out/bin/komari-agent komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+      - run: gh release upload ${{ github.event.release.tag_name }} komari-agent-${{ matrix.os }}-${{ matrix.arch }} --repo ${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,46 @@
+name: Release notes from commits
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - shell: bash
+        env:
+          CURRENT_TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          git fetch --tags --force
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -n 1 || true)
+          echo "# Release $CURRENT_TAG" > RELEASE_NOTES.md
+          echo >> RELEASE_NOTES.md
+          if [ -n "$PREV_TAG" ]; then
+            echo "[Full Changelog](https://github.com/$REPO/compare/$PREV_TAG...$CURRENT_TAG)" >> RELEASE_NOTES.md
+            echo >> RELEASE_NOTES.md
+            RANGE="$PREV_TAG..$CURRENT_TAG"
+          else
+            RANGE="$CURRENT_TAG"
+          fi
+          echo "## Changes" >> RELEASE_NOTES.md
+          echo >> RELEASE_NOTES.md
+          git log --no-merges --pretty=format:'- %s (%h) by %an' $RANGE >> RELEASE_NOTES.md || true
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: context.payload.release.id,
+              body: fs.readFileSync('RELEASE_NOTES.md', 'utf8'),
+            });

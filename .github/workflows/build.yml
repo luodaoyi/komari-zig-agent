@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            target: x86_64-linux-musl
+          - os: linux
+            arch: arm64
+            target: aarch64-linux-musl
+          - os: freebsd
+            arch: amd64
+            target: x86_64-freebsd
+          - os: darwin
+            arch: amd64
+            target: x86_64-macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - run: zig build test
+      - run: zig build -Doptimize=ReleaseSmall -Dversion=${{ github.sha }} -Dtarget=${{ matrix.target }}
+      - run: cp zig-out/bin/komari-agent komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
+          path: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
