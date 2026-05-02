@@ -34,6 +34,45 @@ pub const Client = struct {
     }
 };
 
+pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    var extra: [2]std.http.Header = undefined;
+    var extra_len: usize = 0;
+    if (cfg.cf_access_client_id.len != 0 and cfg.cf_access_client_secret.len != 0) {
+        extra[0] = .{ .name = "CF-Access-Client-Id", .value = cfg.cf_access_client_id };
+        extra[1] = .{ .name = "CF-Access-Client-Secret", .value = cfg.cf_access_client_secret };
+        extra_len = 2;
+    }
+
+    const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
+    var attempt: u32 = 0;
+    while (true) : (attempt += 1) {
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = .POST,
+            .payload = payload,
+            .headers = .{ .content_type = .{ .override = "application/json" } },
+            .extra_headers = extra[0..extra_len],
+            .keep_alive = false,
+        }) catch |err| {
+            if (attempt < max_retries) {
+                std.Thread.sleep(2 * std.time.ns_per_s);
+                continue;
+            }
+            return err;
+        };
+        const code = @intFromEnum(result.status);
+        if (code >= 200 and code < 300) return;
+        if (attempt < max_retries) {
+            std.Thread.sleep(2 * std.time.ns_per_s);
+            continue;
+        }
+        return error.HttpStatusNotOk;
+    }
+}
+
 pub fn trimEndpoint(endpoint: []const u8) []const u8 {
     return std.mem.trimRight(u8, endpoint, "/");
 }

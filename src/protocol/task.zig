@@ -60,7 +60,7 @@ pub fn uploadExecResult(allocator: std.mem.Allocator, cfg: anytype, task_id: []c
     defer allocator.free(payload);
     const url = try http.taskResultUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
-    try postJsonWithCurl(allocator, url, payload, cfg);
+    try http.postJson(allocator, url, payload, cfg);
 }
 
 pub fn normalizeCommandOutput(allocator: std.mem.Allocator, output: []const u8) ![]const u8 {
@@ -98,32 +98,4 @@ pub fn utcNow(allocator: std.mem.Allocator) ![]const u8 {
         return std.fmt.allocPrint(allocator, "{d}", .{std.time.timestamp()});
     }
     return allocator.dupe(u8, std.mem.trim(u8, stdout, " \t\r\n"));
-}
-
-fn postJsonWithCurl(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
-    const tmp_name = try std.fmt.allocPrint(allocator, "/tmp/komari-task-{d}.json", .{std.time.nanoTimestamp()});
-    defer allocator.free(tmp_name);
-    {
-        var file = try std.fs.createFileAbsolute(tmp_name, .{ .truncate = true });
-        defer file.close();
-        try file.writeAll(payload);
-    }
-    defer std.fs.deleteFileAbsolute(tmp_name) catch {};
-
-    var args: std.ArrayList([]const u8) = .empty;
-    defer args.deinit(allocator);
-    try args.appendSlice(allocator, &.{ "curl", "-fsS", "-X", "POST", "-H", "Content-Type: application/json" });
-    if (cfg.ignore_unsafe_cert) try args.append(allocator, "-k");
-    if (cfg.cf_access_client_id.len != 0 and cfg.cf_access_client_secret.len != 0) {
-        try args.appendSlice(allocator, &.{ "-H", try std.fmt.allocPrint(allocator, "CF-Access-Client-Id: {s}", .{cfg.cf_access_client_id}) });
-        try args.appendSlice(allocator, &.{ "-H", try std.fmt.allocPrint(allocator, "CF-Access-Client-Secret: {s}", .{cfg.cf_access_client_secret}) });
-    }
-    try args.appendSlice(allocator, &.{ "--data-binary", try std.fmt.allocPrint(allocator, "@{s}", .{tmp_name}), url });
-
-    var child = std.process.Child.init(args.items, allocator);
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.TaskResultUploadFailed;
 }

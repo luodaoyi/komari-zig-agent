@@ -30,10 +30,10 @@ pub fn upload(allocator: std.mem.Allocator, cfg: anytype, info: common.BasicInfo
     defer allocator.free(payload);
     const url = try http.basicInfoUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
-    postJsonWithCurl(allocator, url, payload, cfg) catch |first_err| {
+    http.postJson(allocator, url, payload, cfg) catch |first_err| {
         const fallback = try allocBasicInfoJson(allocator, info, false);
         defer allocator.free(fallback);
-        postJsonWithCurl(allocator, url, fallback, cfg) catch return first_err;
+        http.postJson(allocator, url, fallback, cfg) catch return first_err;
     };
 }
 
