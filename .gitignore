@@ -1,1 +1,7 @@
 .worktrees/
+.zig-cache/
+zig-out/
+build/
+auto-discovery.json
+net_static.json
+net_static.json.bak
