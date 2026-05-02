@@ -12,8 +12,12 @@ pub const ServerMessage = ws_message.ServerMessage;
 pub const parseServerMessage = ws_message.parseServerMessage;
 
 pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
-    _ = cfg;
-    return report.allocReportJson(allocator, try provider.snapshot());
+    return report.allocReportJson(allocator, try provider.snapshotWithOptions(.{
+        .include_nics = cfg.include_nics,
+        .exclude_nics = cfg.exclude_nics,
+        .include_mountpoints = cfg.include_mountpoints,
+        .month_rotate = cfg.month_rotate,
+    }));
 }
 
 pub fn loop(allocator: std.mem.Allocator, cfg: config.Config) !void {

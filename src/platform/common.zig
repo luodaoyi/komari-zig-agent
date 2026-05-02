@@ -26,6 +26,13 @@ pub const DiskMount = struct {
     fstype: []const u8,
 };
 
+pub const SnapshotOptions = struct {
+    include_nics: []const u8 = "",
+    exclude_nics: []const u8 = "",
+    include_mountpoints: []const u8 = "",
+    month_rotate: i32 = 0,
+};
+
 pub const NetworkInfo = struct {
     up: u64 = 0,
     down: u64 = 0,

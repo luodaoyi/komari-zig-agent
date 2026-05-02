@@ -5,7 +5,7 @@ pub fn basicInfo(_: std.mem.Allocator) !common.BasicInfo {
     return .{ .cpu = .{ .architecture = @tagName(@import("builtin").cpu.arch) }, .os_name = "darwin" };
 }
 
-pub fn snapshot() !common.Snapshot {
+pub fn snapshot(_: common.SnapshotOptions) !common.Snapshot {
     return .{ .cpu = .{ .architecture = @tagName(@import("builtin").cpu.arch), .usage = 0.001 } };
 }
 

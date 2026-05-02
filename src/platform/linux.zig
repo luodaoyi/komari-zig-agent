@@ -35,7 +35,7 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     return info;
 }
 
-pub fn snapshot() !common.Snapshot {
+pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
     const mem = try memInfo();
     const swap = try swapInfo();
     return .{
@@ -43,8 +43,8 @@ pub fn snapshot() !common.Snapshot {
         .ram = mem,
         .swap = swap,
         .load = try loadInfo(),
-        .disk = try diskInfo(),
-        .network = try networkInfo(),
+        .disk = try diskInfoWithMountpoints(options.include_mountpoints),
+        .network = try networkInfo(options),
         .connections = try connectionsInfo(),
         .uptime = try uptime(),
         .process = try processCount(),
@@ -224,9 +224,26 @@ fn readFirstLine(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 }
 
 fn diskInfo() !common.DiskInfo {
+    return diskInfoWithMountpoints("");
+}
+
+fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+
+    if (include_mountpoints.len != 0) {
+        var total = common.DiskInfo{};
+        var mounts = std.mem.splitScalar(u8, include_mountpoints, ';');
+        while (mounts.next()) |raw_mount| {
+            const mountpoint = std.mem.trim(u8, raw_mount, " \t\r\n");
+            if (mountpoint.len == 0) continue;
+            const usage = diskUsageFromDf(allocator, mountpoint) catch continue;
+            total.total += usage.total;
+            total.used += usage.used;
+        }
+        return total;
+    }
 
     const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return .{};
     var by_device = std.StringHashMap(common.DiskInfo).init(allocator);
@@ -334,10 +351,10 @@ fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common
     return .{ .total = total, .used = used };
 }
 
-fn networkInfo() !common.NetworkInfo {
+fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
     const bytes = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "/proc/net/dev", 1024 * 1024) catch return .{};
     defer std.heap.page_allocator.free(bytes);
-    var current = parseProcNetDev(bytes, "", "");
+    var current = parseProcNetDev(bytes, options.include_nics, options.exclude_nics);
     const now = std.time.milliTimestamp();
     if (previous_network) |prev| {
         const elapsed_ms: u64 = @intCast(@max(now - prev.timestamp_ms, 1));

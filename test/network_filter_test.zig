@@ -23,4 +23,12 @@ test "proc net dev parser sums included interfaces" {
     const totals = linux.parseProcNetDev(text, "", "");
     try std.testing.expectEqual(@as(u64, 3000), totals.totalUp);
     try std.testing.expectEqual(@as(u64, 1000), totals.totalDown);
+
+    const included = linux.parseProcNetDev(text, "eth0", "");
+    try std.testing.expectEqual(@as(u64, 3000), included.totalUp);
+    try std.testing.expectEqual(@as(u64, 1000), included.totalDown);
+
+    const excluded = linux.parseProcNetDev(text, "", "eth0");
+    try std.testing.expectEqual(@as(u64, 0), excluded.totalUp);
+    try std.testing.expectEqual(@as(u64, 0), excluded.totalDown);
 }
