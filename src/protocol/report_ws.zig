@@ -3,6 +3,11 @@ const config = @import("../config.zig");
 const http = @import("http.zig");
 const provider = @import("../platform/provider.zig");
 const report = @import("../report/report.zig");
+pub const ws_message = @import("ws_message.zig");
+
+pub const ServerMessageKind = ws_message.ServerMessageKind;
+pub const ServerMessage = ws_message.ServerMessage;
+pub const parseServerMessage = ws_message.parseServerMessage;
 
 pub fn runOnce(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
     _ = cfg;
