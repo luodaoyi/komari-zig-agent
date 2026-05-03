@@ -15,7 +15,11 @@ Build-One linux 386 x86-linux-musl
 Build-One linux arm arm-linux-musleabi
 Build-One linux mips mips-linux-musl
 Build-One linux mipsel mipsel-linux-musl
+Build-One linux mips64 mips64-linux-muslabi64
+Build-One linux mips64el mips64el-linux-muslabi64
 Build-One linux riscv64 riscv64-linux-musl
+Build-One linux s390x s390x-linux-musl
+Build-One linux loong64 loongarch64-linux-musl
 Build-One freebsd amd64 x86_64-freebsd
 Build-One freebsd arm64 aarch64-freebsd
 Build-One freebsd 386 x86-freebsd

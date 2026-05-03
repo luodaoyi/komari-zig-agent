@@ -25,6 +25,10 @@ test "os release parser falls back to ID then Linux" {
     const openwrt = try linux.parseOsReleaseName(std.testing.allocator, "PRETTY_NAME=\"OpenWrt 23.05.5\"\nID=openwrt\n");
     defer std.testing.allocator.free(openwrt);
     try std.testing.expectEqualStrings("OpenWrt 23.05.5", openwrt);
+
+    const raspberry_pi_os = try linux.parseOsReleaseName(std.testing.allocator, "PRETTY_NAME=\"Raspberry Pi OS GNU/Linux 12 (bookworm)\"\nID=raspbian\n");
+    defer std.testing.allocator.free(raspberry_pi_os);
+    try std.testing.expectEqualStrings("Raspberry Pi OS GNU/Linux 12 (bookworm)", raspberry_pi_os);
 }
 
 test "synology info parser recognizes dsm model and version" {
@@ -48,6 +52,7 @@ test "arch names match Go runtime labels" {
     try std.testing.expectEqualStrings("arm64", linux.normalizeArch("aarch64"));
     try std.testing.expectEqualStrings("386", linux.normalizeArch("x86"));
     try std.testing.expectEqualStrings("arm", linux.normalizeArch("arm"));
+    try std.testing.expectEqualStrings("loong64", linux.normalizeArch("loongarch64"));
 }
 
 test "container virtualization parser recognizes common cgroup forms" {

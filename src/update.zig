@@ -54,6 +54,7 @@ pub fn assetName(allocator: std.mem.Allocator) ![]const u8 {
         .aarch64 => "arm64",
         .x86 => "386",
         .arm => "arm",
+        .loongarch64 => "loong64",
         else => @tagName(builtin.cpu.arch),
     };
     const ext = if (builtin.os.tag == .windows) ".exe" else "";

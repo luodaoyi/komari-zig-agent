@@ -70,6 +70,7 @@ pub fn normalizeArch(arch: []const u8) []const u8 {
     if (std.mem.eql(u8, arch, "x86")) return "386";
     if (std.mem.eql(u8, arch, "i386")) return "386";
     if (std.mem.eql(u8, arch, "arm")) return "arm";
+    if (std.mem.eql(u8, arch, "loongarch64")) return "loong64";
     return arch;
 }
 

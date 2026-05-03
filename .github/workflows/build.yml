@@ -12,6 +12,7 @@ permissions:
 env:
   ZIG_VERSION: 0.15.2
   ZIG_SHA256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
+  FREEBSD_ZIG_SHA256: 5509ff57cd3f219165caed0da10221739af82742b9edfcda3f7bfaf4da7212dd
 
 jobs:
   native-test:
@@ -69,6 +70,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: ubuntu-24.04
+            image: ubuntu:24.04
+          - name: ubuntu-22.04
+            image: ubuntu:22.04
+          - name: debian-12
+            image: debian:12-slim
+          - name: debian-13
+            image: debian:13-slim
+          - name: kali
+            image: kalilinux/kali-rolling
           - name: fedora
             image: fedora:latest
           - name: centos-stream
@@ -82,7 +93,11 @@ jobs:
         shell: sh
         run: |
           set -eu
-          if command -v dnf >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends bash ca-certificates curl findutils git gzip tar xz-utils
+          elif command -v dnf >/dev/null 2>&1; then
             dnf -y install bash ca-certificates findutils git gzip tar xz
           elif command -v microdnf >/dev/null 2>&1; then
             microdnf -y install bash ca-certificates findutils git gzip tar xz
@@ -101,24 +116,96 @@ jobs:
         shell: bash
         run: zig build test
 
-  linux-appliance-smoke:
-    name: Linux Appliance Smoke (${{ matrix.name }})
+  freebsd-test:
+    name: FreeBSD Test
+    runs-on: ubuntu-latest
+    needs: native-test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Test in FreeBSD VM
+        uses: vmactions/freebsd-vm@d1e65811565151536c0c894fff74f06351ed26e6
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y curl gtar xz
+          run: |
+            set -eu
+            curl -fsSLO "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz"
+            actual="$(sha256 -q "zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz")"
+            if [ "$actual" != "${{ env.FREEBSD_ZIG_SHA256 }}" ]; then
+              echo "FreeBSD Zig checksum mismatch: $actual" >&2
+              exit 1
+            fi
+            gtar -xf "zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz"
+            export PATH="$PWD/zig-x86_64-freebsd-${{ env.ZIG_VERSION }}:$PATH"
+            zig build test
+            zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=x86_64-freebsd
+            zig-out/bin/komari-agent --show-warning
+
+  linux-agent-smoke:
+    name: Linux Agent Smoke (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: build
     strategy:
       fail-fast: false
       matrix:
         include:
+          - name: ubuntu-24.04
+            image: ubuntu:24.04
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: debian-12
+            image: debian:12-slim
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: kali
+            image: kalilinux/kali-rolling
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: fedora
+            image: fedora:latest
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: centos-stream
+            image: quay.io/centos/centos:stream9
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: rocky
+            image: rockylinux:9
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: alma
+            image: almalinux:9
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
           - name: openwrt-x86-64
             image: openwrt/rootfs:x86-64-22.03.2
+            platform: linux/amd64
             target: x86_64-linux-musl
+            binary: komari-agent
+          - name: raspberry-pi-os-arm64
+            image: dtcooper/raspberrypi-os:bookworm
+            platform: linux/arm64
+            target: aarch64-linux-musl
             binary: komari-agent
           - name: synology-dsm-linux-amd64-profile
             image: debian:12-slim
+            platform: linux/amd64
             target: x86_64-linux-musl
             binary: komari-agent
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Enable foreign Linux containers
+        run: |
+          set -eu
+          docker run --privileged --rm tonistiigi/binfmt --install all
       - name: Install Zig
         run: |
           set -eu
@@ -135,11 +222,76 @@ jobs:
       - name: Run appliance image smoke
         run: |
           set -eu
-          docker run --rm -v "$PWD/${{ matrix.binary }}:/komari-agent:ro" "${{ matrix.image }}" /komari-agent --show-warning
+          docker run --platform "${{ matrix.platform }}" --rm -v "$PWD/${{ matrix.binary }}:/komari-agent:ro" "${{ matrix.image }}" /komari-agent --show-warning
+
+  linux-arch-agent-smoke:
+    name: Linux Arch Agent Smoke (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-linux-musl
+            runner: direct
+          - arch: "386"
+            target: x86-linux-musl
+            runner: qemu-i386-static
+          - arch: arm
+            target: arm-linux-musleabi
+            runner: qemu-arm-static
+          - arch: arm64
+            target: aarch64-linux-musl
+            runner: qemu-aarch64-static
+          - arch: mips
+            target: mips-linux-musl
+            runner: qemu-mips-static
+          - arch: mipsel
+            target: mipsel-linux-musl
+            runner: qemu-mipsel-static
+          - arch: mips64
+            target: mips64-linux-muslabi64
+            runner: qemu-mips64-static
+          - arch: mips64el
+            target: mips64el-linux-muslabi64
+            runner: qemu-mips64el-static
+          - arch: riscv64
+            target: riscv64-linux-musl
+            runner: qemu-riscv64-static
+          - arch: s390x
+            target: s390x-linux-musl
+            runner: qemu-s390x-static
+          - arch: loong64
+            target: loongarch64-linux-musl
+            runner: qemu-loongarch64-static
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install Zig and QEMU
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
+          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Build and run agent smoke
+        run: |
+          set -eu
+          zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=${{ matrix.target }}
+          cp zig-out/bin/komari-agent ./komari-agent
+          chmod +x ./komari-agent
+          if [ "${{ matrix.runner }}" = "direct" ]; then
+            ./komari-agent --show-warning
+          else
+            command -v "${{ matrix.runner }}"
+            "${{ matrix.runner }}" ./komari-agent --show-warning
+          fi
 
   build:
     runs-on: ubuntu-latest
-    needs: [native-test, coverage, linux-distro-test]
+    needs: [native-test, coverage, linux-distro-test, freebsd-test]
     strategy:
       fail-fast: false
       matrix:
@@ -163,8 +315,20 @@ jobs:
             arch: mipsel
             target: mipsel-linux-musl
           - os: linux
+            arch: mips64
+            target: mips64-linux-muslabi64
+          - os: linux
+            arch: mips64el
+            target: mips64el-linux-muslabi64
+          - os: linux
             arch: riscv64
             target: riscv64-linux-musl
+          - os: linux
+            arch: s390x
+            target: s390x-linux-musl
+          - os: linux
+            arch: loong64
+            target: loongarch64-linux-musl
           - os: freebsd
             arch: amd64
             target: x86_64-freebsd

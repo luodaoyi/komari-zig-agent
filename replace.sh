@@ -53,7 +53,11 @@ case "$machine" in
   armv5*|armv6*|armv7*|arm*) arch="arm" ;;
   mips) arch="mips" ;;
   mipsel) arch="mipsel" ;;
+  mips64) arch="mips64" ;;
+  mips64el) arch="mips64el" ;;
   riscv64) arch="riscv64" ;;
+  s390x) arch="s390x" ;;
+  loongarch64|loong64) arch="loong64" ;;
   *) die "unsupported architecture: $machine" ;;
 esac
 

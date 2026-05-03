@@ -74,8 +74,20 @@ case "$arch" in
   mipsel)
     [ "$os_name" = "linux" ] && arch="mipsel" || { log_error "MIPS little-endian not supported on $os_name"; exit 1; }
     ;;
+  mips64)
+    [ "$os_name" = "linux" ] && arch="mips64" || { log_error "MIPS64 not supported on $os_name"; exit 1; }
+    ;;
+  mips64el)
+    [ "$os_name" = "linux" ] && arch="mips64el" || { log_error "MIPS64 little-endian not supported on $os_name"; exit 1; }
+    ;;
   riscv64)
     [ "$os_name" = "linux" ] && arch="riscv64" || { log_error "RISC-V not supported on $os_name"; exit 1; }
+    ;;
+  s390x)
+    [ "$os_name" = "linux" ] && arch="s390x" || { log_error "s390x not supported on $os_name"; exit 1; }
+    ;;
+  loongarch64|loong64)
+    [ "$os_name" = "linux" ] && arch="loong64" || { log_error "LoongArch64 not supported on $os_name"; exit 1; }
     ;;
   *) log_error "Unsupported architecture: $arch"; exit 1 ;;
 esac

@@ -90,8 +90,20 @@ jobs:
             arch: mipsel
             target: mipsel-linux-musl
           - os: linux
+            arch: mips64
+            target: mips64-linux-muslabi64
+          - os: linux
+            arch: mips64el
+            target: mips64el-linux-muslabi64
+          - os: linux
             arch: riscv64
             target: riscv64-linux-musl
+          - os: linux
+            arch: s390x
+            target: s390x-linux-musl
+          - os: linux
+            arch: loong64
+            target: loongarch64-linux-musl
           - os: freebsd
             arch: amd64
             target: x86_64-freebsd
