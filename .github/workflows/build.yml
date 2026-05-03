@@ -77,20 +77,12 @@ jobs:
         include:
           - name: ubuntu-24.04
             image: ubuntu:24.04
-          - name: ubuntu-22.04
-            image: ubuntu:22.04
           - name: debian-12
             image: debian:12-slim
-          - name: debian-13
-            image: debian:13-slim
-          - name: kali
-            image: kalilinux/kali-rolling
           - name: fedora
             image: fedora:latest
-          - name: centos-stream
-            image: quay.io/centos/centos:stream9
-          - name: rocky
-            image: rockylinux:9
+          - name: centos-7
+            image: quay.io/centos/centos:7
           - name: alma
             image: almalinux:9
     steps:
@@ -103,9 +95,11 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends bash ca-certificates curl findutils git gzip tar xz-utils
           elif command -v dnf >/dev/null 2>&1; then
-            dnf -y install bash ca-certificates findutils git gzip tar xz
+            dnf -y install bash ca-certificates curl findutils git gzip tar xz
           elif command -v microdnf >/dev/null 2>&1; then
-            microdnf -y install bash ca-certificates findutils git gzip tar xz
+            microdnf -y install bash ca-certificates curl findutils git gzip tar xz
+          elif command -v yum >/dev/null 2>&1; then
+            yum -y install bash ca-certificates curl findutils git gzip tar xz
           fi
           command -v curl
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -185,38 +179,13 @@ jobs:
             platform: linux/amd64
             target: x86_64-linux-musl
             binary: komari-agent
-          - name: debian-12
-            image: debian:12-slim
-            platform: linux/amd64
-            target: x86_64-linux-musl
-            binary: komari-agent
-          - name: kali
-            image: kalilinux/kali-rolling
-            platform: linux/amd64
-            target: x86_64-linux-musl
-            binary: komari-agent
           - name: fedora
             image: fedora:latest
             platform: linux/amd64
             target: x86_64-linux-musl
             binary: komari-agent
-          - name: centos-stream
-            image: quay.io/centos/centos:stream9
-            platform: linux/amd64
-            target: x86_64-linux-musl
-            binary: komari-agent
           - name: centos-7
             image: quay.io/centos/centos:7
-            platform: linux/amd64
-            target: x86_64-linux-musl
-            binary: komari-agent
-          - name: rocky
-            image: rockylinux:9
-            platform: linux/amd64
-            target: x86_64-linux-musl
-            binary: komari-agent
-          - name: alma
-            image: almalinux:9
             platform: linux/amd64
             target: x86_64-linux-musl
             binary: komari-agent
