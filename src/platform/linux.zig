@@ -708,7 +708,7 @@ fn stripCidr(allocator: std.mem.Allocator, cidr: []const u8) ![]const u8 {
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     try ensureExecutable(allocator, argv[0]);
-    var env = try compat.currentEnvMap(allocator);
+    var env = compat.emptyEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
     const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 256 * 1024);

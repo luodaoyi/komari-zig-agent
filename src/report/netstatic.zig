@@ -259,7 +259,7 @@ fn readNetstatCounters(allocator: std.mem.Allocator) !CounterMap {
 }
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var env = try compat.currentEnvMap(allocator);
+    var env = compat.emptyEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
     const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 1024 * 1024);

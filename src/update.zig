@@ -229,7 +229,7 @@ fn downloadAndReplace(
     const state_path = try pendingStatePath(allocator, exe);
     defer allocator.free(state_path);
     {
-        var file = try compat.createFileAbsolute(tmp, .{ .truncate = true, .permissions = .executable_file });
+        var file = try compat.createFileAbsolute(tmp, .{ .truncate = true, .permissions = compat.executable_file_permissions });
         defer file.close(std.Options.debug_io);
         try downloadReleaseAssetToFile(allocator, url, cfg, expected, file);
     }
@@ -499,7 +499,7 @@ fn backupPath(allocator: std.mem.Allocator, exe: []const u8) ![]const u8 {
 fn writePendingStateFile(allocator: std.mem.Allocator, path: []const u8, state: PendingUpdateState) !void {
     const body = try allocPendingStateJson(allocator, state);
     defer allocator.free(body);
-    var file = try compat.createFileAbsolute(path, .{ .truncate = true });
+    var file = try compat.createFileAbsolute(path, .{ .truncate = true, .permissions = compat.private_file_permissions });
     defer file.close(std.Options.debug_io);
     try file.writeStreamingAll(std.Options.debug_io, body);
 }
@@ -509,7 +509,7 @@ fn readSmallFile(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
 }
 
 fn copyFileAbsolute(src: []const u8, dst: []const u8) !void {
-    try compat.copyFileAbsolute(src, dst, .executable_file);
+    try compat.copyFileAbsolute(src, dst, compat.executable_file_permissions);
 }
 
 fn runBinaryPreflight(allocator: std.mem.Allocator, path: []const u8) !void {

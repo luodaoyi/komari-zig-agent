@@ -23,6 +23,10 @@ pub fn currentEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
     return .init(allocator);
 }
 
+pub fn emptyEnvMap(allocator: std.mem.Allocator) std.process.Environ.Map {
+    return .init(allocator);
+}
+
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
     if (std.Options.debug_threaded_io) |threaded_io| {
         return threaded_io.environ.process_environ.getAlloc(allocator, key);
@@ -72,6 +76,12 @@ pub fn copyFileAbsolute(src: []const u8, dst: []const u8, permissions: ?std.Io.F
         .replace = true,
     });
 }
+
+pub const private_file_permissions: std.Io.File.Permissions =
+    if (@hasDecl(std.Io.File.Permissions, "fromMode")) std.Io.File.Permissions.fromMode(0o600) else .default_file;
+
+pub const executable_file_permissions: std.Io.File.Permissions =
+    if (@hasDecl(std.Io.File.Permissions, "fromMode")) std.Io.File.Permissions.fromMode(0o755) else .executable_file;
 
 pub fn readLinkAbsolute(path: []const u8, buffer: []u8) ![]u8 {
     const n = try std.Io.Dir.readLinkAbsolute(std.Options.debug_io, path, buffer);
