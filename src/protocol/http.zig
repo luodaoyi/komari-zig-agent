@@ -60,6 +60,80 @@ pub const RawConnection = struct {
     }
 };
 
+const BoundedResponseWriter = struct {
+    inner: std.Io.Writer.Allocating,
+    writer: std.Io.Writer,
+    limit: usize,
+    too_large: bool = false,
+
+    const vtable: std.Io.Writer.VTable = .{ .drain = drain };
+
+    fn init(allocator: std.mem.Allocator, limit: usize) BoundedResponseWriter {
+        return .{
+            .inner = std.Io.Writer.Allocating.init(allocator),
+            .writer = .{ .buffer = &.{}, .vtable = &vtable },
+            .limit = limit,
+        };
+    }
+
+    fn deinit(self: *BoundedResponseWriter) void {
+        self.inner.deinit();
+        self.* = undefined;
+    }
+
+    fn written(self: *BoundedResponseWriter) []u8 {
+        return self.inner.written();
+    }
+
+    fn toOwnedSlice(self: *BoundedResponseWriter) ![]u8 {
+        return self.inner.toOwnedSlice();
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *BoundedResponseWriter = @fieldParentPtr("writer", w);
+        const incoming = drainLen(data, splat) orelse {
+            self.too_large = true;
+            return error.WriteFailed;
+        };
+        if (incoming > self.limit or self.inner.written().len > self.limit - incoming) {
+            self.too_large = true;
+            return error.WriteFailed;
+        }
+        if (data.len > 1) {
+            for (data[0 .. data.len - 1]) |bytes| try self.inner.writer.writeAll(bytes);
+        }
+        const pattern = data[data.len - 1];
+        var i: usize = 0;
+        while (i < splat) : (i += 1) try self.inner.writer.writeAll(pattern);
+        return incoming;
+    }
+};
+
+fn drainLen(data: []const []const u8, splat: usize) ?usize {
+    if (data.len == 0) return 0;
+    var total: usize = 0;
+    for (data[0 .. data.len - 1]) |bytes| {
+        if (bytes.len > std.math.maxInt(usize) - total) return null;
+        total += bytes.len;
+    }
+    const pattern_len = data[data.len - 1].len;
+    if (splat != 0 and pattern_len > @divFloor(std.math.maxInt(usize) - total, splat)) return null;
+    total += pattern_len * splat;
+    return total;
+}
+
+pub fn collectBoundedResponseForTest(allocator: std.mem.Allocator, limit: usize, chunks: []const []const u8) ![]u8 {
+    var response_writer = BoundedResponseWriter.init(allocator, limit);
+    defer response_writer.deinit();
+    for (chunks) |chunk| {
+        response_writer.writer.writeAll(chunk) catch |err| {
+            if (response_writer.too_large) return error.HttpResponseTooLarge;
+            return err;
+        };
+    }
+    return response_writer.toOwnedSlice();
+}
+
 pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
     const body = try postJsonRead(allocator, url, payload, cfg);
     allocator.free(body);
@@ -90,7 +164,7 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        var response_writer = BoundedResponseWriter.init(allocator, max_response_body_bytes);
         defer response_writer.deinit();
         const result = client.fetch(.{
             .location = .{ .url = ascii_url },
@@ -101,6 +175,7 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
             .response_writer = &response_writer.writer,
             .keep_alive = false,
         }) catch |err| {
+            if (response_writer.too_large) return error.HttpResponseTooLarge;
             if (attempt < max_retries) {
                 std.Thread.sleep(2 * std.time.ns_per_s);
                 continue;
@@ -108,7 +183,6 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
             return err;
         };
         const code = @intFromEnum(result.status);
-        if (response_writer.written().len > max_response_body_bytes) return error.HttpResponseTooLarge;
         if (code == 200) return response_writer.toOwnedSlice();
         if (attempt < max_retries) {
             std.Thread.sleep(2 * std.time.ns_per_s);
@@ -127,17 +201,19 @@ pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
     var proxy_arena = std.heap.ArenaAllocator.init(allocator);
     defer proxy_arena.deinit();
     try initDefaultProxiesForUrl(allocator, &client, proxy_arena.allocator(), ascii_url);
-    var response_writer = std.Io.Writer.Allocating.init(allocator);
+    var response_writer = BoundedResponseWriter.init(allocator, max_response_body_bytes);
     defer response_writer.deinit();
-    const result = try client.fetch(.{
+    const result = client.fetch(.{
         .location = .{ .url = ascii_url },
         .method = .GET,
         .headers = .{ .user_agent = .{ .override = "komari-zig-agent" } },
         .response_writer = &response_writer.writer,
         .keep_alive = false,
-    });
+    }) catch |err| {
+        if (response_writer.too_large) return error.HttpResponseTooLarge;
+        return err;
+    };
     const code = @intFromEnum(result.status);
-    if (response_writer.written().len > max_response_body_bytes) return error.HttpResponseTooLarge;
     if (code != 200) return error.HttpStatusNotOk;
     return response_writer.toOwnedSlice();
 }

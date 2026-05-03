@@ -70,6 +70,21 @@ test "http client shell keeps timeout tls and retry settings" {
     try std.testing.expect(!client.shouldRetry(0, null, 200));
 }
 
+test "bounded response writer enforces limit while writing" {
+    const exact = try http.collectBoundedResponseForTest(std.testing.allocator, 4, &.{ "ab", "cd" });
+    defer std.testing.allocator.free(exact);
+    try std.testing.expectEqualStrings("abcd", exact);
+
+    try std.testing.expectError(
+        error.HttpResponseTooLarge,
+        http.collectBoundedResponseForTest(std.testing.allocator, 4, &.{ "ab", "cde" }),
+    );
+    try std.testing.expectError(
+        error.HttpResponseTooLarge,
+        http.collectBoundedResponseForTest(std.testing.allocator, 0, &.{"x"}),
+    );
+}
+
 test "proxy environment follows request scheme" {
     try std.testing.expectEqualStrings(
         "http://http-proxy.example:8080",
