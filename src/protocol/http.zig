@@ -1,7 +1,7 @@
 const std = @import("std");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
-const net_compat = @import("net_compat");
+const net = @import("net");
 const compat = @import("compat");
 
 /// HTTP and proxy helpers shared by agent protocol clients.
@@ -808,7 +808,7 @@ fn parseIpBytes(value: []const u8) ?IpBytes {
         @memcpy(out[0..4], &bytes);
         return .{ .bytes = out, .len = 4 };
     }
-    const parsed = net_compat.net.IpAddress.parseIp6(value, 0) catch return null;
+    const parsed = net.net.IpAddress.parseIp6(value, 0) catch return null;
     return .{ .bytes = parsed.ip6.bytes, .len = 16 };
 }
 

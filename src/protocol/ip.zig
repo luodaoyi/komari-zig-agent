@@ -1,6 +1,6 @@
 const std = @import("std");
 const http = @import("http.zig");
-const net_compat = @import("net_compat");
+const net = @import("net");
 const raw_conn = @import("raw_conn.zig");
 
 /// Public IP discovery helpers for IPv4 and IPv6 reporting.
@@ -51,7 +51,7 @@ pub fn findIPv4(bytes: []const u8) ?[]const u8 {
         const start = i;
         while (i < bytes.len and (std.ascii.isDigit(bytes[i]) or bytes[i] == '.')) : (i += 1) {}
         const candidate = bytes[start..i];
-        _ = net_compat.net.IpAddress.parseIp4(candidate, 0) catch continue;
+        _ = net.net.IpAddress.parseIp4(candidate, 0) catch continue;
         return candidate;
     }
     return null;
@@ -69,7 +69,7 @@ pub fn findIPv6(bytes: []const u8) ?[]const u8 {
         if (!has_colon) continue;
         const candidate = std.mem.trim(u8, bytes[start..i], "[](){}\",'\r\n\t ");
         if (candidate.len < 2) continue;
-        _ = net_compat.net.IpAddress.parseIp6(candidate, 0) catch continue;
+        _ = net.net.IpAddress.parseIp6(candidate, 0) catch continue;
         return candidate;
     }
     return null;

@@ -3,7 +3,7 @@ const types = @import("types.zig");
 const builtin = @import("builtin");
 const dns = @import("dns");
 const raw_conn = @import("raw_conn.zig");
-const net_compat = @import("net_compat");
+const net = @import("net");
 const compat = @import("compat");
 
 /// Ping task implementations for ICMP, TCP, and HTTP probes.
@@ -68,7 +68,7 @@ fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
     const addrs = try dns.resolveHost(allocator, parseHostOnly(target), 0, custom_dns);
     defer allocator.free(addrs);
     for (addrs) |addr| {
-        if (!net_compat.isIpv4(addr) and !net_compat.isIpv6(addr)) continue;
+        if (!net.isIpv4(addr) and !net.isIpv6(addr)) continue;
         return icmpPingAddress(addr) catch |err| switch (err) {
             error.AccessDenied => continue,
             else => continue,
@@ -77,8 +77,8 @@ fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
     return -1;
 }
 
-fn icmpPingAddress(addr: net_compat.Address) !i64 {
-    if (net_compat.isIpv6(addr)) return icmp6PingAddress(addr);
+fn icmpPingAddress(addr: net.Address) !i64 {
+    if (net.isIpv6(addr)) return icmp6PingAddress(addr);
     const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
     const sock = compat.socket(std.posix.AF.INET, flags, std.posix.IPPROTO.ICMP) catch |err| switch (err) {
         error.AccessDenied => try compat.socket(std.posix.AF.INET, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMP),
@@ -98,7 +98,7 @@ fn icmpPingAddress(addr: net_compat.Address) !i64 {
     std.mem.writeInt(u16, packet[2..4], csum, .big);
 
     const start = compat.milliTimestamp();
-    const sa = net_compat.sockAddr(addr);
+    const sa = net.sockAddr(addr);
     _ = try compat.sendTo(sock, &packet, sa.ptr(), sa.len);
     var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
     while (compat.milliTimestamp() - start < 3000) {
@@ -112,7 +112,7 @@ fn icmpPingAddress(addr: net_compat.Address) !i64 {
     return error.Timeout;
 }
 
-fn icmp6PingAddress(addr: net_compat.Address) !i64 {
+fn icmp6PingAddress(addr: net.Address) !i64 {
     const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
     const sock = compat.socket(std.posix.AF.INET6, flags, std.posix.IPPROTO.ICMPV6) catch |err| switch (err) {
         error.AccessDenied => try compat.socket(std.posix.AF.INET6, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMPV6),
@@ -130,7 +130,7 @@ fn icmp6PingAddress(addr: net_compat.Address) !i64 {
     std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
 
     const start = compat.milliTimestamp();
-    const sa = net_compat.sockAddr(addr);
+    const sa = net.sockAddr(addr);
     _ = try compat.sendTo(sock, &packet, sa.ptr(), sa.len);
     var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
     while (compat.milliTimestamp() - start < 3000) {
@@ -192,11 +192,11 @@ fn tcpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const
     const start = compat.milliTimestamp();
     var last_err: ?anyerror = null;
     for (addrs) |addr| {
-        const stream = net_compat.connect(addr) catch |err| {
+        const stream = net.connect(addr) catch |err| {
             last_err = err;
             continue;
         };
-        net_compat.close(stream);
+        net.close(stream);
         return compat.milliTimestamp() - start;
     }
     return last_err orelse error.ConnectFailed;

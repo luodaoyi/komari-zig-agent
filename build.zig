@@ -20,8 +20,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     compat_module.addImport("runtime", runtime_module);
-    const net_compat_module = b.createModule(.{
-        .root_source_file = b.path("src/net_compat.zig"),
+    const net_module = b.createModule(.{
+        .root_source_file = b.path("src/net.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addOptions("build_options", opts);
     exe.root_module.addImport("runtime", runtime_module);
-    addCompatImports(exe.root_module, compat_module, net_compat_module);
+    addCompatImports(exe.root_module, compat_module, net_module);
     if (target.result.os.tag == .freebsd or target.result.os.tag == .macos) {
         exe.root_module.linkSystemLibrary("c", .{});
     }
@@ -72,7 +72,7 @@ pub fn build(b: *std.Build) void {
         .omit_frame_pointer = crash_trace_options.omit_frame_pointer,
         .error_tracing = crash_trace_options.error_tracing,
     });
-    addCompatImports(exe_dns, compat_module, net_compat_module);
+    addCompatImports(exe_dns, compat_module, net_module);
     exe.root_module.addImport("idna", exe_idna);
     exe.root_module.addImport("dns", exe_dns);
     const exe_report_netstatic = b.createModule(.{
@@ -84,7 +84,7 @@ pub fn build(b: *std.Build) void {
         .omit_frame_pointer = crash_trace_options.omit_frame_pointer,
         .error_tracing = crash_trace_options.error_tracing,
     });
-    addCompatImports(exe_report_netstatic, compat_module, net_compat_module);
+    addCompatImports(exe_report_netstatic, compat_module, net_module);
     exe.root_module.addImport("report_netstatic", exe_report_netstatic);
     b.installArtifact(exe);
 
@@ -96,31 +96,36 @@ pub fn build(b: *std.Build) void {
     version_module.addOptions("build_options", opts);
 
     const test_step = b.step("test", "Run unit tests");
-    addTest(b, test_step, "test/bootstrap_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/config_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/protocol_json_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "src/autodiscovery_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/http_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/dns_idna_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/linux_basic_info_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/disk_filter_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/network_filter_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/task_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/task_limiter_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/coverage_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/ws_client_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/report_interval_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/netstatic_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
-    addTest(b, test_step, "test/update_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
+    const test_paths = [_][]const u8{
+        "test/bootstrap_test.zig",
+        "test/config_test.zig",
+        "test/protocol_json_test.zig",
+        "src/autodiscovery_test.zig",
+        "test/http_test.zig",
+        "test/dns_idna_test.zig",
+        "test/linux_basic_info_test.zig",
+        "test/disk_filter_test.zig",
+        "test/network_filter_test.zig",
+        "test/cpu_proc_test.zig",
+        "test/task_test.zig",
+        "test/task_limiter_test.zig",
+        "test/ping_test.zig",
+        "test/ip_extract_test.zig",
+        "test/coverage_test.zig",
+        "test/ws_message_test.zig",
+        "test/ws_client_test.zig",
+        "test/report_interval_test.zig",
+        "test/netstatic_test.zig",
+        "test/update_test.zig",
+    };
+    for (test_paths) |test_path| {
+        addTest(b, test_step, test_path, target, optimize, opts, version_module, compat_module, net_module, coverage, coverage_dir);
+    }
 }
 
-fn addCompatImports(module: *std.Build.Module, compat_module: *std.Build.Module, net_compat_module: *std.Build.Module) void {
+fn addCompatImports(module: *std.Build.Module, compat_module: *std.Build.Module, net_module: *std.Build.Module) void {
     module.addImport("compat", compat_module);
-    module.addImport("net_compat", net_compat_module);
+    module.addImport("net", net_module);
 }
 
 fn addTest(
@@ -132,7 +137,7 @@ fn addTest(
     opts: *std.Build.Step.Options,
     version_module: *std.Build.Module,
     compat_module: *std.Build.Module,
-    net_compat_module: *std.Build.Module,
+    net_module: *std.Build.Module,
     coverage: bool,
     coverage_dir: []const u8,
 ) void {
@@ -144,7 +149,7 @@ fn addTest(
         }),
     });
     tests.root_module.addOptions("build_options", opts);
-    addCompatImports(tests.root_module, compat_module, net_compat_module);
+    addCompatImports(tests.root_module, compat_module, net_module);
     tests.root_module.addImport("version", version_module);
     const config_module = b.createModule(.{
         .root_source_file = b.path("src/config.zig"),
@@ -168,13 +173,13 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(dns_module, compat_module, net_compat_module);
+    addCompatImports(dns_module, compat_module, net_module);
     const protocol_http = b.createModule(.{
         .root_source_file = b.path("src/protocol/http.zig"),
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(protocol_http, compat_module, net_compat_module);
+    addCompatImports(protocol_http, compat_module, net_module);
     protocol_http.addImport("idna", idna_module);
     protocol_http.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_http", protocol_http);
@@ -183,7 +188,7 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(update_module, compat_module, net_compat_module);
+    addCompatImports(update_module, compat_module, net_module);
     update_module.addOptions("build_options", opts);
     update_module.addImport("idna", idna_module);
     update_module.addImport("dns", dns_module);
@@ -195,13 +200,13 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(report_netstatic, compat_module, net_compat_module);
+    addCompatImports(report_netstatic, compat_module, net_module);
     const platform_linux = b.createModule(.{
         .root_source_file = b.path("src/platform/linux.zig"),
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(platform_linux, compat_module, net_compat_module);
+    addCompatImports(platform_linux, compat_module, net_module);
     platform_linux.addImport("report_netstatic", report_netstatic);
     tests.root_module.addImport("platform_linux", platform_linux);
     const protocol_task = b.createModule(.{
@@ -209,7 +214,7 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(protocol_task, compat_module, net_compat_module);
+    addCompatImports(protocol_task, compat_module, net_module);
     tests.root_module.addImport("protocol_task", protocol_task);
     tests.root_module.addImport("protocol_task_limiter", b.createModule(.{
         .root_source_file = b.path("src/protocol/task_limiter.zig"),
@@ -221,7 +226,7 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(protocol_ping, compat_module, net_compat_module);
+    addCompatImports(protocol_ping, compat_module, net_module);
     protocol_ping.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_ping", protocol_ping);
     const protocol_ip = b.createModule(.{
@@ -229,7 +234,7 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(protocol_ip, compat_module, net_compat_module);
+    addCompatImports(protocol_ip, compat_module, net_module);
     protocol_ip.addImport("idna", idna_module);
     protocol_ip.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_ip", protocol_ip);
@@ -243,7 +248,7 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     });
-    addCompatImports(protocol_ws_client, compat_module, net_compat_module);
+    addCompatImports(protocol_ws_client, compat_module, net_module);
     protocol_ws_client.addImport("idna", idna_module);
     tests.root_module.addImport("protocol_ws_client", protocol_ws_client);
     tests.root_module.addImport("protocol_report_timing", b.createModule(.{

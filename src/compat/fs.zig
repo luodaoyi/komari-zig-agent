@@ -106,12 +106,10 @@ pub const FileWriter = struct {
 
     pub fn writeAll(self: *FileWriter, bytes: []const u8) !void {
         try self.inner.interface.writeAll(bytes);
-        try self.inner.interface.flush();
     }
 
     pub fn print(self: *FileWriter, comptime fmt: []const u8, args: anytype) !void {
         try self.inner.interface.print(fmt, args);
-        try self.inner.interface.flush();
     }
 };
 

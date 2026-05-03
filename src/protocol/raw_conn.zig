@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const dns = @import("dns");
 const compat = @import("compat");
-const net_compat = @import("net_compat");
+const net = @import("net");
 
 /// Raw TCP/TLS connection wrapper used by HTTP and websocket clients.
 pub const AddressFamily = enum {
@@ -22,9 +22,9 @@ var ca_bundle_cache: CaBundleCache = .{};
 
 pub const RawConn = struct {
     allocator: std.mem.Allocator,
-    stream: net_compat.Stream,
-    stream_reader: net_compat.Stream.Reader,
-    stream_writer: net_compat.Stream.Writer,
+    stream: net.Stream,
+    stream_reader: net.Stream.Reader,
+    stream_writer: net.Stream.Writer,
     tls_client: ?std.crypto.tls.Client = null,
     socket_read_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
     socket_write_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
@@ -67,19 +67,19 @@ pub const RawConn = struct {
 
     pub fn connectResolved(
         allocator: std.mem.Allocator,
-        addr: net_compat.Address,
+        addr: net.Address,
         tls_host: []const u8,
         use_tls: bool,
         ignore_unsafe_cert: bool,
     ) !*RawConn {
         const stream = try connectStreamAddress(addr);
-        errdefer net_compat.close(stream);
+        errdefer net.close(stream);
         return fromStream(allocator, stream, tls_host, use_tls, ignore_unsafe_cert);
     }
 
     pub fn fromStream(
         allocator: std.mem.Allocator,
-        stream: net_compat.Stream,
+        stream: net.Stream,
         tls_host: []const u8,
         use_tls: bool,
         ignore_unsafe_cert: bool,
@@ -92,8 +92,8 @@ pub const RawConn = struct {
             .stream_reader = undefined,
             .stream_writer = undefined,
         };
-        raw.stream_reader = net_compat.reader(raw.stream, raw.socket_read_buf[0..]);
-        raw.stream_writer = net_compat.writer(raw.stream, raw.socket_write_buf[0..]);
+        raw.stream_reader = net.reader(raw.stream, raw.socket_read_buf[0..]);
+        raw.stream_writer = net.writer(raw.stream, raw.socket_write_buf[0..]);
         if (use_tls) try raw.startTls(tls_host, ignore_unsafe_cert);
         return raw;
     }
@@ -144,7 +144,7 @@ pub const RawConn = struct {
 
     pub fn shutdown(self: *RawConn) void {
         if (self.closed.swap(true, .acq_rel)) return;
-        net_compat.close(self.stream);
+        net.close(self.stream);
     }
 
     pub fn close(self: *RawConn) void {
@@ -180,15 +180,15 @@ fn cachedCaBundle() !*std.crypto.Certificate.Bundle {
     return &ca_bundle_cache.bundle;
 }
 
-fn familyMatches(addr: net_compat.Address, family: AddressFamily) bool {
+fn familyMatches(addr: net.Address, family: AddressFamily) bool {
     return switch (family) {
         .any => true,
-        .ipv4 => net_compat.isIpv4(addr),
-        .ipv6 => net_compat.isIpv6(addr),
+        .ipv4 => net.isIpv4(addr),
+        .ipv6 => net.isIpv6(addr),
     };
 }
 
-fn connectStreamAddress(addr: net_compat.Address) !net_compat.Stream {
+fn connectStreamAddress(addr: net.Address) !net.Stream {
     _ = builtin;
-    return net_compat.connect(addr);
+    return net.connect(addr);
 }
