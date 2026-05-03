@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime");
 
 /// Small blocking mutex used where the agent needs old `std.Thread.Mutex`
 /// semantics on Zig 0.16.
@@ -17,10 +18,7 @@ pub const Mutex = struct {
 };
 
 pub fn currentEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
-    if (std.Options.debug_threaded_io) |threaded_io| {
-        return threaded_io.environ.process_environ.createMap(allocator);
-    }
-    return .init(allocator);
+    return runtime.currentEnvMap(allocator);
 }
 
 pub fn emptyEnvMap(allocator: std.mem.Allocator) std.process.Environ.Map {
@@ -28,10 +26,7 @@ pub fn emptyEnvMap(allocator: std.mem.Allocator) std.process.Environ.Map {
 }
 
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
-    if (std.Options.debug_threaded_io) |threaded_io| {
-        return threaded_io.environ.process_environ.getAlloc(allocator, key);
-    }
-    return error.EnvironmentVariableMissing;
+    return runtime.getEnvVarOwned(allocator, key);
 }
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {

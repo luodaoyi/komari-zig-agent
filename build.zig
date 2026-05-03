@@ -9,11 +9,17 @@ pub fn build(b: *std.Build) void {
 
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
+    const runtime_module = b.createModule(.{
+        .root_source_file = b.path("src/runtime.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const compat_module = b.createModule(.{
         .root_source_file = b.path("src/compat.zig"),
         .target = target,
         .optimize = optimize,
     });
+    compat_module.addImport("runtime", runtime_module);
     const net_compat_module = b.createModule(.{
         .root_source_file = b.path("src/net_compat.zig"),
         .target = target,
@@ -40,6 +46,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.addOptions("build_options", opts);
+    exe.root_module.addImport("runtime", runtime_module);
     addCompatImports(exe.root_module, compat_module, net_compat_module);
     if (target.result.os.tag == .freebsd or target.result.os.tag == .macos) {
         exe.root_module.linkSystemLibrary("c", .{});

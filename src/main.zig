@@ -11,6 +11,7 @@ const update = @import("update.zig");
 const version = @import("version.zig");
 const builtin = @import("builtin");
 const compat = @import("compat");
+const runtime = @import("runtime");
 
 /// Agent entrypoint that wires config, reporting, updates, and shutdown.
 pub const std_options: std.Options = .{
@@ -21,6 +22,7 @@ var shutdown_requested = std.atomic.Value(bool).init(false);
 var netstatic_active = std.atomic.Value(bool).init(false);
 
 pub fn main(init: std.process.Init.Minimal) !void {
+    runtime.init(init);
     const allocator = std.heap.page_allocator;
     var config_arena = std.heap.ArenaAllocator.init(allocator);
     defer config_arena.deinit();
