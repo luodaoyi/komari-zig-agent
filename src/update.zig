@@ -179,7 +179,7 @@ pub fn confirmPendingUpdate(allocator: std.mem.Allocator) !bool {
 pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
     if (!isNumericVersion(version.current)) return;
     const release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
-    const release = http.getReadCfg(allocator, release_url, cfg) catch return;
+    const release = downloadGithubUrlUnchecked(allocator, release_url, cfg) catch return;
     defer allocator.free(release);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
     defer parsed.deinit();
@@ -255,7 +255,7 @@ fn expectedSha256(allocator: std.mem.Allocator, cfg: config.Config, asset_name: 
         }
     }
     const url = sums_url orelse return null;
-    const sums = try downloadReleaseAssetUnchecked(allocator, url, cfg);
+    const sums = try downloadGithubUrlUnchecked(allocator, url, cfg);
     defer allocator.free(sums);
     const hex = checksumFromSums(sums, asset_name) orelse return error.ReleaseChecksumMissing;
     const copy = try allocator.dupe(u8, hex);
@@ -263,7 +263,7 @@ fn expectedSha256(allocator: std.mem.Allocator, cfg: config.Config, asset_name: 
 }
 
 fn downloadReleaseAsset(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, expected_sha256: ?[]const u8) ![]u8 {
-    const body = try downloadReleaseAssetUnchecked(allocator, url, cfg);
+    const body = try downloadGithubUrlUnchecked(allocator, url, cfg);
     errdefer allocator.free(body);
     if (expected_sha256) |expected| {
         if (!sha256Matches(body, expected)) return error.ReleaseChecksumMismatch;
@@ -273,7 +273,7 @@ fn downloadReleaseAsset(allocator: std.mem.Allocator, url: []const u8, cfg: conf
     return body;
 }
 
-fn downloadReleaseAssetUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
+fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
     if (http.getReadCfg(allocator, url, cfg)) |body| return body else |err| {
         var last_err = err;
         if (std.process.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {

@@ -34,6 +34,10 @@ test "self update github proxy urls do not include closed mirrors" {
     const url = try update.githubProxyUrl(std.testing.allocator, "https://gh.example.com/", "https://github.com/o/r/releases/latest/download/a");
     defer std.testing.allocator.free(url);
     try std.testing.expectEqualStrings("https://gh.example.com/https://github.com/o/r/releases/latest/download/a", url);
+
+    const api_url = try update.githubProxyUrl(std.testing.allocator, "https://gh.example.com/", "https://api.github.com/repos/o/r/releases/latest");
+    defer std.testing.allocator.free(api_url);
+    try std.testing.expectEqualStrings("https://gh.example.com/https://api.github.com/repos/o/r/releases/latest", api_url);
 }
 
 test "self update checksum file parser accepts common formats" {
