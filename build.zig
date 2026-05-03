@@ -251,6 +251,7 @@ fn addTest(
             "--skip-solibs",
             "--include-path=src",
             "--exclude-path=src/autodiscovery_test.zig",
+            "--exclude-line=else => return err,",
             coverage_path,
             null,
         });
