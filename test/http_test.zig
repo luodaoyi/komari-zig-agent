@@ -98,6 +98,32 @@ test "bounded response writer enforces limit while writing" {
     );
 }
 
+test "streaming response writer saves file and returns sha256" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile("body", .{ .read = true });
+    defer file.close();
+
+    const response =
+        "HTTP/1.1 200 OK\r\n" ++
+        "Transfer-Encoding: chunked\r\n" ++
+        "\r\n" ++
+        "5\r\nhello\r\n" ++
+        "6\r\n world\r\n" ++
+        "0\r\n\r\n";
+    const digest = try http.writeResponseToFileSha256ForTest(std.testing.allocator, response, file);
+
+    var expected: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("hello world", &expected, .{});
+    try std.testing.expectEqualSlices(u8, &expected, &digest);
+
+    try file.seekTo(0);
+    const body = try file.readToEndAlloc(std.testing.allocator, 64);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello world", body);
+}
+
 test "proxy environment follows request scheme" {
     try std.testing.expectEqualStrings(
         "http://http-proxy.example:8080",

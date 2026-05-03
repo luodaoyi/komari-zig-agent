@@ -217,8 +217,6 @@ fn downloadAndReplace(
 ) !void {
     const expected = try expectedSha256(allocator, cfg, asset_name, digest, sums_url);
     defer if (expected) |value| allocator.free(value);
-    const body = try downloadReleaseAsset(allocator, url, cfg, expected);
-    defer allocator.free(body);
     const exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(exe);
     const tmp = try std.fmt.allocPrint(allocator, "{s}.update", .{exe});
@@ -231,7 +229,7 @@ fn downloadAndReplace(
     {
         var file = try std.fs.createFileAbsolute(tmp, .{ .truncate = true, .mode = 0o755 });
         defer file.close();
-        try file.writeAll(body);
+        try downloadReleaseAssetToFile(allocator, url, cfg, expected, file);
     }
     try runBinaryPreflight(allocator, tmp);
     try copyFileAbsolute(exe, backup);
@@ -262,15 +260,10 @@ fn expectedSha256(allocator: std.mem.Allocator, cfg: config.Config, asset_name: 
     return copy;
 }
 
-fn downloadReleaseAsset(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, expected_sha256: ?[]const u8) ![]u8 {
-    const body = try downloadGithubUrlUnchecked(allocator, url, cfg);
-    errdefer allocator.free(body);
-    if (expected_sha256) |expected| {
-        if (!sha256Matches(body, expected)) return error.ReleaseChecksumMismatch;
-    } else {
-        return error.ReleaseChecksumMissing;
-    }
-    return body;
+fn downloadReleaseAssetToFile(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, expected_sha256: ?[]const u8, file: std.fs.File) !void {
+    const expected = expected_sha256 orelse return error.ReleaseChecksumMissing;
+    const digest = try downloadGithubUrlToFileUnchecked(allocator, url, cfg, file);
+    if (!sha256DigestMatches(&digest, expected)) return error.ReleaseChecksumMismatch;
 }
 
 fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
@@ -290,6 +283,31 @@ fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg
                     const proxied = try githubProxyUrl(allocator, proxy, url);
                     defer allocator.free(proxied);
                     if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |proxy_err| last_err = proxy_err;
+                }
+            },
+            else => return env_err,
+        }
+        return last_err;
+    }
+}
+
+fn downloadGithubUrlToFileUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, file: std.fs.File) ![32]u8 {
+    if (http.getToFileSha256Cfg(allocator, url, cfg, file)) |digest| return digest else |err| {
+        var last_err = err;
+        if (std.process.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
+            defer allocator.free(env_value);
+            var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
+            while (it.next()) |proxy| {
+                const proxied = try githubProxyUrl(allocator, proxy, url);
+                defer allocator.free(proxied);
+                if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |proxy_err| last_err = proxy_err;
+            }
+        } else |env_err| switch (env_err) {
+            error.EnvironmentVariableNotFound => {
+                for (&default_github_proxies) |proxy| {
+                    const proxied = try githubProxyUrl(allocator, proxy, url);
+                    defer allocator.free(proxied);
+                    if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |proxy_err| last_err = proxy_err;
                 }
             },
             else => return env_err,
@@ -328,8 +346,13 @@ fn sha256Matches(bytes: []const u8, expected: []const u8) bool {
     if (!isHexSha256(expected)) return false;
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return sha256DigestMatches(&digest, expected);
+}
+
+fn sha256DigestMatches(digest: *const [32]u8, expected: []const u8) bool {
+    if (!isHexSha256(expected)) return false;
     var actual: [64]u8 = undefined;
-    toHexLower(&actual, &digest);
+    toHexLower(&actual, digest);
     return std.ascii.eqlIgnoreCase(&actual, expected);
 }
 
