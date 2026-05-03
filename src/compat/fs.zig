@@ -2,6 +2,21 @@ const std = @import("std");
 
 /// Filesystem helpers over Zig 0.16 `std.Io` APIs.
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    if (isVirtualKernelFile(path)) return readStreamingFileAlloc(allocator, path, max_bytes);
+    if (!std.fs.path.isAbsolute(path)) {
+        return std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(max_bytes));
+    }
+
+    var file = try openFile(path, .{});
+    defer file.close(std.Options.debug_io);
+    var reader = file.reader(std.Options.debug_io, &.{});
+    return reader.interface.allocRemaining(allocator, .limited(max_bytes)) catch |err| switch (err) {
+        error.ReadFailed => return reader.err.?,
+        error.OutOfMemory, error.StreamTooLong => |e| return e,
+    };
+}
+
+fn readStreamingFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
     var file = try openFile(path, .{});
     defer file.close(std.Options.debug_io);
     var reader_buf: [4096]u8 = undefined;
@@ -16,6 +31,13 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: 
         try out.appendSlice(allocator, read_buf[0..n]);
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn isVirtualKernelFile(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "/proc/") or
+        std.mem.eql(u8, path, "/proc") or
+        std.mem.startsWith(u8, path, "/sys/") or
+        std.mem.eql(u8, path, "/sys");
 }
 
 pub fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
