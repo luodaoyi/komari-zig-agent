@@ -159,7 +159,7 @@ fn sampleOnceLocked(rt: *Runtime) !void {
         return sampleProcNetDevOnceLocked(rt);
     }
     var counters = try readProcNetDev(rt.allocator);
-    defer deinitCounterMap(&counters);
+    defer deinitCounterMap(&counters, rt.allocator);
     try sampleCounterMapLocked(rt, &counters);
 }
 
@@ -176,7 +176,7 @@ fn sampleProcNetDevOnceLocked(rt: *Runtime) !void {
     const bytes = readSmallFile("/proc/net/dev", &buf) orelse return;
     if (bytes.len == buf.len) {
         var counters = try readProcNetDev(rt.allocator);
-        defer deinitCounterMap(&counters);
+        defer deinitCounterMap(&counters, rt.allocator);
         return sampleCounterMapLocked(rt, &counters);
     }
     const ts = nowUnix();
@@ -497,10 +497,10 @@ fn globMatch(pattern: []const u8, value: []const u8) bool {
     return std.mem.startsWith(u8, value, pattern[0..star]) and std.mem.endsWith(u8, value, pattern[star + 1 ..]);
 }
 
-fn deinitCounterMap(map: *CounterMap) void {
+fn deinitCounterMap(map: *CounterMap, allocator: std.mem.Allocator) void {
     var it = map.iterator();
-    while (it.next()) |entry| std.heap.page_allocator.free(entry.key_ptr.*);
-    map.deinit(std.heap.page_allocator);
+    while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+    map.deinit(allocator);
 }
 
 fn safeDelta(cur: u64, prev: u64) u64 {
