@@ -20,14 +20,14 @@ pub const std_options: std.Options = .{
 var shutdown_requested = std.atomic.Value(bool).init(false);
 var netstatic_active = std.atomic.Value(bool).init(false);
 
-pub fn main(init: std.process.Init) !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.page_allocator;
     var config_arena = std.heap.ArenaAllocator.init(allocator);
     defer config_arena.deinit();
     const config_allocator = config_arena.allocator();
     installSignalHandlers();
 
-    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, config_allocator);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.args, config_allocator);
     defer args_iter.deinit();
     var args_list: std.ArrayList([]const u8) = .empty;
     while (args_iter.next()) |arg| try args_list.append(config_allocator, arg);
