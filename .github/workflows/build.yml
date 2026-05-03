@@ -83,10 +83,11 @@ jobs:
         run: |
           set -eu
           if command -v dnf >/dev/null 2>&1; then
-            dnf -y install bash ca-certificates curl findutils git gzip tar xz
+            dnf -y install bash ca-certificates findutils git gzip tar xz
           elif command -v microdnf >/dev/null 2>&1; then
-            microdnf -y install bash ca-certificates curl findutils git gzip tar xz
+            microdnf -y install bash ca-certificates findutils git gzip tar xz
           fi
+          command -v curl
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install Zig
         shell: bash
