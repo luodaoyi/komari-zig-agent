@@ -9,6 +9,12 @@ pub fn build(b: *std.Build) void {
 
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
+    const crash_trace_options = .{
+        .strip = false,
+        .unwind_tables = std.builtin.UnwindTables.sync,
+        .omit_frame_pointer = false,
+        .error_tracing = true,
+    };
 
     const exe = b.addExecutable(.{
         .name = "komari-agent",
@@ -16,8 +22,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .unwind_tables = .none,
-            .omit_frame_pointer = true,
+            .strip = crash_trace_options.strip,
+            .unwind_tables = crash_trace_options.unwind_tables,
+            .omit_frame_pointer = crash_trace_options.omit_frame_pointer,
+            .error_tracing = crash_trace_options.error_tracing,
         }),
     });
     exe.root_module.addOptions("build_options", opts);
@@ -31,15 +39,19 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/idna.zig"),
         .target = target,
         .optimize = optimize,
-        .unwind_tables = .none,
-        .omit_frame_pointer = true,
+        .strip = crash_trace_options.strip,
+        .unwind_tables = crash_trace_options.unwind_tables,
+        .omit_frame_pointer = crash_trace_options.omit_frame_pointer,
+        .error_tracing = crash_trace_options.error_tracing,
     });
     const exe_dns = b.createModule(.{
         .root_source_file = b.path("src/dns.zig"),
         .target = target,
         .optimize = optimize,
-        .unwind_tables = .none,
-        .omit_frame_pointer = true,
+        .strip = crash_trace_options.strip,
+        .unwind_tables = crash_trace_options.unwind_tables,
+        .omit_frame_pointer = crash_trace_options.omit_frame_pointer,
+        .error_tracing = crash_trace_options.error_tracing,
     });
     exe.root_module.addImport("idna", exe_idna);
     exe.root_module.addImport("dns", exe_dns);
@@ -47,8 +59,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
         .optimize = optimize,
-        .unwind_tables = .none,
-        .omit_frame_pointer = true,
+        .strip = crash_trace_options.strip,
+        .unwind_tables = crash_trace_options.unwind_tables,
+        .omit_frame_pointer = crash_trace_options.omit_frame_pointer,
+        .error_tracing = crash_trace_options.error_tracing,
     }));
     b.installArtifact(exe);
 

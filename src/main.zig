@@ -11,6 +11,10 @@ const update = @import("update.zig");
 const version = @import("version.zig");
 const builtin = @import("builtin");
 
+pub const std_options: std.Options = .{
+    .enable_segfault_handler = true,
+};
+
 var shutdown_requested = std.atomic.Value(bool).init(false);
 var netstatic_active = std.atomic.Value(bool).init(false);
 

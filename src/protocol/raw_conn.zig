@@ -110,7 +110,7 @@ pub const RawConn = struct {
                 },
             ) catch return error.TlsInitializationFailed;
         } else {
-            const ca_bundle = try cachedCaBundle(self.allocator);
+            const ca_bundle = try cachedCaBundle();
             self.tls_client = std.crypto.tls.Client.init(
                 self.stream_reader.interface(),
                 &self.stream_writer.interface,
@@ -151,13 +151,13 @@ pub const RawConn = struct {
     }
 };
 
-fn cachedCaBundle(allocator: std.mem.Allocator) !std.crypto.Certificate.Bundle {
+fn cachedCaBundle() !std.crypto.Certificate.Bundle {
     if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
     ca_bundle_cache.mutex.lock();
     defer ca_bundle_cache.mutex.unlock();
     if (!ca_bundle_cache.loaded) {
         ca_bundle_cache.bundle = .{};
-        try ca_bundle_cache.bundle.rescan(allocator);
+        try ca_bundle_cache.bundle.rescan(std.heap.page_allocator);
         ca_bundle_cache.loaded = true;
     }
     return ca_bundle_cache.bundle;
