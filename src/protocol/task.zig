@@ -29,21 +29,35 @@ pub fn allocTaskResultJson(allocator: std.mem.Allocator, task_id: []const u8, re
 }
 
 pub fn runCommand(allocator: std.mem.Allocator, command: []const u8) ![]const u8 {
-    const result = try runCommandDetailed(allocator, command);
+    return runCommandWithRunner(allocator, command, realCommandRunner);
+}
+
+pub fn runCommandWithRunner(allocator: std.mem.Allocator, command: []const u8, runner: CommandRunner) ![]const u8 {
+    const result = try runCommandDetailedWithRunner(allocator, command, runner);
     return result.output;
 }
 
 pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !CommandResult {
+    return runCommandDetailedWithRunner(allocator, command, realCommandRunner);
+}
+
+pub const CommandRunner = *const fn (std.mem.Allocator, *std.process.Environ.Map, []const u8) anyerror!std.process.RunResult;
+
+fn realCommandRunner(allocator: std.mem.Allocator, env: *std.process.Environ.Map, command: []const u8) !std.process.RunResult {
+    return std.process.run(allocator, std.Options.debug_io, .{
+        .argv = &.{ "/bin/sh", "-c", command },
+        .environ_map = env,
+        .stdout_limit = .limited(max_command_output_bytes),
+        .stderr_limit = .limited(max_command_output_bytes),
+    });
+}
+
+pub fn runCommandDetailedWithRunner(allocator: std.mem.Allocator, command: []const u8, runner: CommandRunner) !CommandResult {
     if (command.len == 0) return .{ .output = try allocator.dupe(u8, "No command provided"), .exit_code = 0 };
     var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = std.process.run(allocator, std.Options.debug_io, .{
-        .argv = &.{ "/bin/sh", "-c", command },
-        .environ_map = &env,
-        .stdout_limit = .limited(max_command_output_bytes),
-        .stderr_limit = .limited(max_command_output_bytes),
-    }) catch |err| switch (err) {
+    const result = runner(allocator, &env, command) catch |err| switch (err) {
         error.StreamTooLong => return .{
             .output = try std.fmt.allocPrint(allocator, "Command output exceeded {d} bytes", .{max_command_output_bytes}),
             .exit_code = -1,
