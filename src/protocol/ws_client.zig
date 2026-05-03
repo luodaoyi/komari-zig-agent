@@ -233,21 +233,44 @@ fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {
     return error.LineTooLong;
 }
 
+pub fn writeMaskedFrameForTest(writer: anytype, opcode: u8, payload: []const u8) !void {
+    try writeMaskedFrame(writer, opcode, payload);
+}
+
 fn writeMaskedFrame(writer: anytype, opcode: u8, payload: []const u8) !void {
-    try writer.writeByte(0x80 | opcode);
+    var header: [14]u8 = undefined;
+    var header_len: usize = 0;
+    header[header_len] = 0x80 | opcode;
+    header_len += 1;
     if (payload.len < 126) {
-        try writer.writeByte(0x80 | @as(u8, @intCast(payload.len)));
+        header[header_len] = 0x80 | @as(u8, @intCast(payload.len));
+        header_len += 1;
     } else if (payload.len <= 0xffff) {
-        try writer.writeByte(0x80 | 126);
-        try writer.writeByte(@intCast((payload.len >> 8) & 0xff));
-        try writer.writeByte(@intCast(payload.len & 0xff));
+        header[header_len] = 0x80 | 126;
+        header_len += 1;
+        header[header_len] = @intCast((payload.len >> 8) & 0xff);
+        header_len += 1;
+        header[header_len] = @intCast(payload.len & 0xff);
+        header_len += 1;
     } else {
-        try writer.writeByte(0x80 | 127);
-        var buf: [8]u8 = undefined;
-        std.mem.writeInt(u64, &buf, payload.len, .big);
-        try writer.writeAll(&buf);
+        header[header_len] = 0x80 | 127;
+        header_len += 1;
+        std.mem.writeInt(u64, header[header_len..][0..8], payload.len, .big);
+        header_len += 8;
     }
     const mask = [_]u8{ 1, 2, 3, 4 };
-    try writer.writeAll(&mask);
-    for (payload, 0..) |b, i| try writer.writeByte(b ^ mask[i % 4]);
+    @memcpy(header[header_len..][0..4], &mask);
+    header_len += 4;
+    try writer.writeAll(header[0..header_len]);
+
+    var masked: [4096]u8 = undefined;
+    var offset: usize = 0;
+    while (offset < payload.len) {
+        const n = @min(masked.len, payload.len - offset);
+        for (payload[offset..][0..n], 0..) |b, i| {
+            masked[i] = b ^ mask[(offset + i) & 3];
+        }
+        try writer.writeAll(masked[0..n]);
+        offset += n;
+    }
 }
