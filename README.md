@@ -84,6 +84,49 @@ wget -O- https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/instal
   --token TOKEN
 ```
 
+国内网络或无法直连 `raw.githubusercontent.com` 时，可先用镜像拉取安装脚本。`jsDelivr` 适合拉取仓库静态文件；GitHub 代理可按实际网络择一：
+
+```sh
+# jsDelivr CDN
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@main/install.sh | sudo sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+
+# gh.llkk.cc
+curl -fsSL https://gh.llkk.cc/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.sh | sudo sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+
+# gh-proxy.com
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.sh | sudo sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+
+# ghproxy.net
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.sh | sudo sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+
+# ghfast.top
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.sh | sudo sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+
+# ghproxy.cc
+curl -fsSL https://ghproxy.cc/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.sh | sudo sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+```
+
+若脚本能下载，但后续 Release 资产下载仍慢或失败，可显式指定下载代理：
+
+```sh
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@main/install.sh | sudo sh -s -- \
+  --install-ghproxy https://gh.llkk.cc \
+  --endpoint https://panel.example \
+  --token TOKEN
+```
+
 指定版本：
 
 ```sh
@@ -116,6 +159,35 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/repl
 
 ```sh
 wget -O- https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | sudo sh
+```
+
+国内网络或无法直连 `raw.githubusercontent.com` 时，可用以下命令替换：
+
+```sh
+# jsDelivr CDN
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@main/replace.sh | sudo sh
+
+# gh.llkk.cc
+curl -fsSL https://gh.llkk.cc/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | sudo sh
+
+# gh-proxy.com
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | sudo sh
+
+# ghproxy.net
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | sudo sh
+
+# ghfast.top
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | sudo sh
+
+# ghproxy.cc
+curl -fsSL https://ghproxy.cc/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/replace.sh | sudo sh
+```
+
+若脚本能下载，但 Release 资产下载仍慢或失败，可显式指定下载代理：
+
+```sh
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@main/replace.sh | \
+  sudo sh -s -- --ghproxy https://gh.llkk.cc
 ```
 
 指定版本替换：
