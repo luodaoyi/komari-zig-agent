@@ -139,8 +139,9 @@ jobs:
             tar -xf "zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz"
             export PATH="$PWD/zig-x86_64-freebsd-${{ env.ZIG_VERSION }}:$PATH"
             zig build test
-            zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=x86_64-freebsd
+            zig build -Doptimize=ReleaseSmall -Dversion=dev
             zig-out/bin/komari-agent --show-warning
+            zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=x86_64-freebsd
 
   linux-agent-smoke:
     name: Linux Agent Smoke (${{ matrix.name }})
