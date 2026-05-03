@@ -71,6 +71,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/network_filter_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/task_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/task_limiter_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
@@ -153,6 +154,11 @@ fn addTest(
     tests.root_module.addImport("platform_linux", platform_linux);
     tests.root_module.addImport("protocol_task", b.createModule(.{
         .root_source_file = b.path("src/protocol/task.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+    tests.root_module.addImport("protocol_task_limiter", b.createModule(.{
+        .root_source_file = b.path("src/protocol/task_limiter.zig"),
         .target = target,
         .optimize = optimize,
     }));

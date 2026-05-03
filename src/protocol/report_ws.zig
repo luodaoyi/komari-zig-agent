@@ -6,6 +6,7 @@ const provider = @import("../platform/provider.zig");
 const report = @import("../report/report.zig");
 const ping = @import("ping.zig");
 const task = @import("task.zig");
+const task_limiter = @import("task_limiter.zig");
 const terminal = @import("../terminal/terminal.zig");
 const update = @import("../update.zig");
 const ws_client = @import("ws_client.zig");
@@ -179,17 +180,26 @@ fn readerLoop(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config
 fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config, msg: ServerMessage) !void {
     switch (msg.kind) {
         .ping => {
+            if (!task_limiter.tryAcquire()) return error.TooManyConcurrentTasks;
+            errdefer task_limiter.release();
             const args = try PingTaskArgs.init(allocator, conn, cfg, msg);
+            errdefer args.deinit(allocator);
             const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, runPingTask, .{ allocator, args });
             thread.detach();
         },
         .exec => {
+            if (!task_limiter.tryAcquire()) return error.TooManyConcurrentTasks;
+            errdefer task_limiter.release();
             const args = try ExecTaskArgs.init(allocator, cfg, msg);
+            errdefer args.deinit(allocator);
             const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, runExecTask, .{ allocator, args });
             thread.detach();
         },
         .terminal => {
+            if (!task_limiter.tryAcquire()) return error.TooManyConcurrentTasks;
+            errdefer task_limiter.release();
             const args = try TerminalTaskArgs.init(allocator, cfg, msg);
+            errdefer args.deinit(allocator);
             const thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, runTerminalTask, .{ allocator, args });
             thread.detach();
         },
@@ -214,6 +224,7 @@ const TerminalTaskArgs = struct {
 };
 
 fn runTerminalTask(allocator: std.mem.Allocator, args: TerminalTaskArgs) void {
+    defer task_limiter.release();
     defer args.deinit(allocator);
     terminal.startSession(allocator, args.cfg, args.request_id) catch |err| {
         var stdout = std.fs.File.stdout().deprecatedWriter();
@@ -247,6 +258,7 @@ const PingTaskArgs = struct {
 };
 
 fn runPingTask(allocator: std.mem.Allocator, args: PingTaskArgs) void {
+    defer task_limiter.release();
     defer args.deinit(allocator);
     const value = ping.measure(allocator, args.ping_type, args.ping_target, args.cfg.custom_dns);
     const finished = task.utcNow(allocator) catch return;
@@ -276,6 +288,7 @@ const ExecTaskArgs = struct {
 };
 
 fn runExecTask(allocator: std.mem.Allocator, args: ExecTaskArgs) void {
+    defer task_limiter.release();
     defer args.deinit(allocator);
     task.uploadExecResult(allocator, args.cfg, args.task_id, args.command) catch {};
 }
