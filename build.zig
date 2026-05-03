@@ -246,23 +246,27 @@ fn addTest(
     tests.root_module.addImport("report_netstatic", report_netstatic);
 
     const collect_coverage = coverage and isCoverageTest(path);
-    const coverage_path = coverageOutputPath(b, coverage_dir, path);
     if (collect_coverage) {
-        tests.setExecCmd(&.{
+        tests.use_llvm = true;
+
+        const coverage_path = coverageOutputPath(b, coverage_dir, path);
+        const make_coverage_dir = b.addSystemCommand(&.{ "mkdir", "-p", coverage_path });
+
+        const run_tests = b.addSystemCommand(&.{
             "kcov",
             "--skip-solibs",
             "--include-path=src",
             "--exclude-path=src/autodiscovery_test.zig",
             coverage_path,
-            null,
         });
+        run_tests.addFileArg(tests.getEmittedBin());
+        run_tests.has_side_effects = true;
+        run_tests.step.dependOn(&make_coverage_dir.step);
+        test_step.dependOn(&run_tests.step);
+        return;
     }
 
     const run_tests = b.addRunArtifact(tests);
-    if (collect_coverage) {
-        const make_coverage_dir = b.addSystemCommand(&.{ "mkdir", "-p", coverage_path });
-        run_tests.step.dependOn(&make_coverage_dir.step);
-    }
     test_step.dependOn(&run_tests.step);
 }
 

@@ -10,3 +10,8 @@ test "extracts ipv6 from json and plain bodies" {
     try std.testing.expectEqualStrings("2001:db8::1", ip.findIPv6("{\"ip\":\"2001:db8::1\"}") orelse "");
     try std.testing.expectEqualStrings("2400:3200::1", ip.findIPv6("addr=2400:3200::1\n") orelse "");
 }
+
+test "returns null when no address is present" {
+    try std.testing.expect(ip.findIPv4("status=ok\nno-address-here\n") == null);
+    try std.testing.expect(ip.findIPv6("status=ok\nno-address-here\n") == null);
+}
