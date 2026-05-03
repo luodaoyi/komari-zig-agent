@@ -102,9 +102,6 @@ test "streaming response writer saves file and returns sha256" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var file = try tmp.dir.createFile("body", .{ .read = true });
-    defer file.close();
-
     const response =
         "HTTP/1.1 200 OK\r\n" ++
         "Transfer-Encoding: chunked\r\n" ++
@@ -112,14 +109,17 @@ test "streaming response writer saves file and returns sha256" {
         "5\r\nhello\r\n" ++
         "6\r\n world\r\n" ++
         "0\r\n\r\n";
-    const digest = try http.writeResponseToFileSha256ForTest(std.testing.allocator, response, file);
+    const digest = blk: {
+        var file = try tmp.dir.createFile(std.testing.io, "body", .{ .read = true });
+        defer file.close(std.testing.io);
+        break :blk try http.writeResponseToFileSha256ForTest(std.testing.allocator, response, file);
+    };
 
     var expected: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash("hello world", &expected, .{});
     try std.testing.expectEqualSlices(u8, &expected, &digest);
 
-    try file.seekTo(0);
-    const body = try file.readToEndAlloc(std.testing.allocator, 64);
+    const body = try tmp.dir.readFileAlloc(std.testing.io, "body", std.testing.allocator, .limited(64));
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings("hello world", body);
 }

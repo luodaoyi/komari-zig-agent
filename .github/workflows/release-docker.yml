@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
-          version: 0.15.2
+          version: 0.16.0
       - run: |
           VERSION="${{ github.event.release.tag_name }}"
           [ -n "$VERSION" ] || VERSION="${{ github.sha }}"

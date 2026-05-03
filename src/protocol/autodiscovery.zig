@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const types = @import("types.zig");
 const config = @import("../config.zig");
 const http = @import("http.zig");
+const compat = @import("compat");
 
 /// Auto-discovery registration and cached token handling.
 pub const AutoDiscoveryConfig = struct {
@@ -11,7 +12,7 @@ pub const AutoDiscoveryConfig = struct {
 };
 
 pub fn configPath(allocator: std.mem.Allocator) ![]const u8 {
-    const exe = try std.fs.selfExePathAlloc(allocator);
+    const exe = try compat.selfExePathAlloc(allocator);
     defer allocator.free(exe);
     const dir = std.fs.path.dirname(exe) orelse ".";
     return std.fs.path.join(allocator, &.{ dir, "auto-discovery.json" });
@@ -20,7 +21,7 @@ pub fn configPath(allocator: std.mem.Allocator) ![]const u8 {
 pub fn load(allocator: std.mem.Allocator) !?AutoDiscoveryConfig {
     const path = try configPath(allocator);
     defer allocator.free(path);
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024) catch |err| switch (err) {
+    const bytes = compat.readFileAlloc(allocator, path, 64 * 1024) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
@@ -31,9 +32,11 @@ pub fn load(allocator: std.mem.Allocator) !?AutoDiscoveryConfig {
 pub fn save(allocator: std.mem.Allocator, value: AutoDiscoveryConfig) !void {
     const path = try configPath(allocator);
     defer allocator.free(path);
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    var writer = file.deprecatedWriter();
+    var file = try compat.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
+    var buf: [4096]u8 = undefined;
+    var writer = compat.fileWriter(file, &buf);
+    defer writer.flush() catch {};
     try writer.print("{f}", .{std.json.fmt(value, .{ .whitespace = .indent_2 })});
 }
 
@@ -53,10 +56,10 @@ pub fn parseStoredConfig(allocator: std.mem.Allocator, bytes: []const u8) !?Auto
 }
 
 pub fn allocRegisterRequest(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try types.writeAutoDiscoveryRequestJson(out.writer(allocator), .{ .key = key });
-    return out.toOwnedSlice(allocator);
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try types.writeAutoDiscoveryRequestJson(&out.writer, .{ .key = key });
+    return out.toOwnedSlice();
 }
 
 pub fn register(allocator: std.mem.Allocator, cfg: *config.Config) !void {
@@ -76,7 +79,7 @@ pub fn register(allocator: std.mem.Allocator, cfg: *config.Config) !void {
 
 pub fn systemHostname(allocator: std.mem.Allocator) ![]u8 {
     if (try posixHostname(allocator)) |hostname| return hostname;
-    if (std.process.getEnvVarOwned(allocator, "HOSTNAME")) |hostname| {
+    if (compat.getEnvVarOwned(allocator, "HOSTNAME")) |hostname| {
         if (std.mem.trim(u8, hostname, " \t\r\n").len != 0) return hostname;
         allocator.free(hostname);
     } else |_| {}
@@ -104,7 +107,7 @@ fn posixHostnameImpl(allocator: std.mem.Allocator) !?[]u8 {
 }
 
 fn readTrimmedFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 4096);
+    const bytes = try compat.readFileAlloc(allocator, path, 4096);
     errdefer allocator.free(bytes);
     const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
     if (trimmed.len == bytes.len) return bytes;

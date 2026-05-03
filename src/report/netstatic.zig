@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -26,12 +27,12 @@ pub const Totals = struct {
 };
 
 const SampleList = std.ArrayList(TrafficData);
-const SampleMap = std.StringArrayHashMap(SampleList);
-const CounterMap = std.StringArrayHashMap(Counters);
+const SampleMap = std.StringArrayHashMapUnmanaged(SampleList);
+const CounterMap = std.StringArrayHashMapUnmanaged(Counters);
 
 const Runtime = struct {
     allocator: std.mem.Allocator,
-    mutex: std.Thread.Mutex = .{},
+    mutex: compat.Mutex = .{},
     running: bool = false,
     stop_requested: bool = false,
     interfaces: SampleMap,
@@ -94,8 +95,8 @@ pub fn applyMonthlyTotals(allocator: std.mem.Allocator, total_up: u64, total_dow
 pub fn applyMonthlyTotalsFiltered(allocator: std.mem.Allocator, reset_day: i32, include_nics: []const u8, exclude_nics: []const u8) Totals {
     if (reset_day < 1 or reset_day > 31) return .{ .up = 0, .down = 0 };
     startOrContinue() catch {};
-    const start: u64 = @intCast(lastResetDate(reset_day, std.time.timestamp()));
-    const end: u64 = @intCast(std.time.timestamp());
+    const start: u64 = @intCast(lastResetDate(reset_day, compat.unixTimestamp()));
+    const end: u64 = @intCast(compat.unixTimestamp());
     return totalTrafficBetween(allocator, start, end, include_nics, exclude_nics) catch .{ .up = 0, .down = 0 };
 }
 
@@ -115,9 +116,9 @@ fn getRuntime(allocator: std.mem.Allocator) !*Runtime {
     const rt = try allocator.create(Runtime);
     rt.* = .{
         .allocator = allocator,
-        .interfaces = SampleMap.init(allocator),
-        .cache = SampleMap.init(allocator),
-        .last = CounterMap.init(allocator),
+        .interfaces = .empty,
+        .cache = .empty,
+        .last = .empty,
     };
     runtime = rt;
     return rt;
@@ -130,7 +131,7 @@ fn sampleLoop(rt: *Runtime) void {
         const interval_ms: u64 = @intFromFloat(@max(rt.config.detect_interval, 0.1) * 1000);
         rt.mutex.unlock();
         if (stop_requested) return;
-        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+        compat.sleep(interval_ms * std.time.ns_per_ms);
         rt.mutex.lock();
         sampleOnceLocked(rt) catch {};
         rt.mutex.unlock();
@@ -144,7 +145,7 @@ fn saveLoop(rt: *Runtime) void {
         const interval_ms: u64 = @intFromFloat(@max(rt.config.save_interval, 1) * 1000);
         rt.mutex.unlock();
         if (stop_requested) return;
-        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+        compat.sleep(interval_ms * std.time.ns_per_ms);
         rt.mutex.lock();
         flushCacheLocked(rt, nowUnix());
         purgeExpiredLocked(rt);
@@ -206,14 +207,14 @@ fn sampleCounterLocked(rt: *Runtime, ts: u64, name: []const u8, current: Counter
         if (dtx != 0 or drx != 0) try appendSample(&rt.cache, rt.allocator, name, .{ .timestamp = ts, .tx = dtx, .rx = drx });
         rt.last.values()[idx] = current;
     } else {
-        try rt.last.put(try rt.allocator.dupe(u8, name), current);
+        try rt.last.put(rt.allocator, try rt.allocator.dupe(u8, name), current);
     }
 }
 
 fn readProcNetDev(allocator: std.mem.Allocator) !CounterMap {
     if (builtin.os.tag == .freebsd or builtin.os.tag == .macos) return readNetstatCounters(allocator);
-    var result = CounterMap.init(allocator);
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return result;
+    var result: CounterMap = .empty;
+    const bytes = compat.readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return result;
     defer allocator.free(bytes);
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
@@ -229,13 +230,13 @@ fn readProcNetDev(allocator: std.mem.Allocator) !CounterMap {
                 break;
             }
         }
-        try result.put(try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
+        try result.put(allocator, try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
     }
     return result;
 }
 
 fn readNetstatCounters(allocator: std.mem.Allocator) !CounterMap {
-    var result = CounterMap.init(allocator);
+    var result: CounterMap = .empty;
     const out = commandOutput(allocator, &.{ "netstat", "-ibn" }) catch return result;
     defer allocator.free(out);
     var lines = std.mem.splitScalar(u8, out, '\n');
@@ -252,25 +253,25 @@ fn readNetstatCounters(allocator: std.mem.Allocator) !CounterMap {
         if (n < 10) continue;
         const rx = std.fmt.parseInt(u64, vals[5], 10) catch 0;
         const tx = std.fmt.parseInt(u64, vals[8], 10) catch 0;
-        try result.put(try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
+        try result.put(allocator, try allocator.dupe(u8, name), .{ .tx = tx, .rx = rx });
     }
     return result;
 }
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    var env = std.process.EnvMap.init(allocator);
+    var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    child.env_map = &env;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    errdefer allocator.free(stdout);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.CommandFailed;
-    return stdout;
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = argv,
+        .environ_map = &env,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(result.stderr);
+    errdefer allocator.free(result.stdout);
+    if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
+    return result.stdout;
 }
 
 fn appendSample(map: *SampleMap, allocator: std.mem.Allocator, name: []const u8, sample: TrafficData) !void {
@@ -280,7 +281,7 @@ fn appendSample(map: *SampleMap, allocator: std.mem.Allocator, name: []const u8,
     }
     var list = SampleList.empty;
     try list.append(allocator, sample);
-    try map.put(try allocator.dupe(u8, name), list);
+    try map.put(allocator, try allocator.dupe(u8, name), list);
 }
 
 fn flushCacheLocked(rt: *Runtime, ts: u64) void {
@@ -299,7 +300,7 @@ fn flushCacheLocked(rt: *Runtime, ts: u64) void {
 
 fn purgeExpiredLocked(rt: *Runtime) void {
     const ttl: i64 = @intFromFloat(@max(rt.config.data_preserve_day, 1) * 24 * 3600);
-    const cutoff: u64 = @intCast(@max(std.time.timestamp() - ttl, 0));
+    const cutoff: u64 = @intCast(@max(compat.unixTimestamp() - ttl, 0));
     purgeMap(rt.interfaces, cutoff);
     purgeMap(rt.cache, cutoff);
 }
@@ -318,7 +319,7 @@ fn pruneCounterMap(map: *CounterMap, cfg: NetStaticConfig) void {
             i += 1;
             continue;
         }
-        map.allocator.free(name);
+        std.heap.page_allocator.free(name);
         _ = map.orderedRemoveAt(i);
     }
 }
@@ -331,8 +332,8 @@ fn pruneSampleMap(map: *SampleMap, cfg: NetStaticConfig) void {
             i += 1;
             continue;
         }
-        map.values()[i].deinit(map.allocator);
-        map.allocator.free(name);
+        map.values()[i].deinit(std.heap.page_allocator);
+        std.heap.page_allocator.free(name);
         _ = map.orderedRemoveAt(i);
     }
 }
@@ -365,7 +366,7 @@ fn sumMapBetween(out: *Totals, map: SampleMap, start: u64, end: u64, include_nic
 }
 
 fn loadFromFileLocked(rt: *Runtime) !void {
-    const bytes = std.fs.cwd().readFileAlloc(rt.allocator, saveFilePath(), 64 * 1024 * 1024) catch |err| switch (err) {
+    const bytes = compat.readFileAlloc(rt.allocator, saveFilePath(), 64 * 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
@@ -376,7 +377,7 @@ fn loadFromFileLocked(rt: *Runtime) !void {
 
 fn parseNetStaticJsonInto(rt: *Runtime, bytes: []const u8) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, rt.allocator, bytes, .{}) catch {
-        std.fs.cwd().rename(saveFilePath(), "net_static.json.bak") catch {};
+        std.Io.Dir.cwd().rename(saveFilePath(), std.Io.Dir.cwd(), "net_static.json.bak", std.Options.debug_io) catch {};
         return;
     };
     defer parsed.deinit();
@@ -402,7 +403,7 @@ fn parseNetStaticJsonInto(rt: *Runtime, bytes: []const u8) !void {
                 .rx = @intCast(jsonInt(item.object.get("rx")) orelse 0),
             });
         }
-        try rt.interfaces.put(try rt.allocator.dupe(u8, entry.key_ptr.*), list);
+        try rt.interfaces.put(rt.allocator, try rt.allocator.dupe(u8, entry.key_ptr.*), list);
     }
 }
 
@@ -431,9 +432,9 @@ fn saveToFileLocked(rt: *Runtime) !void {
     const bytes = try writer.toOwnedSlice();
     defer rt.allocator.free(bytes);
     const tmp = "net_static.json.tmp";
-    try std.fs.cwd().writeFile(.{ .sub_path = tmp, .data = bytes });
-    std.fs.cwd().rename(tmp, saveFilePath()) catch {
-        try std.fs.cwd().writeFile(.{ .sub_path = saveFilePath(), .data = bytes });
+    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = tmp, .data = bytes });
+    std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), saveFilePath(), std.Options.debug_io) catch {
+        try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = saveFilePath(), .data = bytes });
     };
 }
 
@@ -504,8 +505,8 @@ fn globMatch(pattern: []const u8, value: []const u8) bool {
 
 fn deinitCounterMap(map: *CounterMap) void {
     var it = map.iterator();
-    while (it.next()) |entry| map.allocator.free(entry.key_ptr.*);
-    map.deinit();
+    while (it.next()) |entry| std.heap.page_allocator.free(entry.key_ptr.*);
+    map.deinit(std.heap.page_allocator);
 }
 
 fn safeDelta(cur: u64, prev: u64) u64 {
@@ -513,13 +514,15 @@ fn safeDelta(cur: u64, prev: u64) u64 {
 }
 
 fn nowUnix() u64 {
-    return @intCast(std.time.timestamp());
+    return @intCast(compat.unixTimestamp());
 }
 
 fn readSmallFile(path: []const u8, buf: []u8) ?[]const u8 {
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
-    const n = file.readAll(buf) catch return null;
+    const file = compat.openFile(path, .{}) catch return null;
+    defer file.close(std.Options.debug_io);
+    var reader_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.Options.debug_io, &reader_buf);
+    const n = reader.interface.readSliceShort(buf) catch return null;
     return buf[0..n];
 }
 

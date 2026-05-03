@@ -1,6 +1,7 @@
 const std = @import("std");
 const common = @import("common.zig");
 const netstatic = @import("report_netstatic");
+const compat = @import("compat");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
 
@@ -23,8 +24,8 @@ const LinuxStatfs = extern struct {
     f_spare: [4]c_ulong = .{0} ** 4,
 };
 
-var sample_mutex: std.Thread.Mutex = .{};
-var cache_mutex: std.Thread.Mutex = .{};
+var sample_mutex: compat.Mutex = .{};
+var cache_mutex: compat.Mutex = .{};
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuSample = null;
 var cached_disk: ?CachedDiskSample = null;
@@ -161,7 +162,7 @@ fn osName(allocator: std.mem.Allocator) ![]const u8 {
     if (try detectSynology(allocator)) |name| return name;
     if (try detectFnOS(allocator)) |name| return name;
 
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/etc/os-release", 64 * 1024) catch return allocator.dupe(u8, "Linux");
+    const bytes = compat.readFileAlloc(allocator, "/etc/os-release", 64 * 1024) catch return allocator.dupe(u8, "Linux");
     defer allocator.free(bytes);
     return parseOsReleaseName(allocator, bytes);
 }
@@ -188,7 +189,7 @@ fn detectSynology(allocator: std.mem.Allocator) !?[]const u8 {
 }
 
 fn parseSynologyInfo(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024) catch return null;
+    const bytes = compat.readFileAlloc(allocator, path, 64 * 1024) catch return null;
     defer allocator.free(bytes);
     return parseSynologyInfoBytes(allocator, bytes);
 }
@@ -233,7 +234,7 @@ fn detectProxmoxVE(allocator: std.mem.Allocator) !?[]const u8 {
 }
 
 fn osReleaseField(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/etc/os-release", 64 * 1024) catch return allocator.dupe(u8, "");
+    const bytes = compat.readFileAlloc(allocator, "/etc/os-release", 64 * 1024) catch return allocator.dupe(u8, "");
     defer allocator.free(bytes);
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
@@ -268,7 +269,7 @@ fn detectAndroid(allocator: std.mem.Allocator) !?[]const u8 {
 }
 
 fn readAndroidBuildProp(allocator: std.mem.Allocator) ![]const u8 {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/system/build.prop", 64 * 1024) catch return allocator.dupe(u8, "Android");
+    const bytes = compat.readFileAlloc(allocator, "/system/build.prop", 64 * 1024) catch return allocator.dupe(u8, "Android");
     defer allocator.free(bytes);
     var version: []const u8 = "";
     var model: []const u8 = "";
@@ -313,7 +314,7 @@ fn virtualization(allocator: std.mem.Allocator) ![]const u8 {
     if (fileExists("/.dockerenv")) return allocator.dupe(u8, "docker");
     const has_containerenv = fileExists("/run/.containerenv");
 
-    const cgroup = std.fs.cwd().readFileAlloc(allocator, "/proc/self/cgroup", 256 * 1024) catch "";
+    const cgroup = compat.readFileAlloc(allocator, "/proc/self/cgroup", 256 * 1024) catch "";
     if (cgroup.len != 0) {
         defer allocator.free(cgroup);
         const detected = detectContainerFromCgroup(cgroup);
@@ -340,12 +341,12 @@ fn virtualization(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn fileExists(path: []const u8) bool {
-    const stat = std.fs.cwd().statFile(path) catch return false;
+    const stat = compat.statFile(path) catch return false;
     return stat.kind == .file;
 }
 
 fn dirExists(path: []const u8) bool {
-    const stat = std.fs.cwd().statFile(path) catch return false;
+    const stat = compat.statFile(path) catch return false;
     return stat.kind == .directory;
 }
 
@@ -430,10 +431,10 @@ fn isVirtualGpuName(name: []const u8) bool {
 }
 
 fn gpuNameFromSysfsDrm(allocator: std.mem.Allocator) ![]const u8 {
-    var dir = std.fs.cwd().openDir("/sys/class/drm", .{ .iterate = true }) catch return allocator.dupe(u8, "None");
-    defer dir.close();
+    var dir = compat.openDir("/sys/class/drm", .{ .iterate = true }) catch return allocator.dupe(u8, "None");
+    defer dir.close(std.Options.debug_io);
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(std.Options.debug_io)) |entry| {
         if (!std.mem.startsWith(u8, entry.name, "card")) continue;
         if (std.mem.indexOfScalar(u8, entry.name, '-') != null) continue;
         const driver = driverNameForDrmCard(allocator, entry.name) catch continue;
@@ -453,7 +454,7 @@ fn gpuNameFromSysfsDrm(allocator: std.mem.Allocator) ![]const u8 {
         if (driver.len != 0) return std.fmt.allocPrint(allocator, "Direct Render Manager {s}", .{driver});
     }
 
-    const model = std.fs.cwd().readFileAlloc(allocator, "/sys/firmware/devicetree/base/model", 4096) catch return allocator.dupe(u8, "None");
+    const model = compat.readFileAlloc(allocator, "/sys/firmware/devicetree/base/model", 4096) catch return allocator.dupe(u8, "None");
     defer allocator.free(model);
     if (std.mem.indexOf(u8, model, "Raspberry Pi") != null) return allocator.dupe(u8, "Broadcom VideoCore (Integrated)");
     return allocator.dupe(u8, "None");
@@ -463,7 +464,7 @@ fn driverNameForDrmCard(allocator: std.mem.Allocator, card: []const u8) ![]const
     const path = try std.fmt.allocPrint(allocator, "/sys/class/drm/{s}/device/driver", .{card});
     defer allocator.free(path);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link = try std.fs.readLinkAbsolute(path, &buf);
+    const link = try compat.readLinkAbsolute(path, &buf);
     return allocator.dupe(u8, std.fs.path.basename(link));
 }
 
@@ -476,7 +477,7 @@ fn isExcludedDrmDriver(driver: []const u8) bool {
 fn socModelFromCompatible(allocator: std.mem.Allocator, card: []const u8, driver: []const u8) ![]const u8 {
     const path = try std.fmt.allocPrint(allocator, "/sys/class/drm/{s}/device/of_node/compatible", .{card});
     defer allocator.free(path);
-    const raw = try std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024);
+    const raw = try compat.readFileAlloc(allocator, path, 64 * 1024);
     defer allocator.free(raw);
     const compatible = try std.mem.replaceOwned(u8, allocator, raw, "\x00", " ");
     defer allocator.free(compatible);
@@ -543,7 +544,7 @@ fn modelGpuJson(allocator: std.mem.Allocator) ![]const u8 {
         const name = try gpuName(allocator);
         defer allocator.free(name);
         if (!std.mem.eql(u8, name, "None")) {
-            try models.writer(allocator).print("{f}", .{std.json.fmt(name, .{})});
+            try compat.appendPrint(allocator, &models, "{f}", .{std.json.fmt(name, .{})});
             count = 1;
         }
     }
@@ -560,7 +561,7 @@ fn nvidiaGpuModels(allocator: std.mem.Allocator, models: *std.ArrayList(u8), cou
         const name = std.mem.trim(u8, raw, " \t\r");
         if (name.len == 0) continue;
         if (count.* != 0) try models.append(allocator, ',');
-        try models.writer(allocator).print("{f}", .{std.json.fmt(name, .{})});
+        try compat.appendPrint(allocator, models, "{f}", .{std.json.fmt(name, .{})});
         count.* += 1;
     }
 }
@@ -577,7 +578,7 @@ fn amdGpuModels(allocator: std.mem.Allocator, models: *std.ArrayList(u8), count:
         const obj = entry.value_ptr.object;
         const name = jsonString(obj.get("Card series")) orelse jsonString(obj.get("Card model")) orelse entry.key_ptr.*;
         if (count.* != 0) try models.append(allocator, ',');
-        try models.writer(allocator).print("{f}", .{std.json.fmt(name, .{})});
+        try compat.appendPrint(allocator, models, "{f}", .{std.json.fmt(name, .{})});
         count.* += 1;
     }
 }
@@ -601,7 +602,7 @@ fn nvidiaDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
         const util = std.fmt.parseFloat(f64, std.mem.trim(u8, fields.next() orelse "0", " \t")) catch 0;
         const temp = std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0;
         if (count != 0) try detail.append(allocator, ',');
-        try detail.writer(allocator).print("{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
+        try compat.appendPrint(allocator, &detail, "{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
         usage_sum += util;
         count += 1;
     }
@@ -631,7 +632,7 @@ fn amdDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
         const mem_used = parseMiB(jsonString(obj.get("VRAM Total Used Memory (B)")) orelse "0");
         const temp = @as(u64, @intFromFloat(parsePercent(jsonString(obj.get("Temperature (Sensor junction) (C)")) orelse "0")));
         if (count != 0) try detail.append(allocator, ',');
-        try detail.writer(allocator).print("{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
+        try compat.appendPrint(allocator, &detail, "{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
         usage_sum += util;
         count += 1;
     }
@@ -657,15 +658,15 @@ fn parseMiB(value: []const u8) u64 {
 
 fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     try ensureExecutable(allocator, argv[0]);
-    var child = std.process.Child.init(argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 64 * 1024);
-    defer allocator.free(stdout);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.CommandFailed;
-    var it = std.mem.splitScalar(u8, stdout, '\n');
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = argv,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
+    var it = std.mem.splitScalar(u8, result.stdout, '\n');
     const line = std.mem.trim(u8, it.next() orelse "", " \t\r");
     return allocator.dupe(u8, line);
 }
@@ -687,7 +688,7 @@ pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const
         var fields = std.mem.tokenizeAny(u8, line, " \t");
         _ = fields.next() orelse continue;
         const name_raw = fields.next() orelse continue;
-        const name = std.mem.trimRight(u8, name_raw, ":");
+        const name = std.mem.trimEnd(u8, name_raw, ":");
         if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
         while (fields.next()) |field| {
             if (std.mem.eql(u8, field, "inet")) {
@@ -712,24 +713,24 @@ fn stripCidr(allocator: std.mem.Allocator, cidr: []const u8) ![]const u8 {
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     try ensureExecutable(allocator, argv[0]);
-    var child = std.process.Child.init(argv, allocator);
-    var env = std.process.EnvMap.init(allocator);
+    var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    child.env_map = &env;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 256 * 1024);
-    errdefer allocator.free(stdout);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.CommandFailed;
-    return stdout;
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = argv,
+        .environ_map = &env,
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(result.stderr);
+    errdefer allocator.free(result.stdout);
+    if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
+    return result.stdout;
 }
 
 fn ensureExecutable(allocator: std.mem.Allocator, exe: []const u8) !void {
     if (std.mem.indexOfScalar(u8, exe, '/')) |_| {
-        const stat = std.fs.cwd().statFile(exe) catch return error.FileNotFound;
+        const stat = compat.statFile(exe) catch return error.FileNotFound;
         if (stat.kind != .file) return error.FileNotFound;
         return;
     }
@@ -739,14 +740,14 @@ fn ensureExecutable(allocator: std.mem.Allocator, exe: []const u8) !void {
         if (dir.len == 0) continue;
         const full = try std.fs.path.join(allocator, &.{ dir, exe });
         defer allocator.free(full);
-        const stat = std.fs.cwd().statFile(full) catch continue;
+        const stat = compat.statFile(full) catch continue;
         if (stat.kind == .file) return;
     }
     return error.FileNotFound;
 }
 
 pub fn diskList(allocator: std.mem.Allocator) ![]common.DiskMount {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return &.{};
+    const bytes = compat.readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return &.{};
     defer allocator.free(bytes);
 
     var mounts: std.ArrayList(common.DiskMount) = .empty;
@@ -776,7 +777,7 @@ pub fn monitoringDiskList(allocator: std.mem.Allocator, include_mountpoints: []c
         return out.toOwnedSlice(allocator);
     }
 
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return out.toOwnedSlice(allocator);
+    const bytes = compat.readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return out.toOwnedSlice(allocator);
     defer allocator.free(bytes);
     var by_device = std.StringHashMap(common.DiskMount).init(allocator);
     var it = std.mem.splitScalar(u8, bytes, '\n');
@@ -808,7 +809,7 @@ pub fn monitoringDiskList(allocator: std.mem.Allocator, include_mountpoints: []c
 
 pub fn interfaceList(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return out.toOwnedSlice(allocator);
+    const bytes = compat.readFileAlloc(allocator, "/proc/net/dev", 1024 * 1024) catch return out.toOwnedSlice(allocator);
     defer allocator.free(bytes);
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
@@ -820,7 +821,7 @@ pub fn interfaceList(allocator: std.mem.Allocator, include_nics: []const u8, exc
 }
 
 fn readFirstLine(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch return allocator.dupe(u8, "");
+    const bytes = compat.readFileAlloc(allocator, path, 4096) catch return allocator.dupe(u8, "");
     if (std.mem.indexOfScalar(u8, bytes, '\n')) |idx| return bytes[0..idx];
     return bytes;
 }
@@ -830,7 +831,7 @@ fn diskInfo() !common.DiskInfo {
 }
 
 fn cachedDiskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
-    const now_ms = std.time.milliTimestamp();
+    const now_ms = compat.milliTimestamp();
     const key = cacheKey(include_mountpoints);
     cache_mutex.lock();
     if (cached_disk) |sample| {
@@ -872,7 +873,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
     var mounts_buf: [64 * 1024]u8 = undefined;
     const stack_mounts = readSmallFile("/proc/mounts", &mounts_buf) orelse return .{};
     const heap_mounts = if (stack_mounts.len == mounts_buf.len)
-        std.fs.cwd().readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return .{}
+        compat.readFileAlloc(allocator, "/proc/mounts", 1024 * 1024) catch return .{}
     else
         "";
     const bytes = if (heap_mounts.len != 0) heap_mounts else stack_mounts;
@@ -1046,7 +1047,7 @@ fn diskUsageFromDf(allocator: std.mem.Allocator, mountpoint: []const u8) !common
 
 fn networkInfo(options: common.SnapshotOptions) !common.NetworkInfo {
     var current = try sampleNetworkCounters(options);
-    const now_ms = std.time.milliTimestamp();
+    const now_ms = compat.milliTimestamp();
 
     sample_mutex.lock();
     defer sample_mutex.unlock();
@@ -1143,7 +1144,7 @@ fn connectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
 }
 
 fn cachedConnectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
-    const now_ms = std.time.milliTimestamp();
+    const now_ms = compat.milliTimestamp();
     const key = cacheKey(host_proc);
     cache_mutex.lock();
     if (cached_connections) |sample| {
@@ -1184,14 +1185,16 @@ pub fn countProcNetConnections(bytes: []const u8) u64 {
 }
 
 fn countProcNetConnectionsFile(path: []const u8) u64 {
-    const file = std.fs.cwd().openFile(path, .{}) catch return 0;
-    defer file.close();
+    const file = compat.openFile(path, .{}) catch return 0;
+    defer file.close(std.Options.debug_io);
     var buf: [8192]u8 = undefined;
+    var file_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.Options.debug_io, &file_buf);
     var count: u64 = 0;
     var in_header = true;
     var line_has_content = false;
     while (true) {
-        const n = file.read(&buf) catch return count;
+        const n = reader.interface.readSliceShort(&buf) catch return count;
         if (n == 0) break;
         for (buf[0..n]) |b| {
             if (in_header) {
@@ -1281,7 +1284,7 @@ pub fn globMatch(pattern: []const u8, value: []const u8) bool {
 }
 
 fn cpuName(allocator: std.mem.Allocator) ![]const u8 {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/cpuinfo", 256 * 1024) catch return allocator.dupe(u8, "Unknown");
+    const bytes = compat.readFileAlloc(allocator, "/proc/cpuinfo", 256 * 1024) catch return allocator.dupe(u8, "Unknown");
     defer allocator.free(bytes);
     if (parseCpuNameFromCpuInfo(bytes)) |name| return allocator.dupe(u8, name);
     return allocator.dupe(u8, "Unknown");
@@ -1506,11 +1509,11 @@ fn uptime(host_proc: []const u8) !u64 {
 
 fn processCount(host_proc: []const u8) !u64 {
     const path = if (host_proc.len == 0) "/proc" else host_proc;
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return 0;
-    defer dir.close();
+    var dir = compat.openDir(path, .{ .iterate = true }) catch return 0;
+    defer dir.close(std.Options.debug_io);
     var count: u64 = 0;
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(std.Options.debug_io)) |entry| {
         if (entry.kind != .directory) continue;
         _ = std.fmt.parseInt(u64, entry.name, 10) catch continue;
         count += 1;
@@ -1519,7 +1522,7 @@ fn processCount(host_proc: []const u8) !u64 {
 }
 
 fn cachedProcessCount(host_proc: []const u8) !u64 {
-    const now_ms = std.time.milliTimestamp();
+    const now_ms = compat.milliTimestamp();
     const key = cacheKey(host_proc);
     cache_mutex.lock();
     if (cached_process) |sample| {
@@ -1555,8 +1558,9 @@ fn readSmallProcFile(host_proc: []const u8, suffix: []const u8, buf: []u8) ?[]co
 }
 
 fn readSmallFile(path: []const u8, buf: []u8) ?[]const u8 {
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
-    const n = file.readAll(buf) catch return null;
+    const file = compat.openFile(path, .{}) catch return null;
+    defer file.close(std.Options.debug_io);
+    var reader = file.reader(std.Options.debug_io, buf);
+    const n = reader.interface.readSliceShort(buf) catch return null;
     return buf[0..n];
 }

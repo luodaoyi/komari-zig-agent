@@ -10,6 +10,7 @@ const task_limiter = @import("task_limiter.zig");
 const terminal = @import("../terminal/terminal.zig");
 const update = @import("../update.zig");
 const ws_client = @import("ws_client.zig");
+const compat = @import("compat");
 const timing = @import("report_timing.zig");
 /// Report websocket loop and server task dispatch.
 pub const ws_message = @import("ws_message.zig");
@@ -64,7 +65,9 @@ pub fn reconnectSleepSeconds(value: i32) u64 {
 }
 
 pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*const std.atomic.Value(bool)) !void {
-    var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
     var update_confirmed = false;
     while (!isStopRequested(stop_requested)) {
         var ws = connectReportWsWithRetries(allocator, cfg, stop_requested) catch |err| {
@@ -73,12 +76,12 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
             return err;
         };
         startReader(allocator, ws, cfg);
-        var last_heartbeat = std.time.timestamp();
+        var last_heartbeat = compat.unixTimestamp();
         var closed = false;
 
         while (!isStopRequested(stop_requested)) {
-            const report_start_ms = std.time.milliTimestamp();
-            const now = std.time.timestamp();
+            const report_start_ms = compat.milliTimestamp();
+            const now = compat.unixTimestamp();
             if (now - last_heartbeat >= 30) {
                 ws.writePing() catch |err| {
                     try stdout.print("Failed to send heartbeat: {s}\n", .{@errorName(err)});
@@ -97,7 +100,7 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
             if (!update_confirmed) {
                 update_confirmed = update.confirmPendingUpdate(allocator) catch false;
             }
-            const sleep_ms = remainingSleepMs(report_start_ms, reportIntervalMs(cfg.interval), std.time.milliTimestamp());
+            const sleep_ms = remainingSleepMs(report_start_ms, reportIntervalMs(cfg.interval), compat.milliTimestamp());
             if (sleepOrStopMs(sleep_ms, stop_requested)) return;
         }
         if (!closed and isStopRequested(stop_requested)) return;
@@ -113,7 +116,7 @@ fn sleepOrStop(seconds: u64, stop_requested: ?*const std.atomic.Value(bool)) boo
     var slept: u64 = 0;
     while (slept < seconds) : (slept += 1) {
         if (isStopRequested(stop_requested)) return true;
-        std.Thread.sleep(std.time.ns_per_s);
+        compat.sleep(std.time.ns_per_s);
     }
     return isStopRequested(stop_requested);
 }
@@ -123,7 +126,7 @@ fn sleepOrStopMs(milliseconds: u64, stop_requested: ?*const std.atomic.Value(boo
     while (remaining > 0) {
         if (isStopRequested(stop_requested)) return true;
         const chunk: u64 = @min(remaining, @as(u64, 100));
-        std.Thread.sleep(chunk * @as(u64, std.time.ns_per_ms));
+        compat.sleep(chunk * @as(u64, std.time.ns_per_ms));
         remaining -= chunk;
     }
     return isStopRequested(stop_requested);
@@ -159,7 +162,9 @@ fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: confi
 
 fn readerLoop(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
     defer conn.release(allocator);
-    var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
     var msg_arena = std.heap.ArenaAllocator.init(allocator);
     defer msg_arena.deinit();
     while (true) {
@@ -230,7 +235,9 @@ fn runTerminalTask(allocator: std.mem.Allocator, args: TerminalTaskArgs) void {
     defer task_limiter.release();
     defer args.deinit(allocator);
     terminal.startSession(allocator, args.cfg, args.request_id) catch |err| {
-        var stdout = std.fs.File.stdout().deprecatedWriter();
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+        defer stdout.flush() catch {};
         stdout.print("Terminal session failed: {s}\n", .{@errorName(err)}) catch {};
     };
 }

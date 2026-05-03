@@ -10,6 +10,7 @@ const report_ws = @import("protocol/report_ws.zig");
 const update = @import("update.zig");
 const version = @import("version.zig");
 const builtin = @import("builtin");
+const compat = @import("compat");
 
 /// Agent entrypoint that wires config, reporting, updates, and shutdown.
 pub const std_options: std.Options = .{
@@ -19,14 +20,18 @@ pub const std_options: std.Options = .{
 var shutdown_requested = std.atomic.Value(bool).init(false);
 var netstatic_active = std.atomic.Value(bool).init(false);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
     var config_arena = std.heap.ArenaAllocator.init(allocator);
     defer config_arena.deinit();
     const config_allocator = config_arena.allocator();
     installSignalHandlers();
 
-    const args = try std.process.argsAlloc(config_allocator);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, config_allocator);
+    defer args_iter.deinit();
+    var args_list: std.ArrayList([]const u8) = .empty;
+    while (args_iter.next()) |arg| try args_list.append(config_allocator, arg);
+    const args = try args_list.toOwnedSlice(config_allocator);
 
     var cfg = try config.parseArgs(config_allocator, args);
     try cfg.loadEnv(config_allocator);
@@ -35,7 +40,9 @@ pub fn main() !void {
     if (cfg.command == .list_disk) {
         const disks = try provider.diskList(allocator);
         defer freeDiskMounts(allocator, disks);
-        var stdout = std.fs.File.stdout().deprecatedWriter();
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+        defer stdout.flush() catch {};
         try stdout.writeAll("All Disk Partitions:\n");
         try stdout.writeAll("Mountpoint\tFstype\n");
         for (disks) |disk| {
@@ -48,7 +55,9 @@ pub fn main() !void {
     }
 
     if (cfg.command == .check_mem) {
-        var stdout = std.fs.File.stdout().deprecatedWriter();
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+        defer stdout.flush() catch {};
         try provider.printMemoryCheck(allocator, &stdout, cfg.memory_include_cache, cfg.memory_report_raw_used);
         return;
     }
@@ -58,7 +67,9 @@ pub fn main() !void {
     try update.recoverPendingUpdate(allocator);
     try autodiscovery.applyExistingToken(config_allocator, &cfg);
 
-    var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
     try stdout.print("Komari Agent {s}\nGithub Repo: {s}\n", .{ version.current, update.repo });
 
     if (cfg.endpoint.len == 0 or cfg.token.len == 0) {
@@ -111,13 +122,15 @@ fn installSignalHandlers() void {
     std.posix.sigaction(std.posix.SIG.TERM, &action, null);
 }
 
-fn handleSignal(_: i32) callconv(.c) void {
+fn handleSignal(_: std.posix.SIG) callconv(.c) void {
     shutdown_requested.store(true, .release);
-    if (!netstatic_active.load(.acquire)) std.posix.exit(0);
+    if (!netstatic_active.load(.acquire)) std.process.exit(0);
 }
 
 fn printMonitoringLists(allocator: std.mem.Allocator, cfg: config.Config) !void {
-    var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
     const disks = try provider.monitoringDiskList(allocator, cfg.include_mountpoints);
     defer freeStringSlice(allocator, disks);
     try printStringList(&stdout, "Monitoring Mountpoints", disks);
@@ -152,7 +165,9 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
     var info = try provider.basicInfo(scratch);
     try applyIpConfig(scratch, cfg, &info);
     const info_json = try basic_info.allocBasicInfoJson(scratch, info, true);
@@ -172,7 +187,7 @@ fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
 fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     const mins: u64 = if (cfg.info_report_interval <= 0) 5 else @intCast(cfg.info_report_interval);
     while (true) {
-        std.Thread.sleep(mins * 60 * std.time.ns_per_s);
+        compat.sleep(mins * 60 * std.time.ns_per_s);
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const scratch = arena.allocator();

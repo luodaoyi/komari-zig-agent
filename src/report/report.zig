@@ -17,8 +17,8 @@ pub fn writeReportJson(writer: anytype, snap: common.Snapshot) !void {
 
 pub fn allocReportJson(allocator: std.mem.Allocator, snap: common.Snapshot) ![]const u8 {
     defer if (snap.gpu_json.len != 0) std.heap.page_allocator.free(snap.gpu_json);
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try writeReportJson(out.writer(allocator), snap);
-    return out.toOwnedSlice(allocator);
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try writeReportJson(&out.writer, snap);
+    return out.toOwnedSlice();
 }

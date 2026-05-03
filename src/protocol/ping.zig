@@ -3,6 +3,8 @@ const types = @import("types.zig");
 const builtin = @import("builtin");
 const dns = @import("dns");
 const raw_conn = @import("raw_conn.zig");
+const net_compat = @import("net_compat");
+const compat = @import("compat");
 
 /// Ping task implementations for ICMP, TCP, and HTTP probes.
 pub const TcpTarget = struct {
@@ -11,15 +13,15 @@ pub const TcpTarget = struct {
 };
 
 pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type: []const u8, value: i64, finished_at: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try types.writePingResultJson(out.writer(allocator), .{
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try types.writePingResultJson(&out.writer, .{
         .task_id = task_id,
         .ping_type = ping_type,
         .value = value,
         .finished_at = finished_at,
     });
-    return out.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8) i64 {
@@ -66,7 +68,7 @@ fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
     const addrs = try dns.resolveHost(allocator, parseHostOnly(target), 0, custom_dns);
     defer allocator.free(addrs);
     for (addrs) |addr| {
-        if (addr.any.family != std.posix.AF.INET and addr.any.family != std.posix.AF.INET6) continue;
+        if (!net_compat.isIpv4(addr) and !net_compat.isIpv6(addr)) continue;
         return icmpPingAddress(addr) catch |err| switch (err) {
             error.AccessDenied => continue,
             else => continue,
@@ -75,67 +77,69 @@ fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
     return -1;
 }
 
-fn icmpPingAddress(addr: std.net.Address) !i64 {
-    if (addr.any.family == std.posix.AF.INET6) return icmp6PingAddress(addr);
+fn icmpPingAddress(addr: net_compat.Address) !i64 {
+    if (net_compat.isIpv6(addr)) return icmp6PingAddress(addr);
     const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
-    const sock = std.posix.socket(std.posix.AF.INET, flags, std.posix.IPPROTO.ICMP) catch |err| switch (err) {
-        error.AccessDenied => try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMP),
+    const sock = compat.socket(std.posix.AF.INET, flags, std.posix.IPPROTO.ICMP) catch |err| switch (err) {
+        error.AccessDenied => try compat.socket(std.posix.AF.INET, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMP),
         else => return err,
     };
-    defer std.posix.close(sock);
+    defer compat.closeFd(sock);
 
     var packet: [16]u8 = .{0} ** 16;
     packet[0] = 8;
     packet[1] = 0;
-    const ident: u16 = @truncate(@as(u64, @intCast(std.time.milliTimestamp())) & 0xffff);
+    const ident: u16 = @truncate(@as(u64, @intCast(compat.milliTimestamp())) & 0xffff);
     const seq: u16 = 1;
     std.mem.writeInt(u16, packet[4..6], ident, .big);
     std.mem.writeInt(u16, packet[6..8], seq, .big);
-    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))), .big);
+    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
     const csum = icmpChecksum(&packet);
     std.mem.writeInt(u16, packet[2..4], csum, .big);
 
-    const start = std.time.milliTimestamp();
-    _ = try std.posix.sendto(sock, &packet, 0, &addr.any, addr.getOsSockLen());
+    const start = compat.milliTimestamp();
+    const sa = net_compat.sockAddr(addr);
+    _ = try compat.sendTo(sock, &packet, sa.ptr(), sa.len);
     var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
-    while (std.time.milliTimestamp() - start < 3000) {
-        const left: i32 = @intCast(@max(1, 3000 - (std.time.milliTimestamp() - start)));
+    while (compat.milliTimestamp() - start < 3000) {
+        const left: i32 = @intCast(@max(1, 3000 - (compat.milliTimestamp() - start)));
         const ready = try std.posix.poll(&fds, left);
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
-        const n = try std.posix.recvfrom(sock, &buf, 0, null, null);
-        if (isEchoReply(buf[0..n], ident, seq)) return std.time.milliTimestamp() - start;
+        const n = try compat.recvFrom(sock, &buf);
+        if (isEchoReply(buf[0..n], ident, seq)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
 
-fn icmp6PingAddress(addr: std.net.Address) !i64 {
+fn icmp6PingAddress(addr: net_compat.Address) !i64 {
     const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
-    const sock = std.posix.socket(std.posix.AF.INET6, flags, std.posix.IPPROTO.ICMPV6) catch |err| switch (err) {
-        error.AccessDenied => try std.posix.socket(std.posix.AF.INET6, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMPV6),
+    const sock = compat.socket(std.posix.AF.INET6, flags, std.posix.IPPROTO.ICMPV6) catch |err| switch (err) {
+        error.AccessDenied => try compat.socket(std.posix.AF.INET6, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMPV6),
         else => return err,
     };
-    defer std.posix.close(sock);
+    defer compat.closeFd(sock);
 
     var packet: [16]u8 = .{0} ** 16;
     packet[0] = 128;
     packet[1] = 0;
-    const ident: u16 = @truncate(@as(u64, @intCast(std.time.milliTimestamp())) & 0xffff);
+    const ident: u16 = @truncate(@as(u64, @intCast(compat.milliTimestamp())) & 0xffff);
     const seq: u16 = 1;
     std.mem.writeInt(u16, packet[4..6], ident, .big);
     std.mem.writeInt(u16, packet[6..8], seq, .big);
-    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))), .big);
+    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
 
-    const start = std.time.milliTimestamp();
-    _ = try std.posix.sendto(sock, &packet, 0, &addr.any, addr.getOsSockLen());
+    const start = compat.milliTimestamp();
+    const sa = net_compat.sockAddr(addr);
+    _ = try compat.sendTo(sock, &packet, sa.ptr(), sa.len);
     var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
-    while (std.time.milliTimestamp() - start < 3000) {
-        const left: i32 = @intCast(@max(1, 3000 - (std.time.milliTimestamp() - start)));
+    while (compat.milliTimestamp() - start < 3000) {
+        const left: i32 = @intCast(@max(1, 3000 - (compat.milliTimestamp() - start)));
         const ready = try std.posix.poll(&fds, left);
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
-        const n = try std.posix.recvfrom(sock, &buf, 0, null, null);
-        if (isEchoReply6(buf[0..n], ident, seq)) return std.time.milliTimestamp() - start;
+        const n = try compat.recvFrom(sock, &buf);
+        if (isEchoReply6(buf[0..n], ident, seq)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
@@ -185,21 +189,15 @@ fn tcpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const
     const port = try std.fmt.parseInt(u16, parsed.port, 10);
     const addrs = try dns.resolveHost(allocator, parsed.host, port, custom_dns);
     defer allocator.free(addrs);
-    const start = std.time.milliTimestamp();
+    const start = compat.milliTimestamp();
     var last_err: ?anyerror = null;
     for (addrs) |addr| {
-        const sock_flags = std.posix.SOCK.STREAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
-        const sock = std.posix.socket(addr.any.family, sock_flags, std.posix.IPPROTO.TCP) catch |err| {
+        const stream = net_compat.connect(addr) catch |err| {
             last_err = err;
             continue;
         };
-        std.posix.connect(sock, &addr.any, addr.getOsSockLen()) catch |err| {
-            std.posix.close(sock);
-            last_err = err;
-            continue;
-        };
-        std.posix.close(sock);
-        return std.time.milliTimestamp() - start;
+        net_compat.close(stream);
+        return compat.milliTimestamp() - start;
     }
     return last_err orelse error.ConnectFailed;
 }
@@ -231,7 +229,7 @@ fn httpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
     const path = try uriPathQuery(allocator, uri);
     defer allocator.free(path);
 
-    const start = std.time.milliTimestamp();
+    const start = compat.milliTimestamp();
     for (addrs) |addr| {
         var conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, false) catch continue;
         defer conn.close();
@@ -241,7 +239,7 @@ fn httpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
         try conn.flush();
         var buf: [64]u8 = undefined;
         const n = try conn.reader().readSliceShort(&buf);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = compat.milliTimestamp() - start;
         if (n >= 12 and std.mem.startsWith(u8, buf[0..n], "HTTP/1.") and buf[9] >= '2' and buf[9] <= '3') return elapsed;
         return -1;
     }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 
 /// CLI, environment, and JSON configuration loading for the agent.
 pub const Command = enum {
@@ -76,7 +77,7 @@ pub const Config = struct {
     }
 
     pub fn loadJsonFile(self: *Config, allocator: std.mem.Allocator, path: []const u8) !void {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+        const bytes = try compat.readFileAlloc(allocator, path, 1024 * 1024);
         defer allocator.free(bytes);
         try self.loadJson(allocator, bytes);
     }
@@ -298,14 +299,14 @@ fn setFloatJson(object: std.json.ObjectMap, key: []const u8, out: *f64) !void {
 }
 
 fn setStringEnv(allocator: std.mem.Allocator, key: []const u8, out: *[]const u8) !void {
-    if (std.process.getEnvVarOwned(allocator, key)) |value| {
+    if (compat.getEnvVarOwned(allocator, key)) |value| {
         out.* = value;
     } else |_| {}
 }
 
 fn setBoolEnv(key: []const u8, out: *bool) void {
     var buf: [16]u8 = undefined;
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, key)) |value| {
+    if (compat.getEnvVarOwned(std.heap.page_allocator, key)) |value| {
         defer std.heap.page_allocator.free(value);
         const lowered = std.ascii.lowerString(&buf, value[0..@min(value.len, buf.len)]);
         out.* = std.mem.eql(u8, lowered, "true") or std.mem.eql(u8, value, "1");
@@ -314,7 +315,7 @@ fn setBoolEnv(key: []const u8, out: *bool) void {
 
 fn setIntEnv(key: []const u8, out: *i32) void {
     var buf: [64]u8 = undefined;
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, key)) |value| {
+    if (compat.getEnvVarOwned(std.heap.page_allocator, key)) |value| {
         defer std.heap.page_allocator.free(value);
         if (value.len <= buf.len) {
             @memcpy(buf[0..value.len], value);
@@ -324,7 +325,7 @@ fn setIntEnv(key: []const u8, out: *i32) void {
 }
 
 fn setFloatEnv(key: []const u8, out: *f64) void {
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, key)) |value| {
+    if (compat.getEnvVarOwned(std.heap.page_allocator, key)) |value| {
         defer std.heap.page_allocator.free(value);
         out.* = std.fmt.parseFloat(f64, value) catch out.*;
     } else |_| {}

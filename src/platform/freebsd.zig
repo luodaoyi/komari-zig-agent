@@ -1,10 +1,11 @@
 const common = @import("common.zig");
 const std = @import("std");
 const netstatic = @import("report_netstatic");
+const compat = @import("compat");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-var sample_mutex: std.Thread.Mutex = .{};
+var sample_mutex: compat.Mutex = .{};
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuTimes = null;
 
@@ -159,7 +160,7 @@ fn networkInfoWithOptions(allocator: std.mem.Allocator, options: common.Snapshot
     const out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
     defer allocator.free(out);
     var current = parseNetstatFiltered(out, options.include_nics, options.exclude_nics);
-    const now_ms = std.time.milliTimestamp();
+    const now_ms = compat.milliTimestamp();
 
     sample_mutex.lock();
     defer sample_mutex.unlock();
@@ -305,7 +306,7 @@ fn localIpFromIfconfig(allocator: std.mem.Allocator, include_nics: []const u8, e
     var allowed = false;
     var lines = std.mem.splitScalar(u8, out, '\n');
     while (lines.next()) |line_raw| {
-        const line = std.mem.trimRight(u8, line_raw, " \t\r");
+        const line = std.mem.trimEnd(u8, line_raw, " \t\r");
         if (line.len == 0) continue;
         if (line[0] != ' ' and line[0] != '\t') {
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
@@ -340,7 +341,7 @@ fn uptime(allocator: std.mem.Allocator) !u64 {
     const sec_pos = std.mem.indexOf(u8, out, "sec = ") orelse return 0;
     var fields = std.mem.tokenizeAny(u8, out[sec_pos + 6 ..], ", ");
     const boot = try std.fmt.parseInt(i64, fields.next() orelse "0", 10);
-    const now = std.time.timestamp();
+    const now = compat.unixTimestamp();
     return if (now > boot) @intCast(now - boot) else 0;
 }
 
@@ -363,14 +364,16 @@ fn swapTotal(allocator: std.mem.Allocator) !u64 {
 }
 
 fn sysctlInt(name: []const u8) !u64 {
-    var buf: [64]u8 = undefined;
-    var child = std.process.Child.init(&.{ "sysctl", "-n", name }, std.heap.page_allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const n = try child.stdout.?.readAll(&buf);
-    _ = try child.wait();
-    return std.fmt.parseInt(u64, std.mem.trim(u8, buf[0..n], " \t\r\n"), 10);
+    const allocator = std.heap.page_allocator;
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = &.{ "sysctl", "-n", name },
+        .stdout_limit = .limited(64),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
+    return std.fmt.parseInt(u64, std.mem.trim(u8, result.stdout, " \t\r\n"), 10);
 }
 
 fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
@@ -398,19 +401,19 @@ fn commandFirstLine(allocator: std.mem.Allocator, argv: []const []const u8, fall
 }
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    var env = std.process.EnvMap.init(allocator);
+    var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    child.env_map = &env;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 256 * 1024);
-    errdefer allocator.free(stdout);
-    const term = try child.wait();
-    if (term != .Exited or term.Exited != 0) return error.CommandFailed;
-    return stdout;
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = argv,
+        .environ_map = &env,
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(result.stderr);
+    errdefer allocator.free(result.stdout);
+    if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
+    return result.stdout;
 }
 
 fn countLines(allocator: std.mem.Allocator, argv: []const []const u8) !u64 {
