@@ -14,7 +14,7 @@ const compat = @import("compat");
 
 /// Agent entrypoint that wires config, reporting, updates, and shutdown.
 pub const std_options: std.Options = .{
-    .enable_segfault_handler = true,
+    .enable_segfault_handler = !(builtin.os.tag == .freebsd and builtin.cpu.arch == .x86),
 };
 
 var shutdown_requested = std.atomic.Value(bool).init(false);

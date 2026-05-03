@@ -19,11 +19,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const enable_crash_trace = !(target.result.os.tag == .freebsd and target.result.cpu.arch == .x86);
     const crash_trace_options = .{
         .strip = false,
-        .unwind_tables = std.builtin.UnwindTables.sync,
-        .omit_frame_pointer = false,
-        .error_tracing = true,
+        .unwind_tables = if (enable_crash_trace) std.builtin.UnwindTables.sync else std.builtin.UnwindTables.none,
+        .omit_frame_pointer = !enable_crash_trace,
+        .error_tracing = enable_crash_trace,
     };
 
     const exe = b.addExecutable(.{
