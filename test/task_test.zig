@@ -60,6 +60,12 @@ test "runCommandDetailed maps unknown term to failure" {
     try std.testing.expectEqual(@as(i32, -1), result.exit_code);
 }
 
+test "utc timestamp formats as unsigned rfc3339" {
+    const text = try task.utcFromTimestamp(std.testing.allocator, 0);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("1970-01-01T00:00:00Z", text);
+}
+
 fn stdoutRunner(allocator: std.mem.Allocator, env: *std.process.Environ.Map, command: []const u8) !std.process.RunResult {
     _ = env;
     try std.testing.expectEqualStrings("stdout", command);

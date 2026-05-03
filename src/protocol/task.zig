@@ -122,7 +122,10 @@ fn exitCode(term: std.process.Child.Term) i32 {
 }
 
 pub fn utcNow(allocator: std.mem.Allocator) ![]const u8 {
-    const timestamp = compat.unixTimestamp();
+    return utcFromTimestamp(allocator, compat.unixTimestamp());
+}
+
+pub fn utcFromTimestamp(allocator: std.mem.Allocator, timestamp: i64) ![]const u8 {
     const date = civilFromTimestamp(timestamp);
     const seconds_of_day = @mod(timestamp, std.time.s_per_day);
     const hour = @divFloor(seconds_of_day, 3600);
@@ -131,7 +134,14 @@ pub fn utcNow(allocator: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(
         allocator,
         "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z",
-        .{ date.year, date.month, date.day, hour, minute, second },
+        .{
+            @as(u32, @intCast(date.year)),
+            @as(u8, @intCast(date.month)),
+            @as(u8, @intCast(date.day)),
+            @as(u8, @intCast(hour)),
+            @as(u8, @intCast(minute)),
+            @as(u8, @intCast(second)),
+        },
     );
 }
 
