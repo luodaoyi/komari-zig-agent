@@ -81,8 +81,6 @@ jobs:
             image: debian:12-slim
           - name: fedora
             image: fedora:latest
-          - name: centos-7
-            image: quay.io/centos/centos:7
           - name: alma
             image: almalinux:9
     steps:
