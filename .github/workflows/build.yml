@@ -95,11 +95,18 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends bash ca-certificates curl findutils git gzip tar xz-utils
           elif command -v dnf >/dev/null 2>&1; then
-            dnf -y install bash ca-certificates curl findutils git gzip tar xz
+            dnf -y install bash ca-certificates findutils git gzip tar xz
+            command -v curl >/dev/null 2>&1 || dnf -y install curl
           elif command -v microdnf >/dev/null 2>&1; then
-            microdnf -y install bash ca-certificates curl findutils git gzip tar xz
+            microdnf -y install bash ca-certificates findutils git gzip tar xz
+            command -v curl >/dev/null 2>&1 || microdnf -y install curl
           elif command -v yum >/dev/null 2>&1; then
-            yum -y install bash ca-certificates curl findutils git gzip tar xz
+            if [ -f /etc/centos-release ] && grep -q ' 7\.' /etc/centos-release; then
+              sed -i 's/^mirrorlist=/#mirrorlist=/g' /etc/yum.repos.d/CentOS-*.repo
+              sed -i 's|^#baseurl=http://mirror.centos.org/centos/$releasever|baseurl=http://vault.centos.org/7.9.2009|g' /etc/yum.repos.d/CentOS-*.repo
+            fi
+            yum -y install bash ca-certificates findutils git gzip tar xz
+            command -v curl >/dev/null 2>&1 || yum -y install curl
           fi
           command -v curl
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
