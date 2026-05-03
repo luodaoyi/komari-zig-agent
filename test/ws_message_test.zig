@@ -22,3 +22,27 @@ test "websocket exec and ping messages parse" {
     try std.testing.expectEqualStrings("tcp", ping.ping_type);
     try std.testing.expectEqualStrings("example.com:443", ping.ping_target);
 }
+
+test "websocket message parses into caller arena without owned field frees" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bytes = "{\"message\":\"exec\",\"task_id\":\"t2\",\"command\":\"uname -a\"}";
+    const msg = try report_ws.parseServerMessageLeaky(arena.allocator(), bytes);
+    defer msg.deinit(std.testing.allocator);
+    try std.testing.expect(!msg.owns_fields);
+    try std.testing.expectEqual(report_ws.ServerMessageKind.exec, msg.kind);
+    try std.testing.expectEqualStrings("t2", msg.task_id);
+    try std.testing.expectEqualStrings("uname -a", msg.command);
+    try std.testing.expect(sliceInside(bytes, msg.task_id));
+    try std.testing.expect(sliceInside(bytes, msg.command));
+
+    try std.testing.expect(arena.reset(.retain_capacity));
+}
+
+fn sliceInside(container: []const u8, slice: []const u8) bool {
+    const start = @intFromPtr(container.ptr);
+    const end = start + container.len;
+    const ptr = @intFromPtr(slice.ptr);
+    return ptr >= start and ptr + slice.len <= end;
+}

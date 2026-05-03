@@ -13,6 +13,15 @@ pub const Target = struct {
 pub const Frame = struct {
     opcode: u8,
     payload: []u8,
+    pooled: bool = false,
+
+    pub fn deinit(self: Frame, client: *Client, allocator: std.mem.Allocator) void {
+        if (self.pooled) {
+            client.releaseReadBuffer(self.payload);
+        } else {
+            allocator.free(self.payload);
+        }
+    }
 };
 
 pub const Client = struct {
@@ -20,6 +29,7 @@ pub const Client = struct {
     request: ?std.http.Client.Request = null,
     raw: ?*raw_conn.RawConn = null,
     proxy_arena: ?std.heap.ArenaAllocator = null,
+    read_pool: FrameBufferPool = .{},
     write_mutex: std.Thread.Mutex = .{},
     refs: std.atomic.Value(usize) = std.atomic.Value(usize).init(1),
     closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -52,6 +62,7 @@ pub const Client = struct {
         }
         if (self.http_client) |*client| client.deinit();
         if (self.proxy_arena) |*arena| arena.deinit();
+        self.read_pool.deinit(allocator);
         if (self.raw) |raw| raw.close();
         allocator.destroy(self);
     }
@@ -85,34 +96,78 @@ pub const Client = struct {
 
     pub fn readFrame(self: *Client, allocator: std.mem.Allocator) !Frame {
         if (self.closed.load(.acquire)) return error.WebSocketClosed;
-        if (self.raw) |raw| return readFrameFromReader(allocator, raw.reader());
+        if (self.raw) |raw| return readFrameFromReader(self, allocator, raw.reader());
         const req = self.request orelse return error.WebSocketClosed;
         const conn = req.connection orelse return error.WebSocketClosed;
-        return readFrameFromReader(allocator, conn.reader());
+        return readFrameFromReader(self, allocator, conn.reader());
     }
 
     pub fn readText(self: *Client, allocator: std.mem.Allocator) ![]const u8 {
+        const frame = try self.readTextFrame(allocator);
+        defer frame.deinit(self, allocator);
+        return allocator.dupe(u8, frame.payload);
+    }
+
+    pub fn readTextFrame(self: *Client, allocator: std.mem.Allocator) !Frame {
         while (true) {
             const frame = try self.readFrame(allocator);
             if (frame.opcode == 0x8) {
-                allocator.free(frame.payload);
+                frame.deinit(self, allocator);
                 return error.WebSocketClosed;
             }
             if (frame.opcode == 0x9) {
-                defer allocator.free(frame.payload);
+                defer frame.deinit(self, allocator);
                 try self.writeFrame(0xA, frame.payload);
                 continue;
             }
             if (frame.opcode == 0xA) {
-                allocator.free(frame.payload);
+                frame.deinit(self, allocator);
                 continue;
             }
             if (frame.opcode != 0x1) {
-                allocator.free(frame.payload);
+                frame.deinit(self, allocator);
                 return error.UnsupportedWebSocketFrame;
             }
-            return frame.payload;
+            return frame;
         }
+    }
+
+    fn acquireReadBuffer(self: *Client, allocator: std.mem.Allocator, len: usize) !?[]u8 {
+        return self.read_pool.acquire(allocator, len);
+    }
+
+    fn releaseReadBuffer(self: *Client, payload: []u8) void {
+        self.read_pool.release(payload);
+    }
+};
+
+const read_pool_capacity = 64 * 1024;
+
+const FrameBufferPool = struct {
+    buffer: ?[]u8 = null,
+    in_use: bool = false,
+    mutex: std.Thread.Mutex = .{},
+
+    fn deinit(self: *FrameBufferPool, allocator: std.mem.Allocator) void {
+        if (self.buffer) |buffer| allocator.free(buffer);
+        self.* = .{};
+    }
+
+    fn acquire(self: *FrameBufferPool, allocator: std.mem.Allocator, len: usize) !?[]u8 {
+        if (len == 0 or len > read_pool_capacity) return null;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.in_use) return null;
+        if (self.buffer == null) self.buffer = try allocator.alloc(u8, read_pool_capacity);
+        self.in_use = true;
+        return self.buffer.?[0..len];
+    }
+
+    fn release(self: *FrameBufferPool, payload: []u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const buffer = self.buffer orelse return;
+        if (payload.ptr == buffer.ptr and payload.len <= buffer.len) self.in_use = false;
     }
 };
 
@@ -179,7 +234,7 @@ pub fn parseUrl(url: []const u8) !Target {
     return .{ .host = hostport, .port = if (tls) 443 else 80, .path = path, .tls = tls };
 }
 
-fn readFrameFromReader(allocator: std.mem.Allocator, reader: anytype) !Frame {
+fn readFrameFromReader(client: *Client, allocator: std.mem.Allocator, reader: anytype) !Frame {
     const b0 = try reader.takeByte();
     const opcode = b0 & 0x0f;
     const b1 = try reader.takeByte();
@@ -197,13 +252,15 @@ fn readFrameFromReader(allocator: std.mem.Allocator, reader: anytype) !Frame {
     if (masked) {
         for (&mask) |*m| m.* = try reader.takeByte();
     }
-    const payload = try allocator.alloc(u8, @intCast(len));
-    errdefer allocator.free(payload);
+    const payload_len: usize = @intCast(len);
+    const pooled = try client.acquireReadBuffer(allocator, payload_len);
+    const payload = pooled orelse try allocator.alloc(u8, payload_len);
+    errdefer if (pooled == null) allocator.free(payload) else client.releaseReadBuffer(payload);
     try reader.readSliceAll(payload);
     if (masked) {
         for (payload, 0..) |*b, i| b.* ^= mask[i % 4];
     }
-    return .{ .opcode = opcode, .payload = payload };
+    return .{ .opcode = opcode, .payload = payload, .pooled = pooled != null };
 }
 
 fn readHandshake(reader: *std.Io.Reader) !u16 {
@@ -237,6 +294,11 @@ pub fn writeMaskedFrameForTest(writer: anytype, opcode: u8, payload: []const u8)
     try writeMaskedFrame(writer, opcode, payload);
 }
 
+pub fn readFrameFromBytesForTest(client: *Client, allocator: std.mem.Allocator, bytes: []const u8) !Frame {
+    var reader: std.Io.Reader = .fixed(bytes);
+    return readFrameFromReader(client, allocator, &reader);
+}
+
 fn writeMaskedFrame(writer: anytype, opcode: u8, payload: []const u8) !void {
     var header: [14]u8 = undefined;
     var header_len: usize = 0;
@@ -261,6 +323,15 @@ fn writeMaskedFrame(writer: anytype, opcode: u8, payload: []const u8) !void {
     const mask = [_]u8{ 1, 2, 3, 4 };
     @memcpy(header[header_len..][0..4], &mask);
     header_len += 4;
+
+    if (payload.len <= 512) {
+        var small: [14 + 512]u8 = undefined;
+        @memcpy(small[0..header_len], header[0..header_len]);
+        for (payload, 0..) |b, i| small[header_len + i] = b ^ mask[i & 3];
+        try writer.writeAll(small[0 .. header_len + payload.len]);
+        return;
+    }
+
     try writer.writeAll(header[0..header_len]);
 
     var masked: [4096]u8 = undefined;

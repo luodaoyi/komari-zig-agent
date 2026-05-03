@@ -159,18 +159,20 @@ fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: confi
 fn readerLoop(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
     defer conn.release(allocator);
     var stdout = std.fs.File.stdout().deprecatedWriter();
+    var msg_arena = std.heap.ArenaAllocator.init(allocator);
+    defer msg_arena.deinit();
     while (true) {
-        const payload = conn.readText(allocator) catch |err| {
+        _ = msg_arena.reset(.retain_capacity);
+        const frame = conn.readTextFrame(allocator) catch |err| {
             conn.shutdown();
             stdout.print("WebSocket read failed: {s}\n", .{@errorName(err)}) catch {};
             return;
         };
-        defer allocator.free(payload);
-        const msg = parseServerMessage(allocator, payload) catch |err| {
+        defer frame.deinit(conn, allocator);
+        const msg = ws_message.parseServerMessageLeaky(msg_arena.allocator(), frame.payload) catch |err| {
             stdout.print("Bad ws message: {s}\n", .{@errorName(err)}) catch {};
             continue;
         };
-        defer msg.deinit(allocator);
         handleServerMessage(allocator, conn, cfg, msg) catch |err| {
             stdout.print("WS task failed: {s}\n", .{@errorName(err)}) catch {};
         };

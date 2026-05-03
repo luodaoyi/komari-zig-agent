@@ -24,9 +24,22 @@ const LinuxStatfs = extern struct {
 };
 
 var sample_mutex: std.Thread.Mutex = .{};
+var cache_mutex: std.Thread.Mutex = .{};
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuSample = null;
+var cached_disk: ?CachedDiskSample = null;
+var cached_connections: ?CachedConnectionsSample = null;
+var cached_process: ?CachedProcessSample = null;
 var cached_cpu_cores = std.atomic.Value(u32).init(0);
+
+const disk_cache_ttl_ms: u64 = 30 * 1000;
+const connections_cache_ttl_ms: u64 = 5 * 1000;
+const process_cache_ttl_ms: u64 = 5 * 1000;
+
+const CacheKey = struct {
+    len: usize,
+    hash: u64,
+};
 
 const NetworkSample = struct {
     total_up: u64,
@@ -45,6 +58,24 @@ pub const CpuStat = struct {
 const CpuSample = struct {
     stat: CpuStat,
     host_proc: []const u8,
+};
+
+const CachedDiskSample = struct {
+    key: CacheKey,
+    value: common.DiskInfo,
+    timestamp_ms: i64,
+};
+
+const CachedConnectionsSample = struct {
+    key: CacheKey,
+    value: common.ConnectionInfo,
+    timestamp_ms: i64,
+};
+
+const CachedProcessSample = struct {
+    key: CacheKey,
+    value: u64,
+    timestamp_ms: i64,
 };
 
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
@@ -74,11 +105,11 @@ pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
         .ram = mem_swap.ram,
         .swap = mem_swap.swap,
         .load = try loadInfo(options.host_proc),
-        .disk = try diskInfoWithMountpoints(options.include_mountpoints),
+        .disk = try cachedDiskInfoWithMountpoints(options.include_mountpoints),
         .network = try networkInfo(options),
-        .connections = try connectionsInfo(options.host_proc),
+        .connections = try cachedConnectionsInfo(options.host_proc),
         .uptime = try uptime(options.host_proc),
-        .process = try processCount(options.host_proc),
+        .process = try cachedProcessCount(options.host_proc),
         .gpu_json = if (options.enable_gpu) gpuReportJson(std.heap.page_allocator) catch "" else "",
     };
 }
@@ -797,6 +828,26 @@ fn diskInfo() !common.DiskInfo {
     return diskInfoWithMountpoints("");
 }
 
+fn cachedDiskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
+    const now_ms = std.time.milliTimestamp();
+    const key = cacheKey(include_mountpoints);
+    cache_mutex.lock();
+    if (cached_disk) |sample| {
+        if (cacheKeyMatches(sample.key, key) and cacheFresh(now_ms, sample.timestamp_ms, disk_cache_ttl_ms)) {
+            const value = sample.value;
+            cache_mutex.unlock();
+            return value;
+        }
+    }
+    cache_mutex.unlock();
+
+    const value = try diskInfoWithMountpoints(include_mountpoints);
+    cache_mutex.lock();
+    cached_disk = .{ .key = key, .value = value, .timestamp_ms = now_ms };
+    cache_mutex.unlock();
+    return value;
+}
+
 fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1090,6 +1141,26 @@ fn connectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
     };
 }
 
+fn cachedConnectionsInfo(host_proc: []const u8) !common.ConnectionInfo {
+    const now_ms = std.time.milliTimestamp();
+    const key = cacheKey(host_proc);
+    cache_mutex.lock();
+    if (cached_connections) |sample| {
+        if (cacheKeyMatches(sample.key, key) and cacheFresh(now_ms, sample.timestamp_ms, connections_cache_ttl_ms)) {
+            const value = sample.value;
+            cache_mutex.unlock();
+            return value;
+        }
+    }
+    cache_mutex.unlock();
+
+    const value = try connectionsInfo(host_proc);
+    cache_mutex.lock();
+    cached_connections = .{ .key = key, .value = value, .timestamp_ms = now_ms };
+    cache_mutex.unlock();
+    return value;
+}
+
 fn countProcNetFile(host_proc: []const u8, suffix: []const u8) u64 {
     if (host_proc.len == 0) {
         var path_buf: [64]u8 = undefined;
@@ -1141,6 +1212,19 @@ fn countProcNetConnectionsFile(path: []const u8) u64 {
 pub fn perSecond(current: u64, previous: u64, elapsed_ms: u64) u64 {
     if (current <= previous or elapsed_ms == 0) return 0;
     return ((current - previous) * 1000) / elapsed_ms;
+}
+
+pub fn cacheFresh(now_ms: i64, timestamp_ms: i64, ttl_ms: u64) bool {
+    if (now_ms < timestamp_ms) return false;
+    return @as(u64, @intCast(now_ms - timestamp_ms)) < ttl_ms;
+}
+
+fn cacheKey(value: []const u8) CacheKey {
+    return .{ .len = value.len, .hash = std.hash.Wyhash.hash(0, value) };
+}
+
+fn cacheKeyMatches(a: CacheKey, b: CacheKey) bool {
+    return a.len == b.len and a.hash == b.hash;
 }
 
 pub fn parseProcNetDev(bytes: []const u8, include_nics: []const u8, exclude_nics: []const u8) common.NetworkInfo {
@@ -1431,6 +1515,26 @@ fn processCount(host_proc: []const u8) !u64 {
         count += 1;
     }
     return count;
+}
+
+fn cachedProcessCount(host_proc: []const u8) !u64 {
+    const now_ms = std.time.milliTimestamp();
+    const key = cacheKey(host_proc);
+    cache_mutex.lock();
+    if (cached_process) |sample| {
+        if (cacheKeyMatches(sample.key, key) and cacheFresh(now_ms, sample.timestamp_ms, process_cache_ttl_ms)) {
+            const value = sample.value;
+            cache_mutex.unlock();
+            return value;
+        }
+    }
+    cache_mutex.unlock();
+
+    const value = try processCount(host_proc);
+    cache_mutex.lock();
+    cached_process = .{ .key = key, .value = value, .timestamp_ms = now_ms };
+    cache_mutex.unlock();
+    return value;
 }
 
 pub fn procPath(allocator: std.mem.Allocator, root: []const u8, suffix: []const u8) ![]const u8 {

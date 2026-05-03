@@ -134,3 +134,9 @@ test "per second rate handles deltas and resets" {
     try std.testing.expectEqual(@as(u64, 0), linux.perSecond(1000, 3000, 1000));
     try std.testing.expectEqual(@as(u64, 0), linux.perSecond(3000, 1000, 0));
 }
+
+test "cache freshness is ttl bounded and rejects clock rollback" {
+    try std.testing.expect(linux.cacheFresh(1099, 1000, 100));
+    try std.testing.expect(!linux.cacheFresh(1100, 1000, 100));
+    try std.testing.expect(!linux.cacheFresh(999, 1000, 100));
+}

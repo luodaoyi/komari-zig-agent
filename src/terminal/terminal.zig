@@ -83,7 +83,7 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
 
     while (true) {
         const frame = try ws.readFrame(allocator);
-        defer allocator.free(frame.payload);
+        defer frame.deinit(ws, allocator);
         if (frame.opcode == 0x8) return;
         if (frame.opcode != 0x1 and frame.opcode != 0x2) continue;
         const input = parseInput(allocator, frame.payload);

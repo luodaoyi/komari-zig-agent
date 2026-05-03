@@ -51,3 +51,21 @@ test "websocket masked writer handles extended payload in chunks" {
         try std.testing.expectEqual(b, frame[8 + i] ^ frame[4 + (i & 3)]);
     }
 }
+
+test "websocket small incoming frames reuse client read pool" {
+    const client = try std.testing.allocator.create(ws_client.Client);
+    client.* = .{};
+    defer client.close(std.testing.allocator);
+
+    const first = try ws_client.readFrameFromBytesForTest(client, std.testing.allocator, &.{ 0x81, 0x05, 'h', 'e', 'l', 'l', 'o' });
+    try std.testing.expect(first.pooled);
+    try std.testing.expectEqualStrings("hello", first.payload);
+    const first_ptr = first.payload.ptr;
+    first.deinit(client, std.testing.allocator);
+
+    const second = try ws_client.readFrameFromBytesForTest(client, std.testing.allocator, &.{ 0x81, 0x03, 'b', 'y', 'e' });
+    defer second.deinit(client, std.testing.allocator);
+    try std.testing.expect(second.pooled);
+    try std.testing.expectEqual(first_ptr, second.payload.ptr);
+    try std.testing.expectEqualStrings("bye", second.payload);
+}
