@@ -328,6 +328,16 @@ Windows PowerShell：
 .\build_all.ps1
 ```
 
+## 注释与文档
+
+生产源码的注释覆盖率已纳入仓库门槛，统计范围为 `src/**/*.zig`，排除 `*_test.zig`，要求至少 `80%` 的源码文件带有 Zig 文档注释 `//!` 或 `///`。细则见 `docs/code-comments.md`。
+
+本地可直接执行：
+
+```sh
+python3 scripts/check_comment_coverage.py src 80
+```
+
 ## Release CI/CD
 
 自动发布有两种方式：

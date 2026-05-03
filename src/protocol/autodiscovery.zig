@@ -4,6 +4,7 @@ const types = @import("types.zig");
 const config = @import("../config.zig");
 const http = @import("http.zig");
 
+/// Auto-discovery registration and cached token handling.
 pub const AutoDiscoveryConfig = struct {
     uuid: []const u8 = "",
     token: []const u8 = "",

@@ -1,6 +1,7 @@
 const std = @import("std");
 const common = @import("../platform/common.zig");
 
+/// JSON serialization helpers for periodic runtime snapshots.
 pub fn writeReportJson(writer: anytype, snap: common.Snapshot) !void {
     var usage = snap.cpu.usage;
     if (usage <= 0.001) usage = 0.001;

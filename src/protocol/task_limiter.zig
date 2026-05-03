@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Concurrency guard for server-triggered background tasks.
 pub const max_concurrent_tasks: u32 = 8;
 
 var active_tasks = std.atomic.Value(u32).init(0);

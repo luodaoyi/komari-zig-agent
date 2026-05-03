@@ -4,6 +4,7 @@ const types = @import("types.zig");
 const http = @import("http.zig");
 const common = @import("../platform/common.zig");
 
+/// BasicInfo payload serialization and upload helpers.
 pub fn allocBasicInfoJson(allocator: std.mem.Allocator, info: common.BasicInfo, include_kernel: bool) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);

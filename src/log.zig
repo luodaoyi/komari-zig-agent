@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Minimal stderr logging helpers used by the agent runtime.
 pub fn info(comptime fmt: []const u8, args: anytype) void {
     std.log.info(fmt, args);
 }

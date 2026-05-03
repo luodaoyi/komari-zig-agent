@@ -1,3 +1,4 @@
+/// Shared data models exchanged between platform collectors and protocol encoders.
 pub const CpuInfo = struct {
     name: []const u8 = "Unknown",
     architecture: []const u8 = "unknown",

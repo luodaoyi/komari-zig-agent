@@ -15,6 +15,7 @@ const NetworkSample = struct {
     exclude_nics: []const u8,
 };
 
+/// macOS collectors for system info, disks, and interfaces.
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     return .{
         .cpu = .{

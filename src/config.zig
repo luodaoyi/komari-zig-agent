@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// CLI, environment, and JSON configuration loading for the agent.
 pub const Command = enum {
     run,
     list_disk,

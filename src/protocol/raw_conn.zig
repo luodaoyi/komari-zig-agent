@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const dns = @import("dns");
 
+/// Raw TCP/TLS connection wrapper used by HTTP and websocket clients.
 pub const AddressFamily = enum {
     any,
     ipv4,

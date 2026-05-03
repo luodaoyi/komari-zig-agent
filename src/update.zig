@@ -4,6 +4,7 @@ const config = @import("config.zig");
 const http = @import("protocol/http.zig");
 const version = @import("version.zig");
 
+/// Self-update flow with release lookup, checksum validation, and rollback.
 pub const repo = version.repo;
 pub const default_github_proxies = [_][]const u8{
     "https://gh.llkk.cc",

@@ -16,6 +16,7 @@ const NetworkSample = struct {
     exclude_nics: []const u8,
 };
 
+/// FreeBSD collectors for system info, disks, and interfaces.
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     const mem = sysctlInt("hw.physmem") catch 0;
     return .{

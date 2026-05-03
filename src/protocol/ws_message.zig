@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Parsing for websocket messages delivered by the Komari server.
 pub const ServerMessageKind = enum {
     unknown,
     terminal,

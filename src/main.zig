@@ -11,6 +11,7 @@ const update = @import("update.zig");
 const version = @import("version.zig");
 const builtin = @import("builtin");
 
+/// Agent entrypoint that wires config, reporting, updates, and shutdown.
 pub const std_options: std.Options = .{
     .enable_segfault_handler = true,
 };

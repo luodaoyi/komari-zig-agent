@@ -5,6 +5,7 @@ const http = @import("http.zig");
 pub const max_command_output_bytes: usize = 4 * 1024 * 1024;
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
 
+/// Remote command execution and task result upload helpers.
 pub const CommandResult = struct {
     output: []const u8,
     exit_code: i32,

@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Minimal websocket abstraction used when a safe stub is enough.
 pub const SafeConn = struct {
     mutex: std.Thread.Mutex = .{},
 

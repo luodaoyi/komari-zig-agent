@@ -3,6 +3,7 @@ const http = @import("http.zig");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
 
+/// Websocket client, framing, and buffer-pool management for agent links.
 pub const Target = struct {
     host: []const u8,
     port: u16,

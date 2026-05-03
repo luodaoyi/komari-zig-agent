@@ -2,6 +2,7 @@ const std = @import("std");
 const http = @import("http.zig");
 const raw_conn = @import("raw_conn.zig");
 
+/// Public IP discovery helpers for IPv4 and IPv6 reporting.
 const ipv4_apis = [_][]const u8{
     "https://www.visa.cn/cdn-cgi/trace",
     "https://www.qualcomm.cn/cdn-cgi/trace",

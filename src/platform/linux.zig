@@ -50,6 +50,7 @@ const NetworkSample = struct {
     exclude_nics: []const u8,
 };
 
+/// Linux collectors and parsers for system snapshots and filters.
 pub const CpuStat = struct {
     idle: u64,
     total: u64,

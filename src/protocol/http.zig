@@ -2,6 +2,7 @@ const std = @import("std");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
 
+/// HTTP and proxy helpers shared by agent protocol clients.
 pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
 
 pub const Headers = struct {

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
+/// Monthly traffic accounting and persistence for network statistics.
 pub const TrafficData = struct { timestamp: u64, tx: u64, rx: u64 };
 pub const Counters = struct { tx: u64 = 0, rx: u64 = 0 };
 

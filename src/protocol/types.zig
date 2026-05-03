@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// JSON field writers and payload shapes for Komari protocol messages.
 pub const BasicInfoPayload = struct {
     cpu_name: []const u8,
     cpu_cores: u32,

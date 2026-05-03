@@ -41,6 +41,8 @@ jobs:
     needs: native-test
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Check comment coverage
+        run: python3 scripts/check_comment_coverage.py src 80
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:

@@ -1,3 +1,4 @@
+/// Interval helpers for pacing periodic reports.
 pub fn reportIntervalMs(interval: f64) u64 {
     if (interval <= 0) return 1000;
     const ms: u64 = @intFromFloat(interval * 1000);

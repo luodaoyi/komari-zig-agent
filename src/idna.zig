@@ -9,6 +9,7 @@ const initial_bias = 72;
 const initial_n = 128;
 const delimiter = '-';
 
+/// IDNA and punycode helpers for normalizing outbound URLs and hosts.
 pub fn convertUrlToAscii(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
     const scheme_end = std.mem.indexOf(u8, url, "://") orelse return convertHostToAscii(allocator, url);
     const authority_start = scheme_end + 3;

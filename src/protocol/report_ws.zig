@@ -11,6 +11,7 @@ const terminal = @import("../terminal/terminal.zig");
 const update = @import("../update.zig");
 const ws_client = @import("ws_client.zig");
 const timing = @import("report_timing.zig");
+/// Report websocket loop and server task dispatch.
 pub const ws_message = @import("ws_message.zig");
 
 pub const ServerMessageKind = ws_message.ServerMessageKind;

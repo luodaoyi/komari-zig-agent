@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 extern "c" fn openpty(amaster: *c_int, aslave: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const std.posix.winsize) c_int;
 extern "c" fn ioctl(fd: std.posix.fd_t, request: c_ulong, ...) c_int;
 
+/// Web terminal session bridge between PTY/process IO and websocket frames.
 pub const Input = union(enum) {
     input: []const u8,
     resize: struct { cols: u16, rows: u16 },

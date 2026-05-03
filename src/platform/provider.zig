@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
+/// OS-agnostic dispatch layer for platform collectors.
 pub const common = @import("common.zig");
 const impl = switch (builtin.os.tag) {
     .linux => @import("linux.zig"),

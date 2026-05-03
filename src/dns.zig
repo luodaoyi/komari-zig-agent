@@ -14,6 +14,7 @@ const fallback_servers = [_][]const u8{
     "119.29.29.29:53",
 };
 
+/// DNS resolution helpers with custom resolver fallback and address ordering.
 pub fn normalizeDnsServer(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     const s = std.mem.trim(u8, input, " \t\r\n");
     if (s.len == 0) return allocator.dupe(u8, "");

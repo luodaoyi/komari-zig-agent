@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const dns = @import("dns");
 const raw_conn = @import("raw_conn.zig");
 
+/// Ping task implementations for ICMP, TCP, and HTTP probes.
 pub const TcpTarget = struct {
     host: []const u8,
     port: []const u8,
