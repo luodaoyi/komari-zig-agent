@@ -41,7 +41,7 @@ pub fn parseServerMessage(allocator: std.mem.Allocator, bytes: []const u8) !Serv
         .request_id = try dupeString(allocator, object, "request_id"),
         .task_id = try dupeString(allocator, object, "task_id"),
         .command = try dupeString(allocator, object, "command"),
-        .ping_task_id = intValue(object, "ping_task_id"),
+        .ping_task_id = pingTaskIdValue(object),
         .ping_type = try dupeString(allocator, object, "ping_type"),
         .ping_target = try dupeString(allocator, object, "ping_target"),
     };
@@ -57,6 +57,7 @@ pub fn parseServerMessageLeaky(allocator: std.mem.Allocator, bytes: []const u8) 
     if (first != .object_begin) return .{ .owns_fields = false };
 
     var msg = ServerMessage{ .owns_fields = false };
+    var numeric_task_id: u64 = 0;
     while (true) {
         const key_token = try scanner.nextAlloc(allocator, .alloc_if_needed);
         const key = switch (key_token) {
@@ -70,7 +71,11 @@ pub fn parseServerMessageLeaky(allocator: std.mem.Allocator, bytes: []const u8) 
         } else if (std.mem.eql(u8, key, "request_id")) {
             msg.request_id = try readStringValueLeaky(allocator, &scanner);
         } else if (std.mem.eql(u8, key, "task_id")) {
-            msg.task_id = try readStringValueLeaky(allocator, &scanner);
+            if (try scanner.peekNextTokenType() == .number) {
+                numeric_task_id = try readU64Value(allocator, &scanner);
+            } else {
+                msg.task_id = try readStringValueLeaky(allocator, &scanner);
+            }
         } else if (std.mem.eql(u8, key, "command")) {
             msg.command = try readStringValueLeaky(allocator, &scanner);
         } else if (std.mem.eql(u8, key, "ping_task_id")) {
@@ -82,6 +87,10 @@ pub fn parseServerMessageLeaky(allocator: std.mem.Allocator, bytes: []const u8) 
         } else {
             try scanner.skipValue();
         }
+    }
+    if (std.mem.eql(u8, msg.message, "ping") and msg.ping_task_id == 0) {
+        msg.ping_task_id = numeric_task_id;
+        if (msg.ping_task_id == 0 and msg.task_id.len != 0) msg.ping_task_id = std.fmt.parseInt(u64, msg.task_id, 10) catch 0;
     }
     classify(&msg);
     return msg;
@@ -125,8 +134,18 @@ fn intValue(object: std.json.ObjectMap, key: []const u8) u64 {
     if (object.get(key)) |value| {
         return switch (value) {
             .integer => |n| @intCast(n),
+            .string => |text| std.fmt.parseInt(u64, text, 10) catch 0,
             else => 0,
         };
+    }
+    return 0;
+}
+
+fn pingTaskIdValue(object: std.json.ObjectMap) u64 {
+    const direct = intValue(object, "ping_task_id");
+    if (direct != 0) return direct;
+    if (object.get("message")) |message| {
+        if (message == .string and std.mem.eql(u8, message.string, "ping")) return intValue(object, "task_id");
     }
     return 0;
 }

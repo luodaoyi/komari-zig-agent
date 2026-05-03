@@ -25,6 +25,14 @@ test "http target parser preserves existing scheme" {
     try std.testing.expectEqualStrings("https://example.com", target);
 }
 
+test "ping type parser accepts server variants" {
+    try std.testing.expectEqualStrings("tcp", ping.normalizePingTypeForTest("TCP") orelse "");
+    try std.testing.expectEqualStrings("tcp", ping.normalizePingTypeForTest("tcp_ping") orelse "");
+    try std.testing.expectEqualStrings("http", ping.normalizePingTypeForTest("httping") orelse "");
+    try std.testing.expectEqualStrings("icmp", ping.normalizePingTypeForTest("ping") orelse "");
+    try std.testing.expectEqual(@as(?[]const u8, null), ping.normalizePingTypeForTest("dns"));
+}
+
 test "icmp checksum is deterministic" {
     var packet = [_]u8{ 8, 0, 0, 0, 0x12, 0x34, 0, 1 };
     const sum = ping.icmpChecksum(&packet);

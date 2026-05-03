@@ -12,6 +12,12 @@ pub const TcpTarget = struct {
     port: []const u8,
 };
 
+const PingKind = enum {
+    tcp,
+    http,
+    icmp,
+};
+
 pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type: []const u8, value: i64, finished_at: []const u8) ![]const u8 {
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
@@ -25,19 +31,15 @@ pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type
 }
 
 pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8) i64 {
+    const kind = normalizePingType(ping_type) orelse return -1;
     const high_latency_threshold: i64 = 1000;
-    const first = measureOnce(allocator, ping_type, target, custom_dns);
+    const first = measureOnce(allocator, kind, target, custom_dns);
     if (first < 0) return -1;
     if (first <= high_latency_threshold) return first;
     var latency = first;
     var attempt: u8 = 0;
     while (attempt < 3) : (attempt += 1) {
-        const value = blk: {
-            if (std.mem.eql(u8, ping_type, "tcp")) break :blk tcpPing(allocator, target, custom_dns) catch -1;
-            if (std.mem.eql(u8, ping_type, "http")) break :blk httpPing(allocator, target, custom_dns) catch -1;
-            if (std.mem.eql(u8, ping_type, "icmp")) break :blk icmpPing(allocator, target, custom_dns) catch -1;
-            break :blk -1;
-        };
+        const value = measureOnce(allocator, kind, target, custom_dns);
         if (value < 0) return -1;
         latency = value;
         if (latency <= high_latency_threshold) return latency;
@@ -45,11 +47,42 @@ pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []co
     return -1;
 }
 
-fn measureOnce(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8) i64 {
-    if (std.mem.eql(u8, ping_type, "tcp")) return tcpPing(allocator, target, custom_dns) catch -1;
-    if (std.mem.eql(u8, ping_type, "http")) return httpPing(allocator, target, custom_dns) catch -1;
-    if (std.mem.eql(u8, ping_type, "icmp")) return icmpPing(allocator, target, custom_dns) catch -1;
-    return -1;
+fn measureOnce(allocator: std.mem.Allocator, kind: PingKind, target: []const u8, custom_dns: []const u8) i64 {
+    return switch (kind) {
+        .tcp => tcpPing(allocator, target, custom_dns) catch -1,
+        .http => httpPing(allocator, target, custom_dns) catch -1,
+        .icmp => icmpPing(allocator, target, custom_dns) catch -1,
+    };
+}
+
+fn normalizePingType(ping_type: []const u8) ?PingKind {
+    if (std.ascii.eqlIgnoreCase(ping_type, "tcp") or
+        std.ascii.eqlIgnoreCase(ping_type, "tcp_ping") or
+        std.ascii.eqlIgnoreCase(ping_type, "tcping"))
+    {
+        return .tcp;
+    }
+    if (std.ascii.eqlIgnoreCase(ping_type, "http") or
+        std.ascii.eqlIgnoreCase(ping_type, "http_ping") or
+        std.ascii.eqlIgnoreCase(ping_type, "httping"))
+    {
+        return .http;
+    }
+    if (std.ascii.eqlIgnoreCase(ping_type, "icmp") or
+        std.ascii.eqlIgnoreCase(ping_type, "icmp_ping") or
+        std.ascii.eqlIgnoreCase(ping_type, "ping"))
+    {
+        return .icmp;
+    }
+    return null;
+}
+
+pub fn normalizePingTypeForTest(ping_type: []const u8) ?[]const u8 {
+    return switch (normalizePingType(ping_type) orelse return null) {
+        .tcp => "tcp",
+        .http => "http",
+        .icmp => "icmp",
+    };
 }
 
 pub fn icmpChecksum(bytes: []const u8) u16 {
@@ -240,7 +273,7 @@ fn httpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
         var buf: [64]u8 = undefined;
         const n = try conn.reader().readSliceShort(&buf);
         const elapsed = compat.milliTimestamp() - start;
-        if (n >= 12 and std.mem.startsWith(u8, buf[0..n], "HTTP/1.") and buf[9] >= '2' and buf[9] <= '3') return elapsed;
+        if (n >= 12 and std.mem.startsWith(u8, buf[0..n], "HTTP/1.")) return elapsed;
         return -1;
     }
     return error.ConnectFailed;

@@ -6,6 +6,7 @@ const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
 const ip = @import("protocol/ip.zig");
 const netstatic = @import("report_netstatic");
+const ping = @import("protocol/ping.zig");
 const report_ws = @import("protocol/report_ws.zig");
 const update = @import("update.zig");
 const version = @import("version.zig");
@@ -34,6 +35,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var args_list: std.ArrayList([]const u8) = .empty;
     while (args_iter.next()) |arg| try args_list.append(config_allocator, arg);
     const args = try args_list.toOwnedSlice(config_allocator);
+
+    if (try runPingDiagnostic(allocator, args)) return;
 
     var cfg = try config.parseArgs(config_allocator, args);
     try cfg.loadEnv(config_allocator);
@@ -111,6 +114,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
         try uploadBasicInfoOnce(allocator, cfg);
     }
     try stdout.writeAll("shutting down gracefully...\n");
+}
+
+fn runPingDiagnostic(allocator: std.mem.Allocator, args: []const []const u8) !bool {
+    if (args.len < 4 or !std.mem.eql(u8, args[1], "ping-test")) return false;
+    const custom_dns = if (args.len >= 5) args[4] else "";
+    const value = ping.measure(allocator, args[2], args[3], custom_dns);
+    var stdout_buf: [256]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
+    try stdout.print("{d}\n", .{value});
+    return true;
 }
 
 fn installSignalHandlers() void {
