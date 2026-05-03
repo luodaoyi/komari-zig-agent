@@ -4,6 +4,17 @@ const netstatic = @import("report_netstatic");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
+var sample_mutex: std.Thread.Mutex = .{};
+var previous_network: ?NetworkSample = null;
+
+const NetworkSample = struct {
+    total_up: u64,
+    total_down: u64,
+    timestamp_ms: i64,
+    include_nics: []const u8,
+    exclude_nics: []const u8,
+};
+
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     return .{
         .cpu = .{
@@ -185,21 +196,45 @@ fn networkInfo(allocator: std.mem.Allocator) !common.NetworkInfo {
 }
 
 fn networkInfoWithOptions(allocator: std.mem.Allocator, options: common.SnapshotOptions) !common.NetworkInfo {
-    const first_out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
-    defer allocator.free(first_out);
-    const first = parseNetstatFiltered(first_out, options.include_nics, options.exclude_nics);
-    std.Thread.sleep(std.time.ns_per_s);
     const out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
     defer allocator.free(out);
     var current = parseNetstatFiltered(out, options.include_nics, options.exclude_nics);
-    current.up = if (current.totalUp >= first.totalUp) current.totalUp - first.totalUp else 0;
-    current.down = if (current.totalDown >= first.totalDown) current.totalDown - first.totalDown else 0;
+    const now_ms = std.time.milliTimestamp();
+
+    sample_mutex.lock();
+    defer sample_mutex.unlock();
+
+    if (previous_network) |previous| {
+        if (networkSampleMatches(previous, options)) {
+            const elapsed_ms: u64 = @intCast(@max(now_ms - previous.timestamp_ms, 0));
+            current.up = perSecond(current.totalUp, previous.total_up, elapsed_ms);
+            current.down = perSecond(current.totalDown, previous.total_down, elapsed_ms);
+        }
+    }
+    previous_network = .{
+        .total_up = current.totalUp,
+        .total_down = current.totalDown,
+        .timestamp_ms = now_ms,
+        .include_nics = options.include_nics,
+        .exclude_nics = options.exclude_nics,
+    };
+
     if (options.month_rotate != 0) {
         const totals = netstatic.applyMonthlyTotalsFiltered(std.heap.page_allocator, options.month_rotate, options.include_nics, options.exclude_nics);
         current.totalUp = totals.up;
         current.totalDown = totals.down;
     }
     return current;
+}
+
+fn networkSampleMatches(previous: NetworkSample, options: common.SnapshotOptions) bool {
+    return std.mem.eql(u8, previous.include_nics, options.include_nics) and
+        std.mem.eql(u8, previous.exclude_nics, options.exclude_nics);
+}
+
+fn perSecond(current: u64, previous: u64, elapsed_ms: u64) u64 {
+    if (current <= previous or elapsed_ms == 0) return 0;
+    return ((current - previous) * 1000) / elapsed_ms;
 }
 
 fn parseNetstat(out: []const u8) common.NetworkInfo {
@@ -341,7 +376,7 @@ fn processCount(allocator: std.mem.Allocator) !u64 {
 }
 
 fn cpuUsage(allocator: std.mem.Allocator) !f64 {
-    const out = try commandOutput(allocator, &.{ "top", "-l", "2", "-n", "0" });
+    const out = try commandOutput(allocator, &.{ "top", "-l", "1", "-n", "0" });
     defer allocator.free(out);
     var last_cpu: []const u8 = "";
     var lines = std.mem.splitScalar(u8, out, '\n');

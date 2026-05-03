@@ -4,6 +4,18 @@ const netstatic = @import("report_netstatic");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
+var sample_mutex: std.Thread.Mutex = .{};
+var previous_network: ?NetworkSample = null;
+var previous_cpu: ?CpuTimes = null;
+
+const NetworkSample = struct {
+    total_up: u64,
+    total_down: u64,
+    timestamp_ms: i64,
+    include_nics: []const u8,
+    exclude_nics: []const u8,
+};
+
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     const mem = sysctlInt("hw.physmem") catch 0;
     return .{
@@ -143,15 +155,29 @@ fn networkInfo(allocator: std.mem.Allocator) !common.NetworkInfo {
 }
 
 fn networkInfoWithOptions(allocator: std.mem.Allocator, options: common.SnapshotOptions) !common.NetworkInfo {
-    const first_out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
-    defer allocator.free(first_out);
-    const first = parseNetstatFiltered(first_out, options.include_nics, options.exclude_nics);
-    std.Thread.sleep(std.time.ns_per_s);
     const out = try commandOutput(allocator, &.{ "netstat", "-ibn" });
     defer allocator.free(out);
     var current = parseNetstatFiltered(out, options.include_nics, options.exclude_nics);
-    current.up = if (current.totalUp >= first.totalUp) current.totalUp - first.totalUp else 0;
-    current.down = if (current.totalDown >= first.totalDown) current.totalDown - first.totalDown else 0;
+    const now_ms = std.time.milliTimestamp();
+
+    sample_mutex.lock();
+    defer sample_mutex.unlock();
+
+    if (previous_network) |previous| {
+        if (networkSampleMatches(previous, options)) {
+            const elapsed_ms: u64 = @intCast(@max(now_ms - previous.timestamp_ms, 0));
+            current.up = perSecond(current.totalUp, previous.total_up, elapsed_ms);
+            current.down = perSecond(current.totalDown, previous.total_down, elapsed_ms);
+        }
+    }
+    previous_network = .{
+        .total_up = current.totalUp,
+        .total_down = current.totalDown,
+        .timestamp_ms = now_ms,
+        .include_nics = options.include_nics,
+        .exclude_nics = options.exclude_nics,
+    };
+
     if (options.month_rotate != 0) {
         const totals = netstatic.applyMonthlyTotalsFiltered(std.heap.page_allocator, options.month_rotate, options.include_nics, options.exclude_nics);
         current.totalUp = totals.up;
@@ -161,14 +187,12 @@ fn networkInfoWithOptions(allocator: std.mem.Allocator, options: common.Snapshot
 }
 
 fn cpuUsage(allocator: std.mem.Allocator) !f64 {
-    const first = try cpuTimes(allocator);
-    std.Thread.sleep(std.time.ns_per_s);
-    const second = try cpuTimes(allocator);
-    if (second.total <= first.total or second.idle < first.idle) return 0.001;
-    const total_delta = second.total - first.total;
-    const idle_delta = second.idle - first.idle;
-    if (total_delta == 0 or idle_delta > total_delta) return 0.001;
-    return (@as(f64, @floatFromInt(total_delta - idle_delta)) / @as(f64, @floatFromInt(total_delta))) * 100.0;
+    const current = try cpuTimes(allocator);
+    sample_mutex.lock();
+    defer sample_mutex.unlock();
+    const usage = if (previous_cpu) |previous| cpuUsagePercent(previous, current) else 0.001;
+    previous_cpu = current;
+    return if (usage <= 0.001) 0.001 else usage;
 }
 
 const CpuTimes = struct { total: u64, idle: u64 };
@@ -186,6 +210,24 @@ fn cpuTimes(allocator: std.mem.Allocator) !CpuTimes {
     var total: u64 = 0;
     for (vals) |v| total += v;
     return .{ .total = total, .idle = vals[4] };
+}
+
+fn cpuUsagePercent(previous: CpuTimes, current: CpuTimes) f64 {
+    if (current.total <= previous.total or current.idle < previous.idle) return 0.001;
+    const total_delta = current.total - previous.total;
+    const idle_delta = current.idle - previous.idle;
+    if (total_delta == 0 or idle_delta > total_delta) return 0.001;
+    return (@as(f64, @floatFromInt(total_delta - idle_delta)) / @as(f64, @floatFromInt(total_delta))) * 100.0;
+}
+
+fn networkSampleMatches(previous: NetworkSample, options: common.SnapshotOptions) bool {
+    return std.mem.eql(u8, previous.include_nics, options.include_nics) and
+        std.mem.eql(u8, previous.exclude_nics, options.exclude_nics);
+}
+
+fn perSecond(current: u64, previous: u64, elapsed_ms: u64) u64 {
+    if (current <= previous or elapsed_ms == 0) return 0;
+    return ((current - previous) * 1000) / elapsed_ms;
 }
 
 fn parseNetstat(out: []const u8) common.NetworkInfo {
