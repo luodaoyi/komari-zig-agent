@@ -1,17 +1,14 @@
 const std = @import("std");
 
-/// Small blocking mutex used where the agent needs old `std.Thread.Mutex`
-/// semantics on Zig 0.16.
+/// Blocking mutex facade backed by Zig 0.16 `std.Io.Mutex`.
 pub const Mutex = struct {
-    state: std.atomic.Mutex = .unlocked,
+    state: std.Io.Mutex = .init,
 
     pub fn lock(self: *Mutex) void {
-        while (!self.state.tryLock()) {
-            std.Thread.yield() catch {};
-        }
+        self.state.lockUncancelable(std.Options.debug_io);
     }
 
     pub fn unlock(self: *Mutex) void {
-        self.state.unlock();
+        self.state.unlock(std.Options.debug_io);
     }
 };
