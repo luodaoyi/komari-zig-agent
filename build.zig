@@ -110,6 +110,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/task_limiter_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/coverage_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ws_client_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
     addTest(b, test_step, "test/report_interval_test.zig", target, optimize, opts, version_module, compat_module, net_compat_module, coverage, coverage_dir);
@@ -278,7 +279,7 @@ fn addTest(
 }
 
 fn isCoverageTest(test_path: []const u8) bool {
-    return std.mem.eql(u8, test_path, "test/ip_extract_test.zig");
+    return std.mem.eql(u8, test_path, "test/coverage_test.zig");
 }
 
 fn coverageOutputPath(b: *std.Build, coverage_dir: []const u8, test_path: []const u8) []const u8 {
