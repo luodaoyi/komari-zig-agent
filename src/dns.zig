@@ -47,7 +47,7 @@ pub fn resolveHost(allocator: std.mem.Allocator, host: []const u8, port: u16, cu
 
     const normalized = try normalizeDnsServer(allocator, custom_dns);
     defer allocator.free(normalized);
-    return resolveWithServers(allocator, trimmed, port, &.{ normalized }) catch
+    return resolveWithServers(allocator, trimmed, port, &.{normalized}) catch
         resolveWithServers(allocator, trimmed, port, &fallback_servers);
 }
 
