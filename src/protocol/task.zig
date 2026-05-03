@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const http = @import("http.zig");
+const compat = @import("compat");
 
 pub const max_command_output_bytes: usize = 4 * 1024 * 1024;
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
@@ -16,15 +17,15 @@ pub const CommandResult = struct {
 };
 
 pub fn allocTaskResultJson(allocator: std.mem.Allocator, task_id: []const u8, result: []const u8, exit_code: i32, finished_at: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try types.writeTaskResultJson(out.writer(allocator), .{
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try types.writeTaskResultJson(&out.writer, .{
         .task_id = task_id,
         .result = result,
         .exit_code = exit_code,
         .finished_at = finished_at,
     });
-    return out.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 pub fn runCommand(allocator: std.mem.Allocator, command: []const u8) ![]const u8 {
@@ -34,16 +35,16 @@ pub fn runCommand(allocator: std.mem.Allocator, command: []const u8) ![]const u8
 
 pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !CommandResult {
     if (command.len == 0) return .{ .output = try allocator.dupe(u8, "No command provided"), .exit_code = 0 };
-    var env = try std.process.getEnvMap(allocator);
+    var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.Options.debug_io, .{
         .argv = &.{ "/bin/sh", "-c", command },
-        .env_map = &env,
-        .max_output_bytes = max_command_output_bytes,
+        .environ_map = &env,
+        .stdout_limit = .limited(max_command_output_bytes),
+        .stderr_limit = .limited(max_command_output_bytes),
     }) catch |err| switch (err) {
-        error.StdoutStreamTooLong, error.StderrStreamTooLong => return .{
+        error.StreamTooLong => return .{
             .output = try std.fmt.allocPrint(allocator, "Command output exceeded {d} bytes", .{max_command_output_bytes}),
             .exit_code = -1,
         },
@@ -100,14 +101,14 @@ pub fn normalizeCommandOutput(allocator: std.mem.Allocator, output: []const u8) 
 
 fn exitCode(term: std.process.Child.Term) i32 {
     return switch (term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |signal| 128 + @as(i32, @intCast(signal)),
+        .exited => |code| @intCast(code),
+        .signal => |signal| 128 + @as(i32, @intCast(@intFromEnum(signal))),
         else => -1,
     };
 }
 
 pub fn utcNow(allocator: std.mem.Allocator) ![]const u8 {
-    const timestamp = std.time.timestamp();
+    const timestamp = compat.unixTimestamp();
     const date = civilFromTimestamp(timestamp);
     const seconds_of_day = @mod(timestamp, std.time.s_per_day);
     const hour = @divFloor(seconds_of_day, 3600);

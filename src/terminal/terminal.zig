@@ -2,6 +2,7 @@ const std = @import("std");
 const http = @import("../protocol/http.zig");
 const ws_client = @import("../protocol/ws_client.zig");
 const builtin = @import("builtin");
+const compat = @import("compat");
 
 extern "c" fn openpty(amaster: *c_int, aslave: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const std.posix.winsize) c_int;
 extern "c" fn ioctl(fd: std.posix.fd_t, request: c_ulong, ...) c_int;
@@ -91,16 +92,16 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
         defer input.deinit(allocator);
         if (isCloseInput(input)) return;
         switch (input) {
-            .input => |bytes| try session.input.writeAll(bytes),
-            .raw => |bytes| try session.input.writeAll(bytes),
+            .input => |bytes| try session.writeInput(bytes),
+            .raw => |bytes| try session.writeInput(bytes),
             .resize => |size| session.resize(size.cols, size.rows) catch {},
         }
     }
 }
 
 const ShellSession = struct {
-    input: std.fs.File,
-    output: std.fs.File,
+    input: std.Io.File,
+    output: std.Io.File,
     pid: if (builtin.os.tag == .windows) void else std.posix.pid_t,
 
     fn start(allocator: std.mem.Allocator) !ShellSession {
@@ -115,34 +116,40 @@ const ShellSession = struct {
             _ = std.posix.kill(-self.pid, std.posix.SIG.TERM) catch {
                 _ = std.posix.kill(self.pid, std.posix.SIG.TERM) catch {};
             };
-            const deadline = std.time.milliTimestamp() + 5000;
-            while (std.time.milliTimestamp() < deadline) {
-                const result = std.posix.waitpid(self.pid, if (builtin.os.tag == .linux) std.os.linux.W.NOHANG else 0);
+            const deadline = compat.milliTimestamp() + 5000;
+            while (compat.milliTimestamp() < deadline) {
+                const result = compat.waitPid(self.pid, if (builtin.os.tag == .linux) std.os.linux.W.NOHANG else 0) catch break;
                 if (result.pid != 0) break;
-                std.Thread.sleep(50 * std.time.ns_per_ms);
+                compat.sleep(50 * std.time.ns_per_ms);
             } else {
                 _ = std.posix.kill(-self.pid, std.posix.SIG.KILL) catch {
                     _ = std.posix.kill(self.pid, std.posix.SIG.KILL) catch {};
                 };
-                _ = std.posix.waitpid(self.pid, 0);
+                _ = compat.waitPid(self.pid, 0) catch {};
             }
         }
-        if (self.input.handle != self.output.handle) self.input.close();
-        self.output.close();
+        if (self.input.handle != self.output.handle) self.input.close(std.Options.debug_io);
+        self.output.close(std.Options.debug_io);
     }
 
     fn gracefulShutdown(self: *ShellSession) void {
-        var writer = self.input.deprecatedWriter();
+        var buf: [256]u8 = undefined;
+        var writer = compat.fileWriter(self.input, &buf);
+        defer writer.flush() catch {};
         var i: u8 = 0;
         while (i < 3) : (i += 1) {
             writer.writeAll(&.{3}) catch return;
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+            compat.sleep(50 * std.time.ns_per_ms);
         }
-        std.Thread.sleep(200 * std.time.ns_per_ms);
+        compat.sleep(200 * std.time.ns_per_ms);
         writer.writeAll(&.{4}) catch {};
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        compat.sleep(100 * std.time.ns_per_ms);
         writer.writeAll("exit\n") catch {};
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        compat.sleep(100 * std.time.ns_per_ms);
+    }
+
+    fn writeInput(self: *ShellSession, bytes: []const u8) !void {
+        try self.input.writeStreamingAll(std.Options.debug_io, bytes);
     }
 
     fn resize(self: *ShellSession, cols: u16, rows: u16) !void {
@@ -161,13 +168,14 @@ const ShellSession = struct {
         }
         var buf: [64]u8 = undefined;
         const cmd = try std.fmt.bufPrint(&buf, "stty cols {d} rows {d}\n", .{ cols, rows });
-        try self.input.writeAll(cmd);
+        try self.writeInput(cmd);
     }
 };
 
 fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
-    const master = try std.posix.open("/dev/ptmx", .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0);
-    errdefer std.posix.close(master);
+    const master_file = try compat.openFile("/dev/ptmx", .{ .mode = .read_write });
+    errdefer master_file.close(std.Options.debug_io);
+    const master = master_file.handle;
 
     var unlock: c_int = 0;
     if (std.posix.errno(std.posix.system.ioctl(master, std.posix.T.IOCSPTLCK, @intFromPtr(&unlock))) != .SUCCESS) return error.PtyUnlockFailed;
@@ -190,26 +198,27 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
     var env_arena = std.heap.ArenaAllocator.init(allocator);
     defer env_arena.deinit();
-    var env_map = try std.process.getEnvMap(env_arena.allocator());
+    var env_map = try compat.currentEnvMap(env_arena.allocator());
     try env_map.put("TERM", "xterm-256color");
     try env_map.put("LANG", "C.UTF-8");
     try env_map.put("LC_ALL", "C.UTF-8");
-    const env = try std.process.createEnvironFromMap(env_arena.allocator(), &env_map, .{});
+    const env = try env_map.createPosixBlock(env_arena.allocator(), .{});
 
-    const pid = try std.posix.fork();
+    const pid = try compat.fork();
     if (pid == 0) {
-        _ = std.os.linux.setsid();
-        const slave = std.posix.openZ(slave_path.ptr, .{ .ACCMODE = .RDWR }, 0) catch std.posix.exit(127);
+        _ = compat.setsid() catch {};
+        const slave_file = compat.openFile(slave_path_raw, .{ .mode = .read_write }) catch std.process.exit(127);
+        const slave = slave_file.handle;
         _ = std.posix.system.ioctl(slave, std.posix.T.IOCSCTTY, @as(c_int, 0));
-        std.posix.dup2(slave, std.posix.STDIN_FILENO) catch std.posix.exit(127);
-        std.posix.dup2(slave, std.posix.STDOUT_FILENO) catch std.posix.exit(127);
-        std.posix.dup2(slave, std.posix.STDERR_FILENO) catch std.posix.exit(127);
-        if (slave > 2) std.posix.close(slave);
-        std.posix.close(master);
-        std.posix.execveZ(shell.ptr, &argv, env.ptr) catch std.posix.exit(127);
+        compat.dup2(slave, std.posix.STDIN_FILENO) catch std.process.exit(127);
+        compat.dup2(slave, std.posix.STDOUT_FILENO) catch std.process.exit(127);
+        compat.dup2(slave, std.posix.STDERR_FILENO) catch std.process.exit(127);
+        if (slave > 2) compat.closeFd(slave);
+        compat.closeFd(master);
+        compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
     }
 
-    const pty_file = std.fs.File{ .handle = master };
+    const pty_file = std.Io.File{ .handle = master, .flags = .{ .nonblocking = false } };
     var initial_size = std.posix.winsize{ .row = 24, .col = 80, .xpixel = 0, .ypixel = 0 };
     _ = std.posix.system.ioctl(master, std.posix.T.IOCSWINSZ, @intFromPtr(&initial_size));
     return .{ .input = pty_file, .output = pty_file, .pid = pid };
@@ -228,11 +237,11 @@ fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
     var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
     var env_arena = std.heap.ArenaAllocator.init(allocator);
     defer env_arena.deinit();
-    var env_map = try std.process.getEnvMap(env_arena.allocator());
+    var env_map = try compat.currentEnvMap(env_arena.allocator());
     try env_map.put("TERM", "xterm-256color");
     try env_map.put("LANG", "C.UTF-8");
     try env_map.put("LC_ALL", "C.UTF-8");
-    const env = try std.process.createEnvironFromMap(env_arena.allocator(), &env_map, .{});
+    const env = try env_map.createPosixBlock(env_arena.allocator(), .{});
 
     var master_fd: c_int = -1;
     var slave_fd: c_int = -1;
@@ -240,40 +249,29 @@ fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
     if (openpty(&master_fd, &slave_fd, null, null, &initial_size) != 0) return error.PtyOpenFailed;
     const master: std.posix.fd_t = @intCast(master_fd);
     const slave: std.posix.fd_t = @intCast(slave_fd);
-    errdefer std.posix.close(master);
-    errdefer std.posix.close(slave);
+    errdefer compat.closeFd(master);
+    errdefer compat.closeFd(slave);
 
-    const pid = try std.posix.fork();
+    const pid = try compat.fork();
     if (pid == 0) {
-        _ = std.posix.setsid() catch {};
+        _ = compat.setsid() catch {};
         _ = ioctl(slave, tiocscttyRequest(), @as(c_int, 0));
-        std.posix.dup2(slave, std.posix.STDIN_FILENO) catch std.posix.exit(127);
-        std.posix.dup2(slave, std.posix.STDOUT_FILENO) catch std.posix.exit(127);
-        std.posix.dup2(slave, std.posix.STDERR_FILENO) catch std.posix.exit(127);
-        if (slave > 2) std.posix.close(slave);
-        std.posix.close(master);
-        std.posix.execveZ(shell.ptr, &argv, env.ptr) catch std.posix.exit(127);
+        compat.dup2(slave, std.posix.STDIN_FILENO) catch std.process.exit(127);
+        compat.dup2(slave, std.posix.STDOUT_FILENO) catch std.process.exit(127);
+        compat.dup2(slave, std.posix.STDERR_FILENO) catch std.process.exit(127);
+        if (slave > 2) compat.closeFd(slave);
+        compat.closeFd(master);
+        compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
     }
 
-    std.posix.close(slave);
-    const pty_file = std.fs.File{ .handle = master };
+    compat.closeFd(slave);
+    const pty_file = std.Io.File{ .handle = master, .flags = .{ .nonblocking = false } };
     return .{ .input = pty_file, .output = pty_file, .pid = pid };
 }
 
 fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
-    const shell = shellPath();
-    const argv = if (builtin.os.tag == .windows)
-        &.{shell}
-    else
-        &.{ "script", "-q", "/dev/null", shell };
-    var sh = std.process.Child.init(argv, allocator);
-    sh.stdin_behavior = .Pipe;
-    sh.stdout_behavior = .Pipe;
-    sh.stderr_behavior = .Ignore;
-    sh.env_map = try terminalEnv(allocator);
-    try sh.spawn();
-    if (sh.stdin == null or sh.stdout == null) return error.ShellPipeFailed;
-    return .{ .input = sh.stdin.?, .output = sh.stdout.?, .pid = if (builtin.os.tag == .windows) {} else sh.id };
+    _ = allocator;
+    return error.ShellPipeFailed;
 }
 
 fn tiocswinszRequest() c_ulong {
@@ -291,14 +289,14 @@ fn tiocscttyRequest() c_ulong {
 }
 
 fn shellPath() []const u8 {
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "SHELL")) |value| {
+    if (compat.getEnvVarOwned(std.heap.page_allocator, "SHELL")) |value| {
         if (value.len != 0) return value;
     } else |_| {}
     return "/bin/sh";
 }
 
 fn shellPathAlloc(allocator: std.mem.Allocator) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+    if (compat.getEnvVarOwned(allocator, "HOME")) |home| {
         defer allocator.free(home);
         if (passwdShellForHome(allocator, home)) |shell| {
             if (isExecutable(shell)) return shell;
@@ -314,7 +312,7 @@ fn shellPathAlloc(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn passwdShellForHome(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, "/etc/passwd", 1024 * 1024);
+    const bytes = try compat.readFileAlloc(allocator, "/etc/passwd", 1024 * 1024);
     defer allocator.free(bytes);
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
@@ -329,26 +327,27 @@ fn passwdShellForHome(allocator: std.mem.Allocator, home: []const u8) ![]const u
 }
 
 fn isExecutable(path: []const u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    file.close();
+    const file = compat.openFile(path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
-fn terminalEnv(allocator: std.mem.Allocator) !*std.process.EnvMap {
-    var env = try allocator.create(std.process.EnvMap);
-    env.* = std.process.EnvMap.init(allocator);
+fn terminalEnv(allocator: std.mem.Allocator) !*std.process.Environ.Map {
+    var env = try allocator.create(std.process.Environ.Map);
+    env.* = std.process.Environ.Map.init(allocator);
     try env.put("TERM", "xterm-256color");
     try env.put("LANG", "C.UTF-8");
     try env.put("LC_ALL", "C.UTF-8");
     return env;
 }
 
-fn pipeShellOutputToWs(allocator: std.mem.Allocator, from: std.fs.File, ws: *ws_client.Client) void {
+fn pipeShellOutputToWs(allocator: std.mem.Allocator, from: std.Io.File, ws: *ws_client.Client) void {
     defer ws.release(allocator);
-    var reader = from.deprecatedReader();
+    var reader_buf: [4096]u8 = undefined;
+    var reader = from.reader(std.Options.debug_io, &reader_buf);
     var buf: [4096]u8 = undefined;
     while (true) {
-        const n = reader.read(&buf) catch return;
+        const n = reader.interface.readSliceShort(&buf) catch return;
         if (n == 0) return;
         ws.writeBinary(buf[0..n]) catch return;
     }

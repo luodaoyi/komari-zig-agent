@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const config = @import("config.zig");
 const http = @import("protocol/http.zig");
 const version = @import("version.zig");
+const compat = @import("compat");
 
 /// Self-update flow with release lookup, checksum validation, and rollback.
 pub const repo = version.repo;
@@ -73,15 +74,15 @@ pub fn pendingAction(state: PendingUpdateState) PendingAction {
 }
 
 pub fn allocPendingStateJson(allocator: std.mem.Allocator, state: PendingUpdateState) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try out.writer(allocator).print("{f}", .{std.json.fmt(.{
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try out.writer.print("{f}", .{std.json.fmt(.{
         .previous_version = state.previous_version,
         .target_version = state.target_version,
         .backup_path = state.backup_path,
         .attempts = state.attempts,
     }, .{})});
-    return out.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 pub fn parsePendingState(allocator: std.mem.Allocator, body: []const u8) !PendingUpdateState {
@@ -104,7 +105,7 @@ pub fn parsePendingState(allocator: std.mem.Allocator, body: []const u8) !Pendin
 }
 
 pub fn recoverPendingUpdate(allocator: std.mem.Allocator) !void {
-    const exe = try std.fs.selfExePathAlloc(allocator);
+    const exe = try compat.selfExePathAlloc(allocator);
     defer allocator.free(exe);
     const state_path = try pendingStatePath(allocator, exe);
     defer allocator.free(state_path);
@@ -132,7 +133,7 @@ pub fn recoverPendingUpdate(allocator: std.mem.Allocator) !void {
             try writePendingStateFile(allocator, state_path, state);
         },
         .rollback => {
-            std.fs.renameAbsolute(state.backup_path, exe) catch |err| switch (err) {
+            compat.renameAbsolute(state.backup_path, exe) catch |err| switch (err) {
                 error.FileNotFound => {
                     deleteFileIgnoreMissing(state_path);
                     return;
@@ -146,17 +147,17 @@ pub fn recoverPendingUpdate(allocator: std.mem.Allocator) !void {
 }
 
 pub fn hasPendingUpdate(allocator: std.mem.Allocator) bool {
-    const exe = std.fs.selfExePathAlloc(allocator) catch return false;
+    const exe = compat.selfExePathAlloc(allocator) catch return false;
     defer allocator.free(exe);
     const state_path = pendingStatePath(allocator, exe) catch return false;
     defer allocator.free(state_path);
-    var file = std.fs.openFileAbsolute(state_path, .{}) catch return false;
-    file.close();
+    var file = compat.openFileAbsolute(state_path, .{}) catch return false;
+    file.close(std.Options.debug_io);
     return true;
 }
 
 pub fn confirmPendingUpdate(allocator: std.mem.Allocator) !bool {
-    const exe = try std.fs.selfExePathAlloc(allocator);
+    const exe = try compat.selfExePathAlloc(allocator);
     defer allocator.free(exe);
     const state_path = try pendingStatePath(allocator, exe);
     defer allocator.free(state_path);
@@ -202,7 +203,7 @@ pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
 
 fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     while (true) {
-        std.Thread.sleep(6 * 60 * 60 * std.time.ns_per_s);
+        compat.sleep(6 * 60 * 60 * std.time.ns_per_s);
         checkAndUpdate(allocator, cfg) catch {};
     }
 }
@@ -218,7 +219,7 @@ fn downloadAndReplace(
 ) !void {
     const expected = try expectedSha256(allocator, cfg, asset_name, digest, sums_url);
     defer if (expected) |value| allocator.free(value);
-    const exe = try std.fs.selfExePathAlloc(allocator);
+    const exe = try compat.selfExePathAlloc(allocator);
     defer allocator.free(exe);
     const tmp = try std.fmt.allocPrint(allocator, "{s}.update", .{exe});
     defer allocator.free(tmp);
@@ -228,8 +229,8 @@ fn downloadAndReplace(
     const state_path = try pendingStatePath(allocator, exe);
     defer allocator.free(state_path);
     {
-        var file = try std.fs.createFileAbsolute(tmp, .{ .truncate = true, .mode = 0o755 });
-        defer file.close();
+        var file = try compat.createFileAbsolute(tmp, .{ .truncate = true, .permissions = .executable_file });
+        defer file.close(std.Options.debug_io);
         try downloadReleaseAssetToFile(allocator, url, cfg, expected, file);
     }
     try runBinaryPreflight(allocator, tmp);
@@ -242,7 +243,7 @@ fn downloadAndReplace(
         .attempts = 0,
     });
     errdefer deleteFileIgnoreMissing(state_path);
-    try std.fs.renameAbsolute(tmp, exe);
+    try compat.renameAbsolute(tmp, exe);
     std.process.exit(42);
 }
 
@@ -261,7 +262,7 @@ fn expectedSha256(allocator: std.mem.Allocator, cfg: config.Config, asset_name: 
     return copy;
 }
 
-fn downloadReleaseAssetToFile(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, expected_sha256: ?[]const u8, file: std.fs.File) !void {
+fn downloadReleaseAssetToFile(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, expected_sha256: ?[]const u8, file: std.Io.File) !void {
     const expected = expected_sha256 orelse return error.ReleaseChecksumMissing;
     const digest = try downloadGithubUrlToFileUnchecked(allocator, url, cfg, file);
     if (!sha256DigestMatches(&digest, expected)) return error.ReleaseChecksumMismatch;
@@ -270,7 +271,7 @@ fn downloadReleaseAssetToFile(allocator: std.mem.Allocator, url: []const u8, cfg
 fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
     if (http.getReadCfg(allocator, url, cfg)) |body| return body else |err| {
         var last_err = err;
-        if (std.process.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
+        if (compat.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
             defer allocator.free(env_value);
             var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
             while (it.next()) |proxy| {
@@ -279,7 +280,7 @@ fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg
                 if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |proxy_err| last_err = proxy_err;
             }
         } else |env_err| switch (env_err) {
-            error.EnvironmentVariableNotFound => {
+            error.EnvironmentVariableMissing => {
                 for (&default_github_proxies) |proxy| {
                     const proxied = try githubProxyUrl(allocator, proxy, url);
                     defer allocator.free(proxied);
@@ -292,10 +293,10 @@ fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg
     }
 }
 
-fn downloadGithubUrlToFileUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, file: std.fs.File) ![32]u8 {
+fn downloadGithubUrlToFileUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, file: std.Io.File) ![32]u8 {
     if (http.getToFileSha256Cfg(allocator, url, cfg, file)) |digest| return digest else |err| {
         var last_err = err;
-        if (std.process.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
+        if (compat.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
             defer allocator.free(env_value);
             var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
             while (it.next()) |proxy| {
@@ -304,7 +305,7 @@ fn downloadGithubUrlToFileUnchecked(allocator: std.mem.Allocator, url: []const u
                 if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |proxy_err| last_err = proxy_err;
             }
         } else |env_err| switch (env_err) {
-            error.EnvironmentVariableNotFound => {
+            error.EnvironmentVariableMissing => {
                 for (&default_github_proxies) |proxy| {
                     const proxied = try githubProxyUrl(allocator, proxy, url);
                     defer allocator.free(proxied);
@@ -318,7 +319,7 @@ fn downloadGithubUrlToFileUnchecked(allocator: std.mem.Allocator, url: []const u
 }
 
 pub fn githubProxyUrl(allocator: std.mem.Allocator, proxy: []const u8, url: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.trimRight(u8, proxy, "/"), url });
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ std.mem.trimEnd(u8, proxy, "/"), url });
 }
 
 fn sha256DigestHex(value: []const u8) ?[]const u8 {
@@ -498,45 +499,35 @@ fn backupPath(allocator: std.mem.Allocator, exe: []const u8) ![]const u8 {
 fn writePendingStateFile(allocator: std.mem.Allocator, path: []const u8, state: PendingUpdateState) !void {
     const body = try allocPendingStateJson(allocator, state);
     defer allocator.free(body);
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
-    try file.writeAll(body);
+    var file = try compat.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
+    try file.writeStreamingAll(std.Options.debug_io, body);
 }
 
 fn readSmallFile(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    return file.readToEndAlloc(allocator, 64 * 1024);
+    return compat.readFileAlloc(allocator, path, 64 * 1024);
 }
 
 fn copyFileAbsolute(src: []const u8, dst: []const u8) !void {
-    var in_file = try std.fs.openFileAbsolute(src, .{});
-    defer in_file.close();
-    var out_file = try std.fs.createFileAbsolute(dst, .{ .truncate = true, .mode = 0o755 });
-    defer out_file.close();
-    var buf: [64 * 1024]u8 = undefined;
-    while (true) {
-        const n = try in_file.read(&buf);
-        if (n == 0) break;
-        try out_file.writeAll(buf[0..n]);
-    }
+    try compat.copyFileAbsolute(src, dst, .executable_file);
 }
 
 fn runBinaryPreflight(allocator: std.mem.Allocator, path: []const u8) !void {
-    var child = std.process.Child.init(&.{ path, "--show-warning" }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const term = try child.wait();
-    switch (term) {
-        .Exited => |code| if (code != 0) return error.UpdatePreflightFailed,
+    const result = try std.process.run(allocator, std.Options.debug_io, .{
+        .argv = &.{ path, "--show-warning" },
+        .stdout_limit = .limited(0),
+        .stderr_limit = .limited(0),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.UpdatePreflightFailed,
         else => return error.UpdatePreflightFailed,
     }
 }
 
 fn deleteFileIgnoreMissing(path: []const u8) void {
-    std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+    compat.deleteFileAbsolute(path) catch |err| switch (err) {
         error.FileNotFound => {},
         else => {},
     };

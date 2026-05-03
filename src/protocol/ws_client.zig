@@ -2,6 +2,7 @@ const std = @import("std");
 const http = @import("http.zig");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
+const compat = @import("compat");
 
 /// Websocket client, framing, and buffer-pool management for agent links.
 pub const Target = struct {
@@ -31,7 +32,7 @@ pub const Client = struct {
     raw: ?*raw_conn.RawConn = null,
     proxy_arena: ?std.heap.ArenaAllocator = null,
     read_pool: FrameBufferPool = .{},
-    write_mutex: std.Thread.Mutex = .{},
+    write_mutex: compat.Mutex = .{},
     refs: std.atomic.Value(usize) = std.atomic.Value(usize).init(1),
     closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -147,7 +148,7 @@ const read_pool_capacity = 64 * 1024;
 const FrameBufferPool = struct {
     buffer: ?[]u8 = null,
     in_use: bool = false,
-    mutex: std.Thread.Mutex = .{},
+    mutex: compat.Mutex = .{},
 
     fn deinit(self: *FrameBufferPool, allocator: std.mem.Allocator) void {
         if (self.buffer) |buffer| allocator.free(buffer);

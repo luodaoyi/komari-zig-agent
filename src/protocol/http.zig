@@ -1,6 +1,8 @@
 const std = @import("std");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
+const net_compat = @import("net_compat");
+const compat = @import("compat");
 
 /// HTTP and proxy helpers shared by agent protocol clients.
 pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
@@ -135,7 +137,7 @@ pub fn collectBoundedResponseForTest(allocator: std.mem.Allocator, limit: usize,
     return response_writer.toOwnedSlice();
 }
 
-pub fn writeResponseToFileSha256ForTest(allocator: std.mem.Allocator, response: []const u8, file: std.fs.File) ![32]u8 {
+pub fn writeResponseToFileSha256ForTest(allocator: std.mem.Allocator, response: []const u8, file: std.Io.File) ![32]u8 {
     var reader: std.Io.Reader = .fixed(response);
     return readHttpBodyToFileSha256(allocator, file, &reader);
 }
@@ -195,14 +197,14 @@ pub fn getReadCfgFamily(allocator: std.mem.Allocator, url: []const u8, cfg: anyt
     return requestReadWithFamily(allocator, ascii_url, "GET", "", "", cfg, family, user_agent);
 }
 
-pub fn getToFileSha256Cfg(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.fs.File) ![32]u8 {
+pub fn getToFileSha256Cfg(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) ![32]u8 {
     const ascii_url = try idna.convertUrlToAscii(allocator, url);
     defer allocator.free(ascii_url);
     return requestToFileSha256(allocator, ascii_url, cfg, file);
 }
 
 pub fn trimEndpoint(endpoint: []const u8) []const u8 {
-    return std.mem.trimRight(u8, endpoint, "/");
+    return std.mem.trimEnd(u8, endpoint, "/");
 }
 
 pub fn basicInfoUrl(allocator: std.mem.Allocator, endpoint: []const u8, token: []const u8) ![]const u8 {
@@ -281,16 +283,16 @@ fn wsEndpoint(allocator: std.mem.Allocator, endpoint: []const u8) ![]const u8 {
 }
 
 fn percentEncode(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
     for (value) |b| {
         if (isUnreserved(b)) {
-            try out.append(allocator, b);
+            try out.writer.writeByte(b);
         } else {
-            try out.writer(allocator).print("%{X:0>2}", .{b});
+            try out.writer.print("%{X:0>2}", .{b});
         }
     }
-    return out.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 fn isUnreserved(b: u8) bool {
@@ -387,7 +389,7 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
     while (true) : (attempt += 1) {
         const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family) catch |err| {
             if (attempt < max_retries) {
-                std.Thread.sleep(2 * std.time.ns_per_s);
+                compat.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
@@ -413,7 +415,7 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
         try conn.flush();
         const response = readHttpResponse(allocator, conn.reader()) catch |err| {
             if (attempt < max_retries) {
-                std.Thread.sleep(2 * std.time.ns_per_s);
+                compat.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
@@ -424,14 +426,14 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
         }
         allocator.free(response.body);
         if (attempt < max_retries) {
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            compat.sleep(2 * std.time.ns_per_s);
             continue;
         }
         return error.HttpStatusNotOk;
     }
 }
 
-fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.fs.File) ![32]u8 {
+fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) ![32]u8 {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -443,11 +445,12 @@ fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anyty
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        try file.seekTo(0);
-        try file.setEndPos(0);
+        var reset_writer = file.writer(std.Options.debug_io, &.{});
+        try reset_writer.seekTo(0);
+        try file.setLength(std.Options.debug_io, 0);
         const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any) catch |err| {
             if (attempt < max_retries) {
-                std.Thread.sleep(2 * std.time.ns_per_s);
+                compat.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
@@ -467,7 +470,7 @@ fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anyty
 
         const digest = readHttpBodyToFileSha256(allocator, file, conn.reader()) catch |err| {
             if (attempt < max_retries) {
-                std.Thread.sleep(2 * std.time.ns_per_s);
+                compat.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
@@ -515,7 +518,7 @@ fn readHttpResponse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !HttpR
     return .{ .status = status, .body = try allocator.dupe(u8, "") };
 }
 
-fn readHttpBodyToFileSha256(allocator: std.mem.Allocator, file: std.fs.File, reader: *std.Io.Reader) ![32]u8 {
+fn readHttpBodyToFileSha256(allocator: std.mem.Allocator, file: std.Io.File, reader: *std.Io.Reader) ![32]u8 {
     const header = try readHeader(allocator, reader);
     defer allocator.free(header);
     const status = try parseStatus(header);
@@ -539,26 +542,26 @@ fn readHttpBodyToFileSha256(allocator: std.mem.Allocator, file: std.fs.File, rea
     return digest;
 }
 
-fn readFixedToFileSha256(file: std.fs.File, reader: *std.Io.Reader, len: usize, hasher: *std.crypto.hash.sha2.Sha256) !void {
+fn readFixedToFileSha256(file: std.Io.File, reader: *std.Io.Reader, len: usize, hasher: *std.crypto.hash.sha2.Sha256) !void {
     var remaining = len;
     var buf: [32 * 1024]u8 = undefined;
     while (remaining != 0) {
         const n = @min(remaining, buf.len);
         try reader.readSliceAll(buf[0..n]);
-        try file.writeAll(buf[0..n]);
+        try file.writeStreamingAll(std.Options.debug_io, buf[0..n]);
         hasher.update(buf[0..n]);
         remaining -= n;
     }
 }
 
-fn readUntilEndToFileSha256(file: std.fs.File, reader: *std.Io.Reader, hasher: *std.crypto.hash.sha2.Sha256) !void {
+fn readUntilEndToFileSha256(file: std.Io.File, reader: *std.Io.Reader, hasher: *std.crypto.hash.sha2.Sha256) !void {
     var total: usize = 0;
     var buf: [32 * 1024]u8 = undefined;
     while (true) {
         const n = try reader.readSliceShort(&buf);
         if (n == 0) break;
         if (n > max_response_body_bytes - total) return error.HttpResponseTooLarge;
-        try file.writeAll(buf[0..n]);
+        try file.writeStreamingAll(std.Options.debug_io, buf[0..n]);
         hasher.update(buf[0..n]);
         total += n;
     }
@@ -619,7 +622,7 @@ fn readChunked(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-fn readChunkedToFileSha256(file: std.fs.File, reader: *std.Io.Reader, hasher: *std.crypto.hash.sha2.Sha256) !void {
+fn readChunkedToFileSha256(file: std.Io.File, reader: *std.Io.Reader, hasher: *std.crypto.hash.sha2.Sha256) !void {
     var total: usize = 0;
     var line_buf: [128]u8 = undefined;
     while (true) {
@@ -681,8 +684,8 @@ fn proxyFromProcess(allocator: std.mem.Allocator, scheme: []const u8, host: []co
     else
         return null;
     for (names) |name| {
-        const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => continue,
+        const value = compat.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.EnvironmentVariableMissing => continue,
             else => |e| return e,
         };
         if (value.len != 0) return value;
@@ -695,8 +698,8 @@ fn noProxyMatchesProcess(allocator: std.mem.Allocator, host: []const u8, port: u
     if (isAlwaysDirectHost(host)) return true;
     const names = [_][]const u8{ "NO_PROXY", "no_proxy" };
     for (&names) |name| {
-        const value = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => continue,
+        const value = compat.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.EnvironmentVariableMissing => continue,
             else => |e| return e,
         };
         defer allocator.free(value);
@@ -757,7 +760,7 @@ fn splitNoProxyEntry(entry: []const u8) NoProxyEntry {
 }
 
 fn hostMatchesNoProxy(host: []const u8, token_raw: []const u8) bool {
-    var token = std.mem.trimRight(u8, token_raw, ".");
+    var token = std.mem.trimEnd(u8, token_raw, ".");
     if (token.len == 0) return false;
     if (std.mem.indexOfScalar(u8, token, ':') != null) {
         return std.ascii.eqlIgnoreCase(host, token);
@@ -805,8 +808,8 @@ fn parseIpBytes(value: []const u8) ?IpBytes {
         @memcpy(out[0..4], &bytes);
         return .{ .bytes = out, .len = 4 };
     }
-    const parsed = std.net.Address.parseIp6(value, 0) catch return null;
-    return .{ .bytes = parsed.in6.sa.addr, .len = 16 };
+    const parsed = net_compat.net.IpAddress.parseIp6(value, 0) catch return null;
+    return .{ .bytes = parsed.ip6.bytes, .len = 16 };
 }
 
 fn parseIpv4Bytes(value: []const u8) ?[4]u8 {
@@ -846,7 +849,9 @@ fn parseProxyUrl(allocator: std.mem.Allocator, value: []const u8) !ProxyTarget {
     const uri = try std.Uri.parse(with_scheme);
     const is_https = std.ascii.eqlIgnoreCase(uri.scheme, "https");
     if (!is_https and !std.ascii.eqlIgnoreCase(uri.scheme, "http")) return error.UnsupportedProxyScheme;
-    const host = try uri.getHostAlloc(allocator);
+    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const host_name = try uri.getHost(&host_buf);
+    const host = try allocator.dupe(u8, host_name.bytes);
     errdefer allocator.free(host);
     const authorization = try basicProxyAuthorization(allocator, uri);
     errdefer if (authorization) |auth| allocator.free(auth);

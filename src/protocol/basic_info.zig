@@ -6,9 +6,9 @@ const common = @import("../platform/common.zig");
 
 /// BasicInfo payload serialization and upload helpers.
 pub fn allocBasicInfoJson(allocator: std.mem.Allocator, info: common.BasicInfo, include_kernel: bool) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-    try types.writeBasicInfoJson(out.writer(allocator), .{
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    try types.writeBasicInfoJson(&out.writer, .{
         .cpu_name = info.cpu.name,
         .cpu_cores = info.cpu.cores,
         .arch = info.cpu.architecture,
@@ -23,7 +23,7 @@ pub fn allocBasicInfoJson(allocator: std.mem.Allocator, info: common.BasicInfo, 
         .virtualization = info.virtualization,
         .version = version.current,
     }, include_kernel);
-    return out.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 pub fn upload(allocator: std.mem.Allocator, cfg: anytype, info: common.BasicInfo) !void {
