@@ -1,5 +1,6 @@
 const std = @import("std");
 const http = @import("http.zig");
+const raw_conn = @import("raw_conn.zig");
 
 const ipv4_apis = [_][]const u8{
     "https://www.visa.cn/cdn-cgi/trace",
@@ -19,19 +20,24 @@ const ipv6_apis = [_][]const u8{
 };
 
 pub fn getIPv4Address(allocator: std.mem.Allocator, cfg: anytype) ![]const u8 {
-    for (&ipv4_apis) |url| {
-        const body = http.getReadCfgFamily(allocator, url, cfg, .ipv4, "curl/8.0.1") catch continue;
-        defer allocator.free(body);
-        if (findIPv4(body)) |ip| return allocator.dupe(u8, ip);
-    }
-    return allocator.dupe(u8, "");
+    return getAddressFromApis(allocator, cfg, &ipv4_apis, .ipv4, findIPv4);
 }
 
 pub fn getIPv6Address(allocator: std.mem.Allocator, cfg: anytype) ![]const u8 {
-    for (&ipv6_apis) |url| {
-        const body = http.getReadCfgFamily(allocator, url, cfg, .ipv6, "curl/8.0.1") catch continue;
+    return getAddressFromApis(allocator, cfg, &ipv6_apis, .ipv6, findIPv6);
+}
+
+fn getAddressFromApis(
+    allocator: std.mem.Allocator,
+    cfg: anytype,
+    apis: []const []const u8,
+    family: raw_conn.AddressFamily,
+    finder: fn ([]const u8) ?[]const u8,
+) ![]const u8 {
+    for (apis) |url| {
+        const body = http.getReadCfgFamily(allocator, url, cfg, family, "curl/8.0.1") catch continue;
         defer allocator.free(body);
-        if (findIPv6(body)) |ip| return allocator.dupe(u8, ip);
+        if (finder(body)) |addr| return allocator.dupe(u8, addr);
     }
     return allocator.dupe(u8, "");
 }

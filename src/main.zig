@@ -70,7 +70,9 @@ pub fn main() !void {
     defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
 
     if (!cfg.disable_auto_update and !update.hasPendingUpdate(allocator)) {
-        try update.checkAndUpdate(allocator, cfg);
+        update.checkAndUpdate(allocator, cfg) catch |err| {
+            try stdout.print("Auto update check failed: {s}\n", .{@errorName(err)});
+        };
         update.startBackground(allocator, cfg);
     }
 

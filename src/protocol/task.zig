@@ -61,7 +61,7 @@ pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !Co
 pub fn uploadExecResult(allocator: std.mem.Allocator, cfg: anytype, task_id: []const u8, command: []const u8) !void {
     if (task_id.len == 0) return;
     const result = if (cfg.disable_web_ssh)
-        CommandResult{ .output = try allocator.dupe(u8, "Remote control is disabled."), .exit_code = -1 }
+        try disabledRemoteControlResult(allocator)
     else
         try runCommandDetailed(allocator, command);
     defer result.deinit(allocator);
@@ -73,6 +73,13 @@ pub fn uploadExecResult(allocator: std.mem.Allocator, cfg: anytype, task_id: []c
     const url = try http.taskResultUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
     try http.postJson(allocator, url, payload, cfg);
+}
+
+pub fn disabledRemoteControlResult(allocator: std.mem.Allocator) !CommandResult {
+    return .{
+        .output = try allocator.dupe(u8, "Remote control is disabled."),
+        .exit_code = -1,
+    };
 }
 
 pub fn normalizeCommandOutput(allocator: std.mem.Allocator, output: []const u8) ![]const u8 {

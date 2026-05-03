@@ -1142,13 +1142,28 @@ pub fn globMatch(pattern: []const u8, value: []const u8) bool {
 fn cpuName(allocator: std.mem.Allocator) ![]const u8 {
     const bytes = std.fs.cwd().readFileAlloc(allocator, "/proc/cpuinfo", 256 * 1024) catch return allocator.dupe(u8, "Unknown");
     defer allocator.free(bytes);
+    if (parseCpuNameFromCpuInfo(bytes)) |name| return allocator.dupe(u8, name);
+    return allocator.dupe(u8, "Unknown");
+}
+
+pub fn parseCpuNameFromCpuInfo(bytes: []const u8) ?[]const u8 {
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
-        if (std.mem.startsWith(u8, line, "model name") or std.mem.startsWith(u8, line, "Hardware") or std.mem.startsWith(u8, line, "Processor")) {
-            if (std.mem.indexOfScalar(u8, line, ':')) |idx| return allocator.dupe(u8, std.mem.trim(u8, line[idx + 1 ..], " \t"));
-        }
+        const idx = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..idx], " \t");
+        if (!isCpuNameKey(key)) continue;
+        const value = std.mem.trim(u8, line[idx + 1 ..], " \t\r");
+        if (value.len != 0) return value;
     }
-    return allocator.dupe(u8, "Unknown");
+    return null;
+}
+
+fn isCpuNameKey(key: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(key, "model name") or
+        std.ascii.eqlIgnoreCase(key, "model") or
+        std.ascii.eqlIgnoreCase(key, "hardware") or
+        std.ascii.eqlIgnoreCase(key, "processor") or
+        std.ascii.eqlIgnoreCase(key, "cpu model");
 }
 
 fn memInfo() !common.MemInfo {

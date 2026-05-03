@@ -13,3 +13,10 @@ test "crlf output is normalized to lf" {
     defer std.testing.allocator.free(normalized);
     try std.testing.expectEqualStrings("a\nb\n", normalized);
 }
+
+test "disabled remote control result does not execute command" {
+    const result = try task.disabledRemoteControlResult(std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Remote control is disabled.", result.output);
+    try std.testing.expectEqual(@as(i32, -1), result.exit_code);
+}

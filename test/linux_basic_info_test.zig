@@ -62,6 +62,14 @@ test "container virtualization parser recognizes common cgroup forms" {
     try std.testing.expectEqualStrings("", linux.detectContainerFromCgroup("0::/user.slice\n"));
 }
 
+test "cpuinfo parser handles common non-x86 model keys" {
+    try std.testing.expectEqualStrings("AMD Ryzen 9", linux.parseCpuNameFromCpuInfo("model name\t: AMD Ryzen 9\n") orelse "");
+    try std.testing.expectEqualStrings("Loongson-3A6000", linux.parseCpuNameFromCpuInfo("cpu model\t\t: Loongson-3A6000\n") orelse "");
+    try std.testing.expectEqualStrings("ARMv8 Processor rev 4", linux.parseCpuNameFromCpuInfo("Processor\t: ARMv8 Processor rev 4\n") orelse "");
+    try std.testing.expectEqualStrings("BCM2835", linux.parseCpuNameFromCpuInfo("Hardware\t: BCM2835\n") orelse "");
+    try std.testing.expect(linux.parseCpuNameFromCpuInfo("bogomips\t: 100.00\n") == null);
+}
+
 test "meminfo parser honors memory modes" {
     const text =
         \\MemTotal:       1000 kB
