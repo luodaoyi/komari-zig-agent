@@ -270,8 +270,28 @@ fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
 }
 
 fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
-    _ = allocator;
-    return error.ShellPipeFailed;
+    const shell = shellPath();
+    const argv = if (builtin.os.tag == .windows)
+        &.{shell}
+    else
+        &.{ "script", "-q", "/dev/null", shell };
+    var child = try std.process.spawn(std.Options.debug_io, .{
+        .argv = argv,
+        .environ_map = try terminalEnv(allocator),
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+        .create_no_window = builtin.os.tag == .windows,
+    });
+    if (child.stdin == null or child.stdout == null) {
+        child.kill(std.Options.debug_io);
+        return error.ShellPipeFailed;
+    }
+    return .{
+        .input = child.stdin.?,
+        .output = child.stdout.?,
+        .pid = if (builtin.os.tag == .windows) {} else child.id orelse return error.ShellPipeFailed,
+    };
 }
 
 fn tiocswinszRequest() c_ulong {
