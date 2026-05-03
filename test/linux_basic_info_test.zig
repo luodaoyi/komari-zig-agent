@@ -94,3 +94,10 @@ test "proc path uses host proc root when provided" {
     defer std.testing.allocator.free(normalized);
     try std.testing.expect(std.mem.endsWith(u8, normalized, "host/proc/net/dev"));
 }
+
+test "per second rate handles deltas and resets" {
+    try std.testing.expectEqual(@as(u64, 2000), linux.perSecond(3000, 1000, 1000));
+    try std.testing.expectEqual(@as(u64, 1000), linux.perSecond(3000, 1000, 2000));
+    try std.testing.expectEqual(@as(u64, 0), linux.perSecond(1000, 3000, 1000));
+    try std.testing.expectEqual(@as(u64, 0), linux.perSecond(3000, 1000, 0));
+}
