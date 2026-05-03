@@ -30,6 +30,10 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Test
         run: zig build test
+      - name: Test Windows install script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./test/install_ps1_static_test.ps1
 
   coverage:
     name: Coverage (Linux)

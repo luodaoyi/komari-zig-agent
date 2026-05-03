@@ -136,6 +136,18 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/inst
   --token TOKEN
 ```
 
+Windows PowerShell 管理员安装：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.ps1' -UseBasicParsing -OutFile 'install.ps1'; & '.\install.ps1' '-e' 'https://panel.example' '-t' 'TOKEN'"
+```
+
+Windows 国内网络可先用镜像拉脚本，脚本内 Release 资产下载仍可用 `--install-ghproxy`：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://gh.llkk.cc/https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.ps1' -UseBasicParsing -OutFile 'install.ps1'; & '.\install.ps1' '--install-ghproxy' 'https://gh.llkk.cc' '-e' 'https://panel.example' '-t' 'TOKEN'"
+```
+
 常用安装参数：
 
 ```text
