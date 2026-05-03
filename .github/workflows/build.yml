@@ -205,6 +205,11 @@ jobs:
             platform: linux/amd64
             target: x86_64-linux-musl
             binary: komari-agent
+          - name: centos-7
+            image: quay.io/centos/centos:7
+            platform: linux/amd64
+            target: x86_64-linux-musl
+            binary: komari-agent
           - name: rocky
             image: rockylinux:9
             platform: linux/amd64
@@ -252,7 +257,12 @@ jobs:
       - name: Run appliance image smoke
         run: |
           set -eu
-          docker run --platform "${{ matrix.platform }}" --rm -v "$PWD/${{ matrix.binary }}:/komari-agent:ro" "${{ matrix.image }}" /komari-agent --show-warning
+          docker run --platform "${{ matrix.platform }}" --rm -v "$PWD/${{ matrix.binary }}:/komari-agent:ro" "${{ matrix.image }}" /bin/sh -c '
+            set -eu
+            out="$(/komari-agent --endpoint http://127.0.0.1:1 --token smoke --disable-auto-update --max-retries 0 --reconnect-interval 1 2>&1 || true)"
+            printf "%s\n" "$out"
+            printf "%s\n" "$out" | grep -Eq "Monitoring Interfaces: \[[^]]+\]"
+          '
 
   linux-arch-agent-smoke:
     name: Linux Arch Agent Smoke (${{ matrix.arch }})

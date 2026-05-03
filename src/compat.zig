@@ -35,7 +35,20 @@ pub fn getEnvVarOwned(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
 }
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(std.Options.debug_io, path, allocator, .limited(max_bytes));
+    var file = try openFile(path, .{});
+    defer file.close(std.Options.debug_io);
+    var reader_buf: [4096]u8 = undefined;
+    var read_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.Options.debug_io, &reader_buf);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    while (true) {
+        const n = try reader.interface.readSliceShort(&read_buf);
+        if (n == 0) break;
+        if (out.items.len + n > max_bytes) return error.StreamTooLong;
+        try out.appendSlice(allocator, read_buf[0..n]);
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 pub fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -43,10 +56,16 @@ pub fn selfExePathAlloc(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn statFile(path: []const u8) !std.Io.Dir.Stat {
+    if (std.fs.path.isAbsolute(path)) {
+        const file = try openFileAbsolute(path, .{});
+        defer file.close(std.Options.debug_io);
+        return file.stat(std.Options.debug_io);
+    }
     return std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{});
 }
 
 pub fn openFile(path: []const u8, options: std.Io.Dir.OpenFileOptions) !std.Io.File {
+    if (std.fs.path.isAbsolute(path)) return openFileAbsolute(path, options);
     return std.Io.Dir.cwd().openFile(std.Options.debug_io, path, options);
 }
 
@@ -59,6 +78,7 @@ pub fn createFileAbsolute(path: []const u8, options: std.Io.Dir.CreateFileOption
 }
 
 pub fn openDir(path: []const u8, options: std.Io.Dir.OpenOptions) !std.Io.Dir {
+    if (std.fs.path.isAbsolute(path)) return std.Io.Dir.openDirAbsolute(std.Options.debug_io, path, options);
     return std.Io.Dir.cwd().openDir(std.Options.debug_io, path, options);
 }
 
