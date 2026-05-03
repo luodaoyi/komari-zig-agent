@@ -57,13 +57,12 @@ jobs:
           set -eu
           rm -rf coverage .zig-cache
           zig build test -Dcoverage=true -Dcoverage-dir="$PWD/coverage/raw"
-          kcov --merge "$PWD/coverage/merged" "$PWD"/coverage/raw/*
-          python3 scripts/check_coverage.py "$PWD/coverage/merged" 100
+          python3 scripts/check_coverage.py "$PWD/coverage/raw" 100
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: coverage-linux
-          path: coverage/merged
+          path: coverage/raw
           if-no-files-found: warn
 
   linux-distro-test:

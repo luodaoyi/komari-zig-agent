@@ -267,10 +267,7 @@ fn addTest(
 }
 
 fn isCoverageTest(test_path: []const u8) bool {
-    return std.mem.eql(u8, test_path, "test/task_test.zig") or
-        std.mem.eql(u8, test_path, "test/ping_test.zig") or
-        std.mem.eql(u8, test_path, "test/ip_extract_test.zig") or
-        std.mem.eql(u8, test_path, "test/report_interval_test.zig");
+    return std.mem.eql(u8, test_path, "test/ip_extract_test.zig");
 }
 
 fn coverageOutputPath(b: *std.Build, coverage_dir: []const u8, test_path: []const u8) []const u8 {
