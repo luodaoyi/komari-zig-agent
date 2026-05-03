@@ -119,48 +119,7 @@ pub const Client = struct {
 pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
     const ascii_url = try idna.convertUrlToAscii(allocator, url);
     defer allocator.free(ascii_url);
-    if (cfg.custom_dns.len != 0 or cfg.ignore_unsafe_cert) {
-        return connectRaw(allocator, ascii_url, cfg);
-    }
-    const uri = try std.Uri.parse(ascii_url);
-    var http_client = std.http.Client{ .allocator = allocator };
-    errdefer http_client.deinit();
-    var proxy_arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer proxy_arena.deinit();
-    try http.initDefaultProxiesForUrl(allocator, &http_client, proxy_arena.allocator(), ascii_url);
-
-    const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
-    var extra: [6]std.http.Header = undefined;
-    extra[0] = .{ .name = "Upgrade", .value = "websocket" };
-    extra[1] = .{ .name = "Connection", .value = "Upgrade" };
-    extra[2] = .{ .name = "Sec-WebSocket-Key", .value = nonce };
-    extra[3] = .{ .name = "Sec-WebSocket-Version", .value = "13" };
-    var cf: [2]std.http.Header = undefined;
-    const cf_headers = http.cloudflareHeaders(cfg, &cf);
-    var extra_len: usize = 4;
-    for (cf_headers) |header| {
-        extra[extra_len] = header;
-        extra_len += 1;
-    }
-
-    var req = try http_client.request(.GET, uri, .{
-        .keep_alive = true,
-        .redirect_behavior = .unhandled,
-        .extra_headers = extra[0..extra_len],
-    });
-    errdefer req.deinit();
-    try req.sendBodiless();
-    var redirect_buffer: [1024]u8 = undefined;
-    const response = try req.receiveHead(&redirect_buffer);
-    if (@intFromEnum(response.head.status) != 101) return error.WebSocketHandshakeFailed;
-
-    const client = try allocator.create(Client);
-    client.* = .{
-        .http_client = http_client,
-        .request = req,
-        .proxy_arena = proxy_arena,
-    };
-    return client;
+    return connectRaw(allocator, ascii_url, cfg);
 }
 
 fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {

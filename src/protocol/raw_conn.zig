@@ -8,14 +8,20 @@ pub const AddressFamily = enum {
     ipv6,
 };
 
+const CaBundleCache = if (std.http.Client.disable_tls) struct {} else struct {
+    mutex: std.Thread.Mutex = .{},
+    loaded: bool = false,
+    bundle: std.crypto.Certificate.Bundle = .{},
+};
+
+var ca_bundle_cache: CaBundleCache = .{};
+
 pub const RawConn = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
     stream_reader: std.net.Stream.Reader,
     stream_writer: std.net.Stream.Writer,
     tls_client: ?std.crypto.tls.Client = null,
-    ca_bundle: if (std.http.Client.disable_tls) void else std.crypto.Certificate.Bundle = if (std.http.Client.disable_tls) {} else .{},
-    verify_ca: bool = false,
     socket_read_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
     socket_write_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
     tls_read_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
@@ -104,15 +110,13 @@ pub const RawConn = struct {
                 },
             ) catch return error.TlsInitializationFailed;
         } else {
-            self.ca_bundle = .{};
-            try self.ca_bundle.rescan(self.allocator);
-            self.verify_ca = true;
+            const ca_bundle = try cachedCaBundle(self.allocator);
             self.tls_client = std.crypto.tls.Client.init(
                 self.stream_reader.interface(),
                 &self.stream_writer.interface,
                 .{
                     .host = .{ .explicit = tls_host },
-                    .ca = .{ .bundle = self.ca_bundle },
+                    .ca = .{ .bundle = ca_bundle },
                     .read_buffer = self.tls_read_buf[0..],
                     .write_buffer = self.tls_write_buf[0..],
                     .allow_truncation_attacks = true,
@@ -128,7 +132,6 @@ pub const RawConn = struct {
 
     pub fn close(self: *RawConn) void {
         self.shutdown();
-        if (!std.http.Client.disable_tls and self.verify_ca) self.ca_bundle.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -147,6 +150,18 @@ pub const RawConn = struct {
         try self.stream_writer.interface.flush();
     }
 };
+
+fn cachedCaBundle(allocator: std.mem.Allocator) !std.crypto.Certificate.Bundle {
+    if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
+    ca_bundle_cache.mutex.lock();
+    defer ca_bundle_cache.mutex.unlock();
+    if (!ca_bundle_cache.loaded) {
+        ca_bundle_cache.bundle = .{};
+        try ca_bundle_cache.bundle.rescan(allocator);
+        ca_bundle_cache.loaded = true;
+    }
+    return ca_bundle_cache.bundle;
+}
 
 fn familyMatches(addr: std.net.Address, family: AddressFamily) bool {
     return switch (family) {

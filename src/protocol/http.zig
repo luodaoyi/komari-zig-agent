@@ -148,48 +148,7 @@ pub fn postJsonReadAuth(allocator: std.mem.Allocator, url: []const u8, payload: 
     defer allocator.free(ascii_url);
     const authorization = if (bearer_token.len == 0) "" else try std.fmt.allocPrint(allocator, "Bearer {s}", .{bearer_token});
     defer if (bearer_token.len != 0) allocator.free(authorization);
-    if (cfg.custom_dns.len != 0 or cfg.ignore_unsafe_cert) {
-        return requestReadAuth(allocator, ascii_url, "POST", payload, "application/json", cfg, authorization);
-    }
-
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
-    var proxy_arena = std.heap.ArenaAllocator.init(allocator);
-    defer proxy_arena.deinit();
-    try initDefaultProxiesForUrl(allocator, &client, proxy_arena.allocator(), ascii_url);
-
-    var extra: [3]std.http.Header = undefined;
-    const extra_headers = postHeaders(cfg, authorization, &extra);
-
-    const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
-    var attempt: u32 = 0;
-    while (true) : (attempt += 1) {
-        var response_writer = BoundedResponseWriter.init(allocator, max_response_body_bytes);
-        defer response_writer.deinit();
-        const result = client.fetch(.{
-            .location = .{ .url = ascii_url },
-            .method = .POST,
-            .payload = payload,
-            .headers = .{ .content_type = .{ .override = "application/json" } },
-            .extra_headers = extra_headers,
-            .response_writer = &response_writer.writer,
-            .keep_alive = false,
-        }) catch |err| {
-            if (response_writer.too_large) return error.HttpResponseTooLarge;
-            if (attempt < max_retries) {
-                std.Thread.sleep(2 * std.time.ns_per_s);
-                continue;
-            }
-            return err;
-        };
-        const code = @intFromEnum(result.status);
-        if (code == 200) return response_writer.toOwnedSlice();
-        if (attempt < max_retries) {
-            std.Thread.sleep(2 * std.time.ns_per_s);
-            continue;
-        }
-        return error.HttpStatusNotOk;
-    }
+    return requestReadAuth(allocator, ascii_url, "POST", payload, "application/json", cfg, authorization);
 }
 
 pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
@@ -221,10 +180,7 @@ pub fn getRead(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
 pub fn getReadCfg(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) ![]u8 {
     const ascii_url = try idna.convertUrlToAscii(allocator, url);
     defer allocator.free(ascii_url);
-    if (cfg.custom_dns.len != 0 or cfg.ignore_unsafe_cert) {
-        return requestRead(allocator, ascii_url, "GET", "", "", cfg);
-    }
-    return getRead(allocator, ascii_url);
+    return requestRead(allocator, ascii_url, "GET", "", "", cfg);
 }
 
 pub fn getReadCfgFamily(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8) ![]u8 {
