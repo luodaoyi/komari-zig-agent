@@ -4,6 +4,25 @@ const netstatic = @import("report_netstatic");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
 
+const LinuxFsId = extern struct {
+    val: [2]i32 = .{ 0, 0 },
+};
+
+const LinuxStatfs = extern struct {
+    f_type: c_ulong = 0,
+    f_bsize: c_ulong = 0,
+    f_blocks: u64 = 0,
+    f_bfree: u64 = 0,
+    f_bavail: u64 = 0,
+    f_files: u64 = 0,
+    f_ffree: u64 = 0,
+    f_fsid: LinuxFsId = .{},
+    f_namelen: c_ulong = 0,
+    f_frsize: c_ulong = 0,
+    f_flags: c_ulong = 0,
+    f_spare: [4]c_ulong = .{0} ** 4,
+};
+
 var sample_mutex: std.Thread.Mutex = .{};
 var previous_network: ?NetworkSample = null;
 var previous_cpu: ?CpuSample = null;
@@ -782,7 +801,8 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var df_map = diskUsageMapFromDf(allocator) catch std.StringHashMap(common.DiskInfo).init(allocator);
+    var df_map: ?std.StringHashMap(common.DiskInfo) = null;
+    defer if (df_map) |*map| map.deinit();
 
     if (include_mountpoints.len != 0) {
         var total = common.DiskInfo{};
@@ -790,7 +810,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
         while (mounts.next()) |raw_mount| {
             const mountpoint = std.mem.trim(u8, raw_mount, " \t\r\n");
             if (mountpoint.len == 0) continue;
-            const usage = df_map.get(mountpoint) orelse (diskUsageFromDf(allocator, mountpoint) catch continue);
+            const usage = diskUsageForMount(allocator, mountpoint, &df_map) catch continue;
             total.total += usage.total;
             total.used += usage.used;
         }
@@ -815,7 +835,7 @@ fn diskInfoWithMountpoints(include_mountpoints: []const u8) !common.DiskInfo {
         const fstype = fields.next() orelse continue;
         if (!isPhysicalMount(mountpoint, fstype, device)) continue;
 
-        const usage = df_map.get(mountpoint) orelse (diskUsageFromDf(allocator, mountpoint) catch continue);
+        const usage = diskUsageForMount(allocator, mountpoint, &df_map) catch continue;
         const key = diskDeviceKey(device, fstype);
         const existing = by_device.get(key);
         if (existing == null or usage.total > existing.?.total) {
@@ -899,6 +919,42 @@ fn diskUsageMapFromDf(allocator: std.mem.Allocator) !std.StringHashMap(common.Di
     const output = try commandOutput(allocator, &.{ "df", "-P", "-B1" });
     defer allocator.free(output);
     return parseDfOutput(allocator, output);
+}
+
+fn diskUsageForMount(allocator: std.mem.Allocator, mountpoint: []const u8, df_map: *?std.StringHashMap(common.DiskInfo)) !common.DiskInfo {
+    if (diskUsageNative(mountpoint)) |usage| return usage else |_| {}
+
+    if (df_map.* == null) {
+        df_map.* = diskUsageMapFromDf(allocator) catch std.StringHashMap(common.DiskInfo).init(allocator);
+    }
+    if (df_map.*) |*map| {
+        if (map.get(mountpoint)) |usage| return usage;
+    }
+    return diskUsageFromDf(allocator, mountpoint);
+}
+
+fn diskUsageNative(mountpoint: []const u8) !common.DiskInfo {
+    if (@sizeOf(usize) != 8) return error.NativeDiskUnsupported;
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_z = try std.fmt.bufPrintZ(&path_buf, "{s}", .{mountpoint});
+
+    var stat = LinuxStatfs{};
+    const rc = std.os.linux.syscall2(.statfs, @intFromPtr(path_z.ptr), @intFromPtr(&stat));
+    if (std.posix.errno(rc) != .SUCCESS) return error.StatfsFailed;
+
+    const block_size: u64 = if (stat.f_frsize != 0) @intCast(stat.f_frsize) else @intCast(stat.f_bsize);
+    if (block_size == 0) return error.BadStatfsOutput;
+    const total = diskBytes(stat.f_blocks, block_size);
+    const free = diskBytes(stat.f_bfree, block_size);
+    return .{
+        .total = total,
+        .used = if (total >= free) total - free else 0,
+    };
+}
+
+fn diskBytes(blocks: u64, block_size: u64) u64 {
+    return std.math.mul(u64, blocks, block_size) catch std.math.maxInt(u64);
 }
 
 pub fn parseDfOutput(allocator: std.mem.Allocator, output: []const u8) !std.StringHashMap(common.DiskInfo) {
