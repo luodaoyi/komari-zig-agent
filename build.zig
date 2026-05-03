@@ -182,18 +182,23 @@ fn addTest(
     }));
     tests.root_module.addImport("report_netstatic", report_netstatic);
 
+    const coverage_path = coverageOutputPath(b, coverage_dir, path);
     if (coverage) {
         tests.setExecCmd(&.{
             "kcov",
             "--skip-solibs",
             "--include-path=src",
             "--exclude-path=src/autodiscovery_test.zig",
-            coverageOutputPath(b, coverage_dir, path),
+            coverage_path,
             null,
         });
     }
 
     const run_tests = b.addRunArtifact(tests);
+    if (coverage) {
+        const make_coverage_dir = b.addSystemCommand(&.{ "mkdir", "-p", coverage_path });
+        run_tests.step.dependOn(&make_coverage_dir.step);
+    }
     test_step.dependOn(&run_tests.step);
 }
 
