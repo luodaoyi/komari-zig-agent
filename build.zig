@@ -4,6 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const version = b.option([]const u8, "version", "agent version") orelse "0.0.1";
+    const coverage = b.option(bool, "coverage", "Run tests through kcov") orelse false;
+    const coverage_dir = b.option([]const u8, "coverage-dir", "kcov output directory") orelse "zig-out/coverage";
 
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
@@ -58,23 +60,23 @@ pub fn build(b: *std.Build) void {
     version_module.addOptions("build_options", opts);
 
     const test_step = b.step("test", "Run unit tests");
-    addTest(b, test_step, "test/bootstrap_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/config_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/protocol_json_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "src/autodiscovery_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/http_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/dns_idna_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/linux_basic_info_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/disk_filter_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/network_filter_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/task_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/report_interval_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/netstatic_test.zig", target, optimize, opts, version_module);
-    addTest(b, test_step, "test/update_test.zig", target, optimize, opts, version_module);
+    addTest(b, test_step, "test/bootstrap_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/config_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/protocol_json_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "src/autodiscovery_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/http_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/dns_idna_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/linux_basic_info_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/disk_filter_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/network_filter_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/cpu_proc_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/task_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/report_interval_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/netstatic_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/update_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
 }
 
 fn addTest(
@@ -85,6 +87,8 @@ fn addTest(
     optimize: std.builtin.OptimizeMode,
     opts: *std.Build.Step.Options,
     version_module: *std.Build.Module,
+    coverage: bool,
+    coverage_dir: []const u8,
 ) void {
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -178,6 +182,26 @@ fn addTest(
     }));
     tests.root_module.addImport("report_netstatic", report_netstatic);
 
+    if (coverage) {
+        tests.setExecCmd(&.{
+            "kcov",
+            "--skip-solibs",
+            "--include-path=src",
+            "--exclude-path=src/autodiscovery_test.zig",
+            coverageOutputPath(b, coverage_dir, path),
+            null,
+        });
+    }
+
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
+}
+
+fn coverageOutputPath(b: *std.Build, coverage_dir: []const u8, test_path: []const u8) []const u8 {
+    const name = b.dupe(test_path);
+    for (name) |*ch| switch (ch.*) {
+        '/', '\\', '.' => ch.* = '_',
+        else => {},
+    };
+    return b.fmt("{s}/{s}", .{ coverage_dir, name });
 }

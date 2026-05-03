@@ -14,23 +14,54 @@ env:
   ZIG_SHA256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  native-test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install Zig
-        run: |
-          set -eu
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
-          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ env.ZIG_VERSION }}
       - name: Test
         run: zig build test
 
+  coverage:
+    name: Coverage (Linux)
+    runs-on: ubuntu-latest
+    needs: native-test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Install kcov
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y kcov
+      - name: Collect coverage
+        run: |
+          set -eu
+          rm -rf coverage
+          zig build test -Dcoverage=true -Dcoverage-dir="$PWD/coverage/raw"
+          kcov --merge "$PWD/coverage/merged" "$PWD"/coverage/raw/*
+          python3 scripts/check_coverage.py "$PWD/coverage/merged" 95
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: coverage-linux
+          path: coverage/merged
+          if-no-files-found: warn
+
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [native-test, coverage]
     strategy:
       fail-fast: false
       matrix:
