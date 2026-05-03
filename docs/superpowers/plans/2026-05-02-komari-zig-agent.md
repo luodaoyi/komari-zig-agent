@@ -6,7 +6,7 @@
 
 **Architecture:** Implement the agent as small Zig modules with protocol compatibility tests first. Platform metrics live behind a common interface, while HTTP/WebSocket/report/task/terminal code owns the Komari wire contracts.
 
-**Tech Stack:** Zig 0.15.2, Zig standard library, small vendored or dependency-backed WebSocket/TLS helpers if required, POSIX APIs, GitHub Actions, shell install scripts, Docker.
+**Tech Stack:** Zig 0.16.0, Zig standard library, small vendored or dependency-backed WebSocket/TLS helpers if required, POSIX APIs, GitHub Actions, shell install scripts, Docker.
 
 ---
 
@@ -158,7 +158,7 @@ Create `build.zig.zon`:
 .{
     .name = .komari_zig_agent,
     .version = "0.0.1",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",
@@ -926,7 +926,7 @@ git commit -m "chore: add install build and docker scripts"
 Workflow behavior:
 
 - checkout
-- setup Zig 0.15.2
+- setup Zig 0.16.0
 - run `zig build test`
 - cross-build supported matrix
 - upload artifacts named `komari-agent-{os}-{arch}`

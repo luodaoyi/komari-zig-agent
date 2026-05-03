@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the current small Zig stdlib-first design. Add focused helpers for TLS policy, WebSocket headers/reconnect, DNS resolution, memory mode selection, and platform-specific collectors without broad rewrites.
 
-**Tech Stack:** Zig 0.15.2, `std.http.Client`, POSIX sockets, `/proc`, sysctl/Unix command adapters, GitHub Actions, shell install scripts.
+**Tech Stack:** Zig 0.16.0, `std.http.Client`, POSIX sockets, `/proc`, sysctl/Unix command adapters, GitHub Actions, shell install scripts.
 
 ---
 

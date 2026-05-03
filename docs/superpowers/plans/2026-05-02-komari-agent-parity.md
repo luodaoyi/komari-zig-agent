@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the public JSON protocol in `src/protocol`, OS collectors in `src/platform`, and long-running agent orchestration in `src/main.zig`. Implement Linux first because it is the live deployment target, then FreeBSD/macOS, then replace temporary child-process HTTP/WebSocket plumbing with native Zig transport.
 
-**Tech Stack:** Zig 0.15.1, stdlib JSON/HTTP/process/fs APIs, `/proc` and `/sys` on Linux, `sysctl`/`kstat`-style native files where available, shell-free CI builds for Linux/FreeBSD/macOS.
+**Tech Stack:** Zig 0.16.0, stdlib JSON/HTTP/process/fs APIs, `/proc` and `/sys` on Linux, `sysctl`/`kstat`-style native files where available, shell-free CI builds for Linux/FreeBSD/macOS.
 
 ---
 
