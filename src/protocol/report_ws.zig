@@ -9,6 +9,7 @@ const task = @import("task.zig");
 const terminal = @import("../terminal/terminal.zig");
 const update = @import("../update.zig");
 const ws_client = @import("ws_client.zig");
+const timing = @import("report_timing.zig");
 pub const ws_message = @import("ws_message.zig");
 
 pub const ServerMessageKind = ws_message.ServerMessageKind;
@@ -53,9 +54,8 @@ fn writeReportOnce(allocator: std.mem.Allocator, ws: *ws_client.Client, cfg: con
     try ws.writeText(writer.buffered());
 }
 
-pub fn reportSleepSeconds(interval: f64) u64 {
-    return if (interval <= 1) 1 else @intFromFloat(interval - 1);
-}
+pub const reportIntervalMs = timing.reportIntervalMs;
+pub const remainingSleepMs = timing.remainingSleepMs;
 
 pub fn reconnectSleepSeconds(value: i32) u64 {
     return if (value <= 0) 5 else @intCast(value);
@@ -75,6 +75,7 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
         var closed = false;
 
         while (!isStopRequested(stop_requested)) {
+            const report_start_ms = std.time.milliTimestamp();
             const now = std.time.timestamp();
             if (now - last_heartbeat >= 30) {
                 ws.writePing() catch |err| {
@@ -94,7 +95,8 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
             if (!update_confirmed) {
                 update_confirmed = update.confirmPendingUpdate(allocator) catch false;
             }
-            if (sleepOrStop(reportSleepSeconds(cfg.interval), stop_requested)) return;
+            const sleep_ms = remainingSleepMs(report_start_ms, reportIntervalMs(cfg.interval), std.time.milliTimestamp());
+            if (sleepOrStopMs(sleep_ms, stop_requested)) return;
         }
         if (!closed and isStopRequested(stop_requested)) return;
     }
@@ -110,6 +112,17 @@ fn sleepOrStop(seconds: u64, stop_requested: ?*const std.atomic.Value(bool)) boo
     while (slept < seconds) : (slept += 1) {
         if (isStopRequested(stop_requested)) return true;
         std.Thread.sleep(std.time.ns_per_s);
+    }
+    return isStopRequested(stop_requested);
+}
+
+fn sleepOrStopMs(milliseconds: u64, stop_requested: ?*const std.atomic.Value(bool)) bool {
+    var remaining = milliseconds;
+    while (remaining > 0) {
+        if (isStopRequested(stop_requested)) return true;
+        const chunk: u64 = @min(remaining, @as(u64, 100));
+        std.Thread.sleep(chunk * @as(u64, std.time.ns_per_ms));
+        remaining -= chunk;
     }
     return isStopRequested(stop_requested);
 }
