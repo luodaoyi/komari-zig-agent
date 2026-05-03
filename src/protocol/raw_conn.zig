@@ -174,7 +174,7 @@ fn cachedCaBundle() !*std.crypto.Certificate.Bundle {
     defer ca_bundle_cache.mutex.unlock();
     if (!ca_bundle_cache.loaded) {
         ca_bundle_cache.bundle = .empty;
-        ca_bundle_cache.bundle.rescan(std.heap.page_allocator, std.Options.debug_io, std.Io.Timestamp.now(std.Options.debug_io, .real)) catch {};
+        try ca_bundle_cache.bundle.rescan(std.heap.page_allocator, std.Options.debug_io, std.Io.Timestamp.now(std.Options.debug_io, .real));
         ca_bundle_cache.loaded = true;
     }
     return &ca_bundle_cache.bundle;

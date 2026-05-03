@@ -41,8 +41,8 @@ pub fn resolveHost(allocator: std.mem.Allocator, host: []const u8, port: u16, cu
     } else |_| {}
 
     if (custom_dns.len == 0 or builtin.os.tag == .windows) {
-        const out = try allocator.alloc(net_compat.Address, 1);
-        out[0] = try net_compat.resolveOne(trimmed, port);
+        const out = try net_compat.resolveAll(allocator, trimmed, port);
+        sortAddresses(out);
         return out;
     }
 

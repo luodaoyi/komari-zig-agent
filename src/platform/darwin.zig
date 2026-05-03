@@ -428,13 +428,7 @@ fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = argv,
-        .environ_map = &env,
-        .stdout_limit = .limited(512 * 1024),
-        .stderr_limit = .limited(0),
-    });
-    defer allocator.free(result.stderr);
+    const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 512 * 1024);
     errdefer allocator.free(result.stdout);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     return result.stdout;

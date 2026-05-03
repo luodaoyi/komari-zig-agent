@@ -29,6 +29,28 @@ pub fn resolveOne(host: []const u8, p: u16) !Address {
     return Address.resolve(std.Options.debug_io, host, p);
 }
 
+pub fn resolveAll(allocator: std.mem.Allocator, host: []const u8, p: u16) ![]Address {
+    const host_name = try net.HostName.init(host);
+    var lookup_buffer: [32]net.HostName.LookupResult = undefined;
+    var lookup_queue: std.Io.Queue(net.HostName.LookupResult) = .init(&lookup_buffer);
+    try net.HostName.lookup(host_name, std.Options.debug_io, &lookup_queue, .{ .port = p });
+    var out: std.ArrayList(Address) = .empty;
+    errdefer out.deinit(allocator);
+    while (lookup_queue.getOne(std.Options.debug_io)) |result| {
+        switch (result) {
+            .address => |addr| try out.append(allocator, addr),
+            .canonical_name => {},
+        }
+    } else |err| {
+        switch (err) {
+            error.Closed => {},
+            error.Canceled => return err,
+        }
+    }
+    if (out.items.len == 0) return error.UnknownHostName;
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn family(addr: Address) std.posix.sa_family_t {
     return switch (addr) {
         .ip4 => std.posix.AF.INET,
@@ -79,31 +101,39 @@ pub const SockAddr = struct {
     }
 };
 
+const PosixAddress = extern union {
+    any: std.posix.sockaddr,
+    in: std.posix.sockaddr.in,
+    in6: std.posix.sockaddr.in6,
+};
+
 pub fn sockAddr(addr: Address) SockAddr {
     var out: SockAddr = undefined;
-    switch (addr) {
+    var posix_addr: PosixAddress = undefined;
+    out.len = addressToPosix(addr, &posix_addr);
+    out.storage = undefined;
+    @memset(std.mem.asBytes(&out.storage), 0);
+    @memcpy(std.mem.asBytes(&out.storage)[0..out.len], std.mem.asBytes(&posix_addr)[0..out.len]);
+    return out;
+}
+
+fn addressToPosix(addr: Address, storage: *PosixAddress) std.posix.socklen_t {
+    return switch (addr) {
         .ip4 => |ip4| {
-            const sa = std.posix.sockaddr.in{
+            storage.in = .{
                 .port = std.mem.nativeToBig(u16, ip4.port),
-                .addr = std.mem.readInt(u32, &ip4.bytes, .big),
+                .addr = @bitCast(ip4.bytes),
             };
-            out.storage = undefined;
-            @memset(std.mem.asBytes(&out.storage), 0);
-            @memcpy(std.mem.asBytes(&out.storage)[0..@sizeOf(@TypeOf(sa))], std.mem.asBytes(&sa));
-            out.len = @sizeOf(@TypeOf(sa));
+            return @sizeOf(std.posix.sockaddr.in);
         },
         .ip6 => |ip6| {
-            const sa = std.posix.sockaddr.in6{
+            storage.in6 = .{
                 .port = std.mem.nativeToBig(u16, ip6.port),
                 .flowinfo = ip6.flow,
                 .addr = ip6.bytes,
                 .scope_id = ip6.interface.index,
             };
-            out.storage = undefined;
-            @memset(std.mem.asBytes(&out.storage), 0);
-            @memcpy(std.mem.asBytes(&out.storage)[0..@sizeOf(@TypeOf(sa))], std.mem.asBytes(&sa));
-            out.len = @sizeOf(@TypeOf(sa));
+            return @sizeOf(std.posix.sockaddr.in6);
         },
-    }
-    return out;
+    };
 }

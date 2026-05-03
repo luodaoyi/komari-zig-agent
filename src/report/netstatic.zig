@@ -262,13 +262,7 @@ fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = argv,
-        .environ_map = &env,
-        .stdout_limit = .limited(1024 * 1024),
-        .stderr_limit = .limited(0),
-    });
-    defer allocator.free(result.stderr);
+    const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 1024 * 1024);
     errdefer allocator.free(result.stdout);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     return result.stdout;
@@ -307,11 +301,11 @@ fn purgeExpiredLocked(rt: *Runtime) void {
 
 fn pruneUnmonitoredLocked(rt: *Runtime) void {
     if (rt.config.nics.len == 0) return;
-    pruneCounterMap(&rt.last, rt.config);
-    pruneSampleMap(&rt.cache, rt.config);
+    pruneCounterMap(&rt.last, rt.allocator, rt.config);
+    pruneSampleMap(&rt.cache, rt.allocator, rt.config);
 }
 
-fn pruneCounterMap(map: *CounterMap, cfg: NetStaticConfig) void {
+fn pruneCounterMap(map: *CounterMap, allocator: std.mem.Allocator, cfg: NetStaticConfig) void {
     var i: usize = 0;
     while (i < map.count()) {
         const name = map.keys()[i];
@@ -319,12 +313,12 @@ fn pruneCounterMap(map: *CounterMap, cfg: NetStaticConfig) void {
             i += 1;
             continue;
         }
-        std.heap.page_allocator.free(name);
+        allocator.free(name);
         _ = map.orderedRemoveAt(i);
     }
 }
 
-fn pruneSampleMap(map: *SampleMap, cfg: NetStaticConfig) void {
+fn pruneSampleMap(map: *SampleMap, allocator: std.mem.Allocator, cfg: NetStaticConfig) void {
     var i: usize = 0;
     while (i < map.count()) {
         const name = map.keys()[i];
@@ -332,8 +326,8 @@ fn pruneSampleMap(map: *SampleMap, cfg: NetStaticConfig) void {
             i += 1;
             continue;
         }
-        map.values()[i].deinit(std.heap.page_allocator);
-        std.heap.page_allocator.free(name);
+        map.values()[i].deinit(allocator);
+        allocator.free(name);
         _ = map.orderedRemoveAt(i);
     }
 }

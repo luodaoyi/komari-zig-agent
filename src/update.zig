@@ -513,14 +513,9 @@ fn copyFileAbsolute(src: []const u8, dst: []const u8) !void {
 }
 
 fn runBinaryPreflight(allocator: std.mem.Allocator, path: []const u8) !void {
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = &.{ path, "--show-warning" },
-        .stdout_limit = .limited(0),
-        .stderr_limit = .limited(0),
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    switch (result.term) {
+    _ = allocator;
+    const term = try compat.runIgnoreOutput(&.{ path, "--show-warning" }, null);
+    switch (term) {
         .exited => |code| if (code != 0) return error.UpdatePreflightFailed,
         else => return error.UpdatePreflightFailed,
     }

@@ -658,13 +658,8 @@ fn parseMiB(value: []const u8) u64 {
 
 fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     try ensureExecutable(allocator, argv[0]);
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = argv,
-        .stdout_limit = .limited(64 * 1024),
-        .stderr_limit = .limited(0),
-    });
+    const result = try compat.runOutputIgnoreStderr(allocator, argv, null, 64 * 1024);
     defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     var it = std.mem.splitScalar(u8, result.stdout, '\n');
     const line = std.mem.trim(u8, it.next() orelse "", " \t\r");
@@ -716,13 +711,7 @@ fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]cons
     var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = argv,
-        .environ_map = &env,
-        .stdout_limit = .limited(256 * 1024),
-        .stderr_limit = .limited(0),
-    });
-    defer allocator.free(result.stderr);
+    const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 256 * 1024);
     errdefer allocator.free(result.stdout);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     return result.stdout;

@@ -365,14 +365,8 @@ fn swapTotal(allocator: std.mem.Allocator) !u64 {
 
 fn sysctlInt(name: []const u8) !u64 {
     const allocator = std.heap.page_allocator;
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = &.{ "sysctl", "-n", name },
-        .stdout_limit = .limited(64),
-        .stderr_limit = .limited(0),
-    });
+    const result = try compat.runOutputIgnoreStderr(allocator, &.{ "sysctl", "-n", name }, null, 64);
     defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     return std.fmt.parseInt(u64, std.mem.trim(u8, result.stdout, " \t\r\n"), 10);
 }
 
@@ -404,13 +398,7 @@ fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     var env = try compat.currentEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = try std.process.run(allocator, std.Options.debug_io, .{
-        .argv = argv,
-        .environ_map = &env,
-        .stdout_limit = .limited(256 * 1024),
-        .stderr_limit = .limited(0),
-    });
-    defer allocator.free(result.stderr);
+    const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 256 * 1024);
     errdefer allocator.free(result.stdout);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     return result.stdout;
