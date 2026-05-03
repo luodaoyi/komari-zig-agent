@@ -514,9 +514,7 @@ fn nowUnix() u64 {
 fn readSmallFile(path: []const u8, buf: []u8) ?[]const u8 {
     const file = compat.openFile(path, .{}) catch return null;
     defer file.close(std.Options.debug_io);
-    var reader_buf: [4096]u8 = undefined;
-    var reader = file.reader(std.Options.debug_io, &reader_buf);
-    const n = reader.interface.readSliceShort(buf) catch return null;
+    const n = compat.readAll(file, buf) catch return null;
     return buf[0..n];
 }
 

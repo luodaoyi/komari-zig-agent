@@ -261,9 +261,7 @@ fn hasLinuxIPv4Route() bool {
     const file = compat.openFile("/proc/net/route", .{}) catch return true;
     defer file.close(std.Options.debug_io);
     var buf: [8192]u8 = undefined;
-    var reader_buf: [4096]u8 = undefined;
-    var reader = file.reader(std.Options.debug_io, &reader_buf);
-    const n = reader.interface.readSliceShort(&buf) catch return true;
+    const n = compat.readAll(file, &buf) catch return true;
     var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
     _ = lines.next();
     while (lines.next()) |line| {

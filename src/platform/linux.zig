@@ -1549,7 +1549,6 @@ fn readSmallProcFile(host_proc: []const u8, suffix: []const u8, buf: []u8) ?[]co
 fn readSmallFile(path: []const u8, buf: []u8) ?[]const u8 {
     const file = compat.openFile(path, .{}) catch return null;
     defer file.close(std.Options.debug_io);
-    var reader = file.reader(std.Options.debug_io, buf);
-    const n = reader.interface.readSliceShort(buf) catch return null;
+    const n = compat.readAll(file, buf) catch return null;
     return buf[0..n];
 }

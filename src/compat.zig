@@ -288,6 +288,18 @@ pub fn fileWriter(file: std.Io.File, buffer: []u8) FileWriter {
     return .{ .inner = file.writerStreaming(std.Options.debug_io, buffer) };
 }
 
+pub fn readAll(file: std.Io.File, buf: []u8) !usize {
+    var reader_buf: [4096]u8 = undefined;
+    var reader = file.reader(std.Options.debug_io, &reader_buf);
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = try reader.interface.readSliceShort(buf[total..]);
+        if (n == 0) break;
+        total += n;
+    }
+    return total;
+}
+
 pub fn sleep(nanoseconds: u64) void {
     std.Io.sleep(std.Options.debug_io, .fromNanoseconds(@intCast(nanoseconds)), .awake) catch {};
 }
