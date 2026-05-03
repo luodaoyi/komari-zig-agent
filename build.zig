@@ -74,6 +74,7 @@ pub fn build(b: *std.Build) void {
     addTest(b, test_step, "test/ping_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ip_extract_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/ws_message_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
+    addTest(b, test_step, "test/ws_client_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/report_interval_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/netstatic_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
     addTest(b, test_step, "test/update_test.zig", target, optimize, opts, version_module, coverage, coverage_dir);
@@ -175,6 +176,13 @@ fn addTest(
         .target = target,
         .optimize = optimize,
     }));
+    const protocol_ws_client = b.createModule(.{
+        .root_source_file = b.path("src/protocol/ws_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    protocol_ws_client.addImport("idna", idna_module);
+    tests.root_module.addImport("protocol_ws_client", protocol_ws_client);
     tests.root_module.addImport("protocol_report_timing", b.createModule(.{
         .root_source_file = b.path("src/protocol/report_timing.zig"),
         .target = target,

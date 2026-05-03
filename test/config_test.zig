@@ -149,6 +149,33 @@ test "go-style equals bool cli flags parse" {
     try std.testing.expect(cfg.get_ip_addr_from_nic);
 }
 
+test "go-style equals bool cli flags parse false values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{
+        "komari-agent",
+        "--disable-auto-update=false",
+        "--disable-web-ssh=0",
+        "--ignore-unsafe-cert=False",
+        "--memory-include-cache=no",
+        "--memory-exclude-bcf=off",
+        "--gpu=false",
+        "--show-warning=0",
+        "--get-ip-addr-from-nic=FALSE",
+    };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+
+    try std.testing.expect(!cfg.disable_auto_update);
+    try std.testing.expect(!cfg.disable_web_ssh);
+    try std.testing.expect(!cfg.ignore_unsafe_cert);
+    try std.testing.expect(!cfg.memory_include_cache);
+    try std.testing.expect(!cfg.memory_report_raw_used);
+    try std.testing.expect(!cfg.enable_gpu);
+    try std.testing.expect(!cfg.show_warning);
+    try std.testing.expect(!cfg.get_ip_addr_from_nic);
+}
+
 test "list-disk subcommand is recognized" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -174,6 +201,17 @@ test "unknown flags are ignored" {
     const args = [_][]const u8{ "komari-agent", "--future-flag", "x", "--token", "tok" };
     const cfg = try config.parseArgs(arena.allocator(), &args);
     try std.testing.expectEqualStrings("tok", cfg.token);
+}
+
+test "missing cli flag values keep following flags parseable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{ "komari-agent", "--token", "--endpoint", "https://panel.example", "--max-retries" };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+    try std.testing.expectEqualStrings("", cfg.token);
+    try std.testing.expectEqualStrings("https://panel.example", cfg.endpoint);
+    try std.testing.expectEqual(@as(i32, 3), cfg.max_retries);
 }
 
 test "deprecated flags are ignored" {

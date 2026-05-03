@@ -19,6 +19,10 @@ test "endpoint helpers trim slash and place token query" {
         "https://panel.example/api/clients/register?name=host%20one",
         try http.registerUrl(allocator, "https://panel.example/", "host one"),
     );
+    try std.testing.expectEqualStrings(
+        "https://panel.example/api/clients/register?name=a%2Fb%3Fc%3Dd",
+        try http.registerUrl(allocator, "https://panel.example/", "a/b?c=d"),
+    );
 }
 
 test "websocket helpers convert scheme" {
@@ -33,6 +37,10 @@ test "websocket helpers convert scheme" {
     try std.testing.expectEqualStrings(
         "ws://panel.example/api/clients/terminal?token=tok&id=req",
         try http.terminalWsUrl(allocator, "http://panel.example/", "tok", "req"),
+    );
+    try std.testing.expectEqualStrings(
+        "wspanel.example/api/clients/report?token=tok",
+        try http.reportWsUrl(allocator, "panel.example/", "tok"),
     );
 }
 
@@ -51,6 +59,11 @@ test "cloudflare access headers are added when both values exist" {
     const built = http.cloudflareHeaders(cfg, &raw);
     try std.testing.expectEqual(@as(usize, 2), built.len);
     try std.testing.expectEqualStrings("CF-Access-Client-Id", built[0].name);
+
+    var missing = http.Headers{};
+    http.addCloudflareHeaders(&missing, config.Config{ .cf_access_client_id = "id" });
+    try std.testing.expect(missing.cf_access_client_id == null);
+    try std.testing.expectEqual(@as(usize, 0), http.cloudflareHeaders(config.Config{ .cf_access_client_secret = "secret" }, &raw).len);
 }
 
 test "http client shell keeps timeout tls and retry settings" {
@@ -111,7 +124,16 @@ test "proxy environment accepts lowercase and all proxy fallback" {
         "http://all-proxy.example:8080",
         http.proxyEnvForScheme("https", .{ .all_proxy = "http://all-proxy.example:8080" }).?,
     );
+    try std.testing.expectEqualStrings(
+        "http://ws-proxy.example:8080",
+        http.proxyEnvForScheme("ws", .{ .http_proxy = "http://ws-proxy.example:8080" }).?,
+    );
+    try std.testing.expectEqualStrings(
+        "http://wss-proxy.example:8080",
+        http.proxyEnvForScheme("wss", .{ .https_proxy = "http://wss-proxy.example:8080" }).?,
+    );
     try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForScheme("https", .{}));
+    try std.testing.expectEqual(@as(?[]const u8, null), http.proxyEnvForScheme("ftp", .{ .all_proxy = "http://all-proxy.example:8080" }));
 }
 
 test "proxy environment honors no proxy hosts" {

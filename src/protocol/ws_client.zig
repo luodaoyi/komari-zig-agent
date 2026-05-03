@@ -195,6 +195,7 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
 
 pub fn parseUrl(url: []const u8) !Target {
     const prefix = if (std.mem.startsWith(u8, url, "wss://")) "wss://" else if (std.mem.startsWith(u8, url, "ws://")) "ws://" else return error.InvalidWebSocketUrl;
+    const tls = std.mem.eql(u8, prefix, "wss://");
     const rest = url[prefix.len..];
     const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return error.InvalidWebSocketUrl;
     const hostport = rest[0..slash];
@@ -205,18 +206,18 @@ pub fn parseUrl(url: []const u8) !Target {
         if (close + 1 < hostport.len) {
             if (hostport[close + 1] != ':') return error.InvalidWebSocketUrl;
             const port = try std.fmt.parseInt(u16, hostport[close + 2 ..], 10);
-            return .{ .host = host, .port = port, .path = path, .tls = prefix[1] == 's' };
+            return .{ .host = host, .port = port, .path = path, .tls = tls };
         }
-        return .{ .host = host, .port = if (prefix[1] == 's') 443 else 80, .path = path, .tls = prefix[1] == 's' };
+        return .{ .host = host, .port = if (tls) 443 else 80, .path = path, .tls = tls };
     }
     if (std.mem.lastIndexOfScalar(u8, hostport, ':')) |idx| {
         if (std.mem.indexOfScalar(u8, hostport[0..idx], ':') != null) {
-            return .{ .host = hostport, .port = if (prefix[1] == 's') 443 else 80, .path = path, .tls = prefix[1] == 's' };
+            return .{ .host = hostport, .port = if (tls) 443 else 80, .path = path, .tls = tls };
         }
         const port = try std.fmt.parseInt(u16, hostport[idx + 1 ..], 10);
-        return .{ .host = hostport[0..idx], .port = port, .path = path, .tls = prefix[1] == 's' };
+        return .{ .host = hostport[0..idx], .port = port, .path = path, .tls = tls };
     }
-    return .{ .host = hostport, .port = if (prefix[1] == 's') 443 else 80, .path = path, .tls = prefix[1] == 's' };
+    return .{ .host = hostport, .port = if (tls) 443 else 80, .path = path, .tls = tls };
 }
 
 fn readFrameFromReader(allocator: std.mem.Allocator, reader: anytype) !Frame {

@@ -21,6 +21,26 @@ test "os release parser falls back to ID then Linux" {
     const fallback = try linux.parseOsReleaseName(std.testing.allocator, "NAME=");
     defer std.testing.allocator.free(fallback);
     try std.testing.expectEqualStrings("Linux", fallback);
+
+    const openwrt = try linux.parseOsReleaseName(std.testing.allocator, "PRETTY_NAME=\"OpenWrt 23.05.5\"\nID=openwrt\n");
+    defer std.testing.allocator.free(openwrt);
+    try std.testing.expectEqualStrings("OpenWrt 23.05.5", openwrt);
+}
+
+test "synology info parser recognizes dsm model and version" {
+    const with_version =
+        \\unique="synology_apollolake_918+"
+        \\udc_check_state="7.2.1"
+    ;
+    const name = (try linux.parseSynologyInfoBytes(std.testing.allocator, with_version)).?;
+    defer std.testing.allocator.free(name);
+    try std.testing.expectEqualStrings("Synology 918+ DSM 7.2.1", name);
+
+    const without_version = (try linux.parseSynologyInfoBytes(std.testing.allocator, "unique=\"synology_rtd1296_ds220j\"\n")).?;
+    defer std.testing.allocator.free(without_version);
+    try std.testing.expectEqualStrings("Synology DS220J DSM", without_version);
+
+    try std.testing.expect((try linux.parseSynologyInfoBytes(std.testing.allocator, "unique=\"qnap_x86\"\n")) == null);
 }
 
 test "arch names match Go runtime labels" {

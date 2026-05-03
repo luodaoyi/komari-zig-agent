@@ -11,6 +11,7 @@ test "custom dns server normalization" {
     try std.testing.expectEqualStrings("8.8.8.8:53", try dns.normalizeDnsServer(allocator, "8.8.8.8:53"));
     try std.testing.expectEqualStrings("[2606:4700:4700::1111]:53", try dns.normalizeDnsServer(allocator, "2606:4700:4700::1111"));
     try std.testing.expectEqualStrings("[2606:4700:4700::1111]:53", try dns.normalizeDnsServer(allocator, "[2606:4700:4700::1111]:53"));
+    try std.testing.expectEqualStrings("", try dns.normalizeDnsServer(allocator, " \t\r\n"));
 }
 
 test "idn url converts unicode host labels to punycode" {

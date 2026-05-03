@@ -51,7 +51,7 @@ jobs:
           rm -rf coverage
           zig build test -Dcoverage=true -Dcoverage-dir="$PWD/coverage/raw"
           kcov --merge "$PWD/coverage/merged" "$PWD"/coverage/raw/*
-          python3 scripts/check_coverage.py "$PWD/coverage/merged" 95
+          python3 scripts/check_coverage.py "$PWD/coverage/merged" 100
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -59,9 +59,86 @@ jobs:
           path: coverage/merged
           if-no-files-found: warn
 
+  linux-distro-test:
+    name: Linux Distro Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: native-test
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: fedora
+            image: fedora:latest
+          - name: centos-stream
+            image: quay.io/centos/centos:stream9
+          - name: rocky
+            image: rockylinux:9
+          - name: alma
+            image: almalinux:9
+    steps:
+      - name: Prepare container
+        shell: sh
+        run: |
+          set -eu
+          if command -v dnf >/dev/null 2>&1; then
+            dnf -y install bash ca-certificates curl findutils git gzip tar xz
+          elif command -v microdnf >/dev/null 2>&1; then
+            microdnf -y install bash ca-certificates curl findutils git gzip tar xz
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -eu
+          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
+          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Test
+        shell: bash
+        run: zig build test
+
+  linux-appliance-smoke:
+    name: Linux Appliance Smoke (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: openwrt-x86-64
+            image: openwrt/rootfs:x86-64-22.03.2
+            target: x86_64-linux-musl
+            binary: komari-agent
+          - name: synology-dsm-linux-amd64-profile
+            image: debian:12-slim
+            target: x86_64-linux-musl
+            binary: komari-agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Install Zig
+        run: |
+          set -eu
+          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
+          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+      - name: Build static Linux binary
+        run: |
+          set -eu
+          zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=${{ matrix.target }}
+          cp "zig-out/bin/${{ matrix.binary }}" "./${{ matrix.binary }}"
+          chmod +x "./${{ matrix.binary }}"
+      - name: Run appliance image smoke
+        run: |
+          set -eu
+          docker run --rm -v "$PWD/${{ matrix.binary }}:/komari-agent:ro" "${{ matrix.image }}" /komari-agent --show-warning
+
   build:
     runs-on: ubuntu-latest
-    needs: [native-test, coverage]
+    needs: [native-test, coverage, linux-distro-test]
     strategy:
       fail-fast: false
       matrix:

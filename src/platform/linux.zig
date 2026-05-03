@@ -138,6 +138,10 @@ fn detectSynology(allocator: std.mem.Allocator) !?[]const u8 {
 fn parseSynologyInfo(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
     const bytes = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024) catch return null;
     defer allocator.free(bytes);
+    return parseSynologyInfoBytes(allocator, bytes);
+}
+
+pub fn parseSynologyInfoBytes(allocator: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
     var unique: []const u8 = "";
     var udc: []const u8 = "";
     var lines = std.mem.splitScalar(u8, bytes, '\n');
