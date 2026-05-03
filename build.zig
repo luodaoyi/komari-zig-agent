@@ -244,8 +244,9 @@ fn addTest(
     }));
     tests.root_module.addImport("report_netstatic", report_netstatic);
 
+    const collect_coverage = coverage and isCoverageTest(path);
     const coverage_path = coverageOutputPath(b, coverage_dir, path);
-    if (coverage) {
+    if (collect_coverage) {
         tests.setExecCmd(&.{
             "kcov",
             "--skip-solibs",
@@ -257,11 +258,18 @@ fn addTest(
     }
 
     const run_tests = b.addRunArtifact(tests);
-    if (coverage) {
+    if (collect_coverage) {
         const make_coverage_dir = b.addSystemCommand(&.{ "mkdir", "-p", coverage_path });
         run_tests.step.dependOn(&make_coverage_dir.step);
     }
     test_step.dependOn(&run_tests.step);
+}
+
+fn isCoverageTest(test_path: []const u8) bool {
+    return std.mem.eql(u8, test_path, "test/task_test.zig") or
+        std.mem.eql(u8, test_path, "test/ping_test.zig") or
+        std.mem.eql(u8, test_path, "test/ip_extract_test.zig") or
+        std.mem.eql(u8, test_path, "test/report_interval_test.zig");
 }
 
 fn coverageOutputPath(b: *std.Build, coverage_dir: []const u8, test_path: []const u8) []const u8 {
