@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config");
 const http = @import("protocol_http");
+const local_http = @import("local_http.zig");
 
 test "endpoint helpers trim slash and place token query" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -120,6 +121,66 @@ test "streaming response writer saves file and returns sha256" {
     try std.testing.expectEqualSlices(u8, &expected, &digest);
 
     const body = try tmp.dir.readFileAlloc(std.testing.io, "body", std.testing.allocator, .limited(64));
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello world", body);
+}
+
+test "redirect locations resolve for release asset downloads" {
+    const absolute = try http.resolveRedirectUrlForTest(
+        std.testing.allocator,
+        "https://github.com/o/r/releases/download/v1/a",
+        "https://objects.githubusercontent.com/github-production-release-asset/x",
+    );
+    defer std.testing.allocator.free(absolute);
+    try std.testing.expectEqualStrings("https://objects.githubusercontent.com/github-production-release-asset/x", absolute);
+
+    const root_relative = try http.resolveRedirectUrlForTest(
+        std.testing.allocator,
+        "https://github.com/o/r/releases/latest/download/a",
+        "/o/r/releases/download/v1/a",
+    );
+    defer std.testing.allocator.free(root_relative);
+    try std.testing.expectEqualStrings("https://github.com/o/r/releases/download/v1/a", root_relative);
+}
+
+test "http client follows redirects when reading response bodies" {
+    const responses = [_][]const u8{
+        "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+    };
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    defer server.join() catch unreachable;
+
+    const url = try server.url(std.testing.allocator, "/redirect");
+    defer std.testing.allocator.free(url);
+    const body = try http.getReadCfg(std.testing.allocator, url, config.Config{});
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expectEqualStrings("hello world", body);
+}
+
+test "http client follows redirects while streaming files and hashing" {
+    const responses = [_][]const u8{
+        "HTTP/1.1 302 Found\r\nLocation: /asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+    };
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    defer server.join() catch unreachable;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(std.testing.io, "asset", .{ .read = true });
+    defer file.close(std.testing.io);
+
+    const url = try server.url(std.testing.allocator, "/download");
+    defer std.testing.allocator.free(url);
+    const digest = try http.getToFileSha256Cfg(std.testing.allocator, url, config.Config{}, file);
+
+    var expected: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("hello world", &expected, .{});
+    try std.testing.expectEqualSlices(u8, &expected, &digest);
+
+    const body = try tmp.dir.readFileAlloc(std.testing.io, "asset", std.testing.allocator, .limited(64));
     defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings("hello world", body);
 }

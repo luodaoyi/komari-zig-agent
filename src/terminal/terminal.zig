@@ -3,6 +3,7 @@ const http = @import("../protocol/http.zig");
 const ws_client = @import("../protocol/ws_client.zig");
 const builtin = @import("builtin");
 const compat = @import("compat");
+const thread_stacks = @import("../thread_stacks.zig");
 
 extern "c" fn openpty(amaster: *c_int, aslave: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const std.posix.winsize) c_int;
 extern "c" fn ioctl(fd: std.posix.fd_t, request: c_ulong, ...) c_int;
@@ -77,7 +78,7 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
     defer session.close();
 
     ws.acquire();
-    const out_thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, pipeShellOutputToWs, .{ allocator, session.output, ws }) catch |err| {
+    const out_thread = std.Thread.spawn(.{ .stack_size = thread_stacks.terminal_worker_stack_size }, pipeShellOutputToWs, .{ allocator, session.output, ws }) catch |err| {
         ws.release(allocator);
         return err;
     };

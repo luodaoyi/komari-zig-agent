@@ -21,6 +21,13 @@ test "disabled remote control result does not execute command" {
     try std.testing.expectEqual(@as(i32, -1), result.exit_code);
 }
 
+test "command failure result is uploadable" {
+    const result = try task.commandFailureResult(std.testing.allocator, error.OutOfMemory);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Command failed: OutOfMemory", result.output);
+    try std.testing.expectEqual(@as(i32, -1), result.exit_code);
+}
+
 test "runCommand returns command stdout" {
     const output = try task.runCommandWithRunner(std.testing.allocator, "stdout", stdoutRunner);
     defer std.testing.allocator.free(output);

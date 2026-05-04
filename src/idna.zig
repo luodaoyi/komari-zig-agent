@@ -24,6 +24,7 @@ pub fn convertUrlToAscii(allocator: std.mem.Allocator, url: []const u8) ![]const
     const host = hostport[0..host_end];
     const port = hostport[host_end..];
     const ascii_host = try convertHostToAscii(allocator, host);
+    defer allocator.free(ascii_host);
     return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}{s}", .{
         url[0..scheme_end],
         authority[0..userinfo_end],

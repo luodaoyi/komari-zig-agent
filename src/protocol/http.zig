@@ -6,6 +6,7 @@ const compat = @import("compat");
 
 /// HTTP and proxy helpers shared by agent protocol clients.
 pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
+const max_redirects: u32 = 5;
 
 pub const Headers = struct {
     cf_access_client_id: ?[]const u8 = null,
@@ -139,7 +140,18 @@ pub fn collectBoundedResponseForTest(allocator: std.mem.Allocator, limit: usize,
 
 pub fn writeResponseToFileSha256ForTest(allocator: std.mem.Allocator, response: []const u8, file: std.Io.File) ![32]u8 {
     var reader: std.Io.Reader = .fixed(response);
-    return readHttpBodyToFileSha256(allocator, file, &reader);
+    const result = try readHttpBodyToFileSha256OrRedirect(allocator, file, &reader);
+    return switch (result) {
+        .ok => |digest| digest,
+        .redirect => |location| {
+            allocator.free(location);
+            return error.HttpRedirectUnexpected;
+        },
+    };
+}
+
+pub fn resolveRedirectUrlForTest(allocator: std.mem.Allocator, base_url: []const u8, location: []const u8) ![]const u8 {
+    return resolveRedirectUrl(allocator, base_url, location);
 }
 
 pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
@@ -376,6 +388,29 @@ fn requestReadWithFamily(allocator: std.mem.Allocator, url: []const u8, method: 
 }
 
 fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8, authorization: []const u8) ![]u8 {
+    var current_url: []const u8 = try allocator.dupe(u8, url);
+    defer allocator.free(current_url);
+    var redirects: u32 = 0;
+    while (true) {
+        var response = try requestReadWithFamilyAuthOnce(allocator, current_url, method, payload, content_type, cfg, family, user_agent, authorization);
+        errdefer response.deinit(allocator);
+        if (response.status == 200) return response.body;
+        if (isRedirectStatus(response.status)) {
+            const location = response.location orelse return error.HttpRedirectMissingLocation;
+            if (redirects >= max_redirects) return error.HttpTooManyRedirects;
+            const next_url = try resolveRedirectUrl(allocator, current_url, location);
+            response.deinit(allocator);
+            allocator.free(current_url);
+            current_url = next_url;
+            redirects += 1;
+            continue;
+        }
+        response.deinit(allocator);
+        return error.HttpStatusNotOk;
+    }
+}
+
+fn requestReadWithFamilyAuthOnce(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8, authorization: []const u8) !HttpResponse {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -421,10 +456,8 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
             return err;
         };
         errdefer allocator.free(response.body);
-        if (response.status == 200) {
-            return response.body;
-        }
-        allocator.free(response.body);
+        if (response.status == 200 or isRedirectStatus(response.status)) return response;
+        response.deinit(allocator);
         if (attempt < max_retries) {
             compat.sleep(2 * std.time.ns_per_s);
             continue;
@@ -434,6 +467,26 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
 }
 
 fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) ![32]u8 {
+    var current_url: []const u8 = try allocator.dupe(u8, url);
+    defer allocator.free(current_url);
+    var redirects: u32 = 0;
+    while (true) {
+        const result = try requestToFileSha256Once(allocator, current_url, cfg, file);
+        switch (result) {
+            .ok => |digest| return digest,
+            .redirect => |location| {
+                defer allocator.free(location);
+                if (redirects >= max_redirects) return error.HttpTooManyRedirects;
+                const next_url = try resolveRedirectUrl(allocator, current_url, location);
+                allocator.free(current_url);
+                current_url = next_url;
+                redirects += 1;
+            },
+        }
+    }
+}
+
+fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) !FileFetchResult {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -468,14 +521,17 @@ fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anyty
         try conn.writer().writeAll(request);
         try conn.flush();
 
-        const digest = readHttpBodyToFileSha256(allocator, file, conn.reader()) catch |err| {
+        const result = readHttpBodyToFileSha256OrRedirect(allocator, file, conn.reader()) catch |err| {
             if (attempt < max_retries) {
                 compat.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
         };
-        return digest;
+        switch (result) {
+            .ok => return result,
+            .redirect => return result,
+        }
     }
 }
 
@@ -496,32 +552,79 @@ fn uriPathQuery(allocator: std.mem.Allocator, uri: std.Uri) ![]const u8 {
     return allocator.dupe(u8, path);
 }
 
-const HttpResponse = struct { status: u16, body: []u8 };
+fn isRedirectStatus(status: u16) bool {
+    return status >= 300 and status < 400;
+}
+
+fn resolveRedirectUrl(allocator: std.mem.Allocator, base_url: []const u8, location: []const u8) ![]const u8 {
+    if (std.mem.startsWith(u8, location, "http://") or std.mem.startsWith(u8, location, "https://")) {
+        return idna.convertUrlToAscii(allocator, location);
+    }
+
+    const base = try std.Uri.parse(base_url);
+    const host = try uriHost(allocator, base);
+    defer allocator.free(host);
+    const port = if (base.port) |p| try std.fmt.allocPrint(allocator, ":{d}", .{p}) else try allocator.dupe(u8, "");
+    defer allocator.free(port);
+
+    if (std.mem.startsWith(u8, location, "/")) {
+        return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}", .{ base.scheme, host, port, location });
+    }
+
+    const base_path = if (base.path.percent_encoded.len == 0) "/" else base.path.percent_encoded;
+    const slash = std.mem.lastIndexOfScalar(u8, base_path, '/') orelse 0;
+    return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}/{s}", .{ base.scheme, host, port, base_path[0..slash], location });
+}
+
+const HttpResponse = struct {
+    status: u16,
+    body: []u8,
+    location: ?[]u8 = null,
+
+    fn deinit(self: HttpResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+        if (self.location) |location| allocator.free(location);
+    }
+};
+
+const FileFetchResult = union(enum) {
+    ok: [32]u8,
+    redirect: []u8,
+};
 
 fn readHttpResponse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !HttpResponse {
     const header = try readHeader(allocator, reader);
     defer allocator.free(header);
     const status = try parseStatus(header);
+    const location = if (isRedirectStatus(status)) blk: {
+        const value = headerValue(header, "Location") orelse break :blk null;
+        break :blk try allocator.dupe(u8, value);
+    } else null;
+    errdefer if (location) |value| allocator.free(value);
     if (headerValue(header, "Content-Length")) |value| {
         const len = try std.fmt.parseInt(usize, std.mem.trim(u8, value, " \t"), 10);
         if (len > max_response_body_bytes) return error.HttpResponseTooLarge;
         const body = try allocator.alloc(u8, len);
         errdefer allocator.free(body);
         try reader.readSliceAll(body);
-        return .{ .status = status, .body = body };
+        return .{ .status = status, .body = body, .location = location };
     }
     if (headerValue(header, "Transfer-Encoding")) |value| {
         if (std.ascii.indexOfIgnoreCase(value, "chunked") != null) {
-            return .{ .status = status, .body = try readChunked(allocator, reader) };
+            return .{ .status = status, .body = try readChunked(allocator, reader), .location = location };
         }
     }
-    return .{ .status = status, .body = try allocator.dupe(u8, "") };
+    return .{ .status = status, .body = try allocator.dupe(u8, ""), .location = location };
 }
 
-fn readHttpBodyToFileSha256(allocator: std.mem.Allocator, file: std.Io.File, reader: *std.Io.Reader) ![32]u8 {
+fn readHttpBodyToFileSha256OrRedirect(allocator: std.mem.Allocator, file: std.Io.File, reader: *std.Io.Reader) !FileFetchResult {
     const header = try readHeader(allocator, reader);
     defer allocator.free(header);
     const status = try parseStatus(header);
+    if (isRedirectStatus(status)) {
+        const location = headerValue(header, "Location") orelse return error.HttpRedirectMissingLocation;
+        return .{ .redirect = try allocator.dupe(u8, location) };
+    }
     if (status != 200) return error.HttpStatusNotOk;
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     if (headerValue(header, "Content-Length")) |value| {
@@ -539,7 +642,7 @@ fn readHttpBodyToFileSha256(allocator: std.mem.Allocator, file: std.Io.File, rea
     }
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
-    return digest;
+    return .{ .ok = digest };
 }
 
 fn readFixedToFileSha256(file: std.Io.File, reader: *std.Io.Reader, len: usize, hasher: *std.crypto.hash.sha2.Sha256) !void {

@@ -4,6 +4,7 @@ const config = @import("config.zig");
 const http = @import("protocol/http.zig");
 const version = @import("version.zig");
 const compat = @import("compat");
+const thread_stacks = @import("thread_stacks.zig");
 
 /// Self-update flow with release lookup, checksum validation, and rollback.
 pub const repo = version.repo;
@@ -179,9 +180,8 @@ pub fn confirmPendingUpdate(allocator: std.mem.Allocator) !bool {
 }
 
 pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
-    if (!isNumericVersion(version.current)) return;
     const release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
-    const release = downloadGithubUrlUnchecked(allocator, release_url, cfg) catch return;
+    const release = try downloadGithubUrlUnchecked(allocator, release_url, cfg);
     defer allocator.free(release);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
     defer parsed.deinit();
@@ -197,15 +197,29 @@ pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
 }
 
 pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, updateLoop, .{ allocator, cfg }) catch return;
+    const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, updateLoop, .{ allocator, cfg }) catch return;
     thread.detach();
 }
 
 fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     while (true) {
         compat.sleep(6 * 60 * 60 * std.time.ns_per_s);
-        checkAndUpdate(allocator, cfg) catch {};
+        checkAndUpdate(allocator, cfg) catch |err| logUpdateError(err);
     }
+}
+
+fn logUpdateError(err: anyerror) void {
+    var stdout_buf: [256]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
+    stdout.print("Auto update check failed: {s}\n", .{@errorName(err)}) catch {};
+}
+
+fn logUpdateStageError(stage: []const u8, err: anyerror) void {
+    var stdout_buf: [256]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
+    stdout.print("Auto update {s} failed: {s}\n", .{ stage, @errorName(err) }) catch {};
 }
 
 fn downloadAndReplace(
@@ -217,7 +231,10 @@ fn downloadAndReplace(
     digest: ?[]const u8,
     sums_url: ?[]const u8,
 ) !void {
-    const expected = try expectedSha256(allocator, cfg, asset_name, digest, sums_url);
+    const expected = expectedSha256(allocator, cfg, asset_name, digest, sums_url) catch |err| {
+        logUpdateStageError("checksum", err);
+        return err;
+    };
     defer if (expected) |value| allocator.free(value);
     const exe = try compat.selfExePathAlloc(allocator);
     defer allocator.free(exe);
@@ -231,9 +248,15 @@ fn downloadAndReplace(
     {
         var file = try compat.createFileAbsolute(tmp, .{ .truncate = true, .permissions = compat.executable_file_permissions });
         defer file.close(std.Options.debug_io);
-        try downloadReleaseAssetToFile(allocator, url, cfg, expected, file);
+        downloadReleaseAssetToFile(allocator, url, cfg, expected, file) catch |err| {
+            logUpdateStageError("asset download", err);
+            return err;
+        };
     }
-    try runBinaryPreflight(allocator, tmp);
+    runBinaryPreflight(allocator, tmp) catch |err| {
+        logUpdateStageError("preflight", err);
+        if (err != error.OutOfMemory) return err;
+    };
     try copyFileAbsolute(exe, backup);
     errdefer deleteFileIgnoreMissing(backup);
     try writePendingStateFile(allocator, state_path, .{
@@ -269,53 +292,100 @@ fn downloadReleaseAssetToFile(allocator: std.mem.Allocator, url: []const u8, cfg
 }
 
 fn downloadGithubUrlUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) ![]u8 {
-    if (http.getReadCfg(allocator, url, cfg)) |body| return body else |err| {
-        var last_err = err;
-        if (compat.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
-            defer allocator.free(env_value);
-            var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
-            while (it.next()) |proxy| {
-                const proxied = try githubProxyUrl(allocator, proxy, url);
-                defer allocator.free(proxied);
-                if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |proxy_err| last_err = proxy_err;
-            }
-        } else |env_err| switch (env_err) {
-            error.EnvironmentVariableMissing => {
-                for (&default_github_proxies) |proxy| {
-                    const proxied = try githubProxyUrl(allocator, proxy, url);
-                    defer allocator.free(proxied);
-                    if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |proxy_err| last_err = proxy_err;
-                }
-            },
-            else => return env_err,
-        }
+    if (githubReleaseAssetUrl(url)) {
+        if (try tryDownloadGithubUrlViaProxies(allocator, url, cfg)) |body| return body;
+    }
+    if (http.getReadCfg(allocator, url, cfg)) |body| return body else |last_err| {
+        if (try tryDownloadGithubUrlViaProxies(allocator, url, cfg)) |body| return body;
         return last_err;
     }
 }
 
 fn downloadGithubUrlToFileUnchecked(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, file: std.Io.File) ![32]u8 {
-    if (http.getToFileSha256Cfg(allocator, url, cfg, file)) |digest| return digest else |err| {
-        var last_err = err;
-        if (compat.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
-            defer allocator.free(env_value);
-            var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
-            while (it.next()) |proxy| {
-                const proxied = try githubProxyUrl(allocator, proxy, url);
-                defer allocator.free(proxied);
-                if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |proxy_err| last_err = proxy_err;
-            }
-        } else |env_err| switch (env_err) {
-            error.EnvironmentVariableMissing => {
-                for (&default_github_proxies) |proxy| {
-                    const proxied = try githubProxyUrl(allocator, proxy, url);
-                    defer allocator.free(proxied);
-                    if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |proxy_err| last_err = proxy_err;
-                }
-            },
-            else => return env_err,
-        }
+    if (githubReleaseAssetUrl(url)) {
+        if (try tryDownloadGithubUrlToFileViaProxies(allocator, url, cfg, file)) |digest| return digest;
+    }
+    if (http.getToFileSha256Cfg(allocator, url, cfg, file)) |digest| return digest else |last_err| {
+        if (try tryDownloadGithubUrlToFileViaProxies(allocator, url, cfg, file)) |digest| return digest;
         return last_err;
     }
+}
+
+fn tryDownloadGithubUrlViaProxies(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config) !?[]u8 {
+    if (compat.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
+        defer allocator.free(env_value);
+        var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
+        return tryDownloadGithubUrlViaProxyIterator(allocator, url, cfg, &it);
+    } else |env_err| switch (env_err) {
+        error.EnvironmentVariableMissing => {
+            return tryDownloadGithubUrlViaProxyList(allocator, url, cfg, &default_github_proxies);
+        },
+        else => return env_err,
+    }
+}
+
+fn tryDownloadGithubUrlToFileViaProxies(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, file: std.Io.File) !?[32]u8 {
+    if (compat.getEnvVarOwned(allocator, "KOMARI_GITHUB_PROXIES")) |env_value| {
+        defer allocator.free(env_value);
+        var it = std.mem.tokenizeAny(u8, env_value, " ,;\t\r\n");
+        return tryDownloadGithubUrlToFileViaProxyIterator(allocator, url, cfg, file, &it);
+    } else |env_err| switch (env_err) {
+        error.EnvironmentVariableMissing => {
+            return tryDownloadGithubUrlToFileViaProxyList(allocator, url, cfg, file, &default_github_proxies);
+        },
+        else => return env_err,
+    }
+}
+
+fn tryDownloadGithubUrlViaProxyIterator(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    cfg: config.Config,
+    proxies: *std.mem.TokenIterator(u8, .any),
+) !?[]u8 {
+    while (proxies.next()) |proxy| {
+        const proxied = try githubProxyUrl(allocator, proxy, url);
+        defer allocator.free(proxied);
+        if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |_| {}
+    }
+    return null;
+}
+
+fn tryDownloadGithubUrlViaProxyList(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, proxies: []const []const u8) !?[]u8 {
+    for (proxies) |proxy| {
+        const proxied = try githubProxyUrl(allocator, proxy, url);
+        defer allocator.free(proxied);
+        if (http.getReadCfg(allocator, proxied, cfg)) |body| return body else |_| {}
+    }
+    return null;
+}
+
+fn tryDownloadGithubUrlToFileViaProxyIterator(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    cfg: config.Config,
+    file: std.Io.File,
+    proxies: *std.mem.TokenIterator(u8, .any),
+) !?[32]u8 {
+    while (proxies.next()) |proxy| {
+        const proxied = try githubProxyUrl(allocator, proxy, url);
+        defer allocator.free(proxied);
+        if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |_| {}
+    }
+    return null;
+}
+
+fn tryDownloadGithubUrlToFileViaProxyList(allocator: std.mem.Allocator, url: []const u8, cfg: config.Config, file: std.Io.File, proxies: []const []const u8) !?[32]u8 {
+    for (proxies) |proxy| {
+        const proxied = try githubProxyUrl(allocator, proxy, url);
+        defer allocator.free(proxied);
+        if (http.getToFileSha256Cfg(allocator, proxied, cfg, file)) |digest| return digest else |_| {}
+    }
+    return null;
+}
+
+fn githubReleaseAssetUrl(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "https://github.com/") and std.mem.indexOf(u8, url, "/releases/download/") != null;
 }
 
 pub fn githubProxyUrl(allocator: std.mem.Allocator, proxy: []const u8, url: []const u8) ![]const u8 {
@@ -342,6 +412,14 @@ pub fn checksumFromSums(sums: []const u8, asset_name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, name, asset_name) and isHexSha256(hex)) return hex;
     }
     return null;
+}
+
+pub fn githubReleaseAssetUrlForTest(url: []const u8) bool {
+    return githubReleaseAssetUrl(url);
+}
+
+pub fn downloadGithubUrlToFileViaProxyListForTest(allocator: std.mem.Allocator, url: []const u8, file: std.Io.File, proxies: []const []const u8) !?[32]u8 {
+    return tryDownloadGithubUrlToFileViaProxyList(allocator, url, config.Config{}, file, proxies);
 }
 
 fn sha256Matches(bytes: []const u8, expected: []const u8) bool {
@@ -475,12 +553,6 @@ fn parseNumericIdentifier(value: []const u8) ?u64 {
     if (value.len == 0) return null;
     for (value) |c| if (c < '0' or c > '9') return null;
     return std.fmt.parseInt(u64, value, 10) catch null;
-}
-
-fn isNumericVersion(value_raw: []const u8) bool {
-    const value = parseVersionPrefixless(value_raw);
-    if (value.len == 0) return false;
-    return value[0] >= '0' and value[0] <= '9';
 }
 
 fn parseVersionPart(part: []const u8) u64 {

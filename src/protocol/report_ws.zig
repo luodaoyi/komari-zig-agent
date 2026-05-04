@@ -154,7 +154,7 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
 
 fn startReader(allocator: std.mem.Allocator, conn: *ws_client.Client, cfg: config.Config) void {
     conn.acquire();
-    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, readerLoop, .{ allocator, conn, cfg }) catch {
+    const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, readerLoop, .{ allocator, conn, cfg }) catch {
         conn.release(allocator);
         return;
     };

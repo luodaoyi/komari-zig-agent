@@ -79,7 +79,7 @@ pub fn uploadExecResult(allocator: std.mem.Allocator, cfg: anytype, task_id: []c
     const result = if (cfg.disable_web_ssh)
         try disabledRemoteControlResult(allocator)
     else
-        try runCommandDetailed(allocator, command);
+        runCommandDetailed(allocator, command) catch |err| try commandFailureResult(allocator, err);
     defer result.deinit(allocator);
 
     const finished = try utcNow(allocator);
@@ -94,6 +94,13 @@ pub fn uploadExecResult(allocator: std.mem.Allocator, cfg: anytype, task_id: []c
 pub fn disabledRemoteControlResult(allocator: std.mem.Allocator) !CommandResult {
     return .{
         .output = try allocator.dupe(u8, "Remote control is disabled."),
+        .exit_code = -1,
+    };
+}
+
+pub fn commandFailureResult(allocator: std.mem.Allocator, err: anyerror) !CommandResult {
+    return .{
+        .output = try std.fmt.allocPrint(allocator, "Command failed: {s}", .{@errorName(err)}),
         .exit_code = -1,
     };
 }

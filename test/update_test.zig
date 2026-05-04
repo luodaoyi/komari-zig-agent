@@ -1,4 +1,5 @@
 const std = @import("std");
+const local_http = @import("local_http.zig");
 const update = @import("update");
 
 test "release versions compare with or without v prefix" {
@@ -17,6 +18,11 @@ test "stable release updates same numeric prerelease" {
 test "build metadata does not affect release ordering" {
     try std.testing.expect(!update.newerThan("v0.1.6+local", "v0.1.6"));
     try std.testing.expect(update.newerThan("v0.1.6+local", "v0.1.7"));
+}
+
+test "development builds update to stable releases" {
+    try std.testing.expect(update.newerThan("dev", "v0.1.17"));
+    try std.testing.expect(update.newerThan("v0.1.17-tlsstack-test", "v0.1.17"));
 }
 
 test "self update asset name matches release assets" {
@@ -38,6 +44,42 @@ test "self update github proxy urls do not include closed mirrors" {
     const api_url = try update.githubProxyUrl(std.testing.allocator, "https://gh.example.com/", "https://api.github.com/repos/o/r/releases/latest");
     defer std.testing.allocator.free(api_url);
     try std.testing.expectEqualStrings("https://gh.example.com/https://api.github.com/repos/o/r/releases/latest", api_url);
+}
+
+test "self update identifies github release asset urls" {
+    try std.testing.expect(update.githubReleaseAssetUrlForTest("https://github.com/o/r/releases/download/v1/a"));
+    try std.testing.expect(!update.githubReleaseAssetUrlForTest("https://api.github.com/repos/o/r/releases/latest"));
+    try std.testing.expect(!update.githubReleaseAssetUrlForTest("https://example.com/o/r/releases/download/v1/a"));
+}
+
+test "self update downloads release assets through proxy using real http" {
+    const responses = [_][]const u8{
+        "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+    };
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    defer server.join() catch unreachable;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(std.testing.io, "asset", .{ .read = true });
+    defer file.close(std.testing.io);
+
+    const proxy = try server.url(std.testing.allocator, "");
+    defer std.testing.allocator.free(proxy);
+    const digest = (try update.downloadGithubUrlToFileViaProxyListForTest(
+        std.testing.allocator,
+        "https://github.com/luodaoyi/komari-zig-agent/releases/download/v0.1.17/komari-agent-linux-amd64",
+        file,
+        &.{proxy},
+    )).?;
+
+    var expected: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash("hello world", &expected, .{});
+    try std.testing.expectEqualSlices(u8, &expected, &digest);
+
+    const body = try tmp.dir.readFileAlloc(std.testing.io, "asset", std.testing.allocator, .limited(64));
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello world", body);
 }
 
 test "self update checksum file parser accepts common formats" {
