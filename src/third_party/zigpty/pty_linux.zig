@@ -63,6 +63,14 @@ fn execveLinkerFallback(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8,
     _ = linux.execve(interp, new_argv_ptr, envp);
 }
 
+/// Seek within an ELF file without instantiating Zig 0.16's linux.lseek wrapper on
+/// 32-bit targets, where its offset bitcast currently fails to compile.
+fn seek(fd: i32, offset: u64) std.posix.E {
+    if (@sizeOf(usize) == 4 and offset > std.math.maxInt(usize)) return .OVERFLOW;
+    const rc = linux.syscall3(.lseek, @as(usize, @bitCast(@as(isize, fd))), @intCast(offset), linux.SEEK.SET);
+    return std.posix.errno(rc);
+}
+
 /// Read the PT_INTERP (dynamic linker path) from an ELF binary.
 fn readElfInterp(file: [*:0]const u8, buf: *[256]u8) ?[*:0]const u8 {
     const fd_rc = linux.open(file, .{ .ACCMODE = .RDONLY }, 0);
@@ -91,7 +99,7 @@ fn readElfInterp(file: [*:0]const u8, buf: *[256]u8) ?[*:0]const u8 {
     var idx: u16 = 0;
     while (idx < e_phnum) : (idx += 1) {
         const off = e_phoff + @as(u64, idx) * e_phentsize;
-        if (std.posix.errno(linux.lseek(fd, @bitCast(off), linux.SEEK.SET)) != .SUCCESS) continue;
+        if (seek(fd, off) != .SUCCESS) continue;
         const pn = linux.read(fd, &ph_buf, @min(e_phentsize, 56));
         if (std.posix.errno(pn) != .SUCCESS or pn < 56) continue;
 
@@ -102,7 +110,7 @@ fn readElfInterp(file: [*:0]const u8, buf: *[256]u8) ?[*:0]const u8 {
         const p_filesz: u64 = std.mem.readInt(u64, ph_buf[32..40], .little);
         if (p_filesz == 0 or p_filesz > buf.len) return null;
 
-        if (std.posix.errno(linux.lseek(fd, @bitCast(p_offset), linux.SEEK.SET)) != .SUCCESS) return null;
+        if (seek(fd, p_offset) != .SUCCESS) return null;
         const rn = linux.read(fd, buf, @intCast(p_filesz));
         if (std.posix.errno(rn) != .SUCCESS or rn < p_filesz) return null;
 

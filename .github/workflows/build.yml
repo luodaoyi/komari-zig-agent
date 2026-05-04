@@ -290,10 +290,10 @@ jobs:
             target: aarch64-linux-musl
             runner: qemu-aarch64-static
           - arch: mips
-            target: mips-linux-musl
+            target: mips-linux-musleabi
             runner: qemu-mips-static
           - arch: mipsel
-            target: mipsel-linux-musl
+            target: mipsel-linux-musleabi
             runner: qemu-mipsel-static
           - arch: mips64
             target: mips64-linux-muslabi64
@@ -355,10 +355,10 @@ jobs:
             target: arm-linux-musleabi
           - os: linux
             arch: mips
-            target: mips-linux-musl
+            target: mips-linux-musleabi
           - os: linux
             arch: mipsel
-            target: mipsel-linux-musl
+            target: mipsel-linux-musleabi
           - os: linux
             arch: mips64
             target: mips64-linux-muslabi64

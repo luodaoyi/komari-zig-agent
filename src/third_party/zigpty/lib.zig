@@ -142,7 +142,7 @@ const unix = if (!is_windows) struct {
     extern fn ioctl(fd: c_int, request: c_ulong, ...) c_int;
 
     const TIOCSWINSZ: c_ulong = switch (builtin.os.tag) {
-        .linux => @as(c_ulong, @bitCast(@as(c_long, @intCast(std.posix.T.IOCSWINSZ)))),
+        .linux => @intCast(std.posix.T.IOCSWINSZ),
         .macos => 0x80087467,
         else => 0,
     };
