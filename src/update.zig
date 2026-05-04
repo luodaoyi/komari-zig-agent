@@ -180,7 +180,8 @@ pub fn confirmPendingUpdate(allocator: std.mem.Allocator) !bool {
 }
 
 pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
-    const release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
+    const release_url = try releaseApiUrl(allocator);
+    defer allocator.free(release_url);
     const release = try downloadGithubUrlUnchecked(allocator, release_url, cfg);
     defer allocator.free(release);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, release, .{});
@@ -194,6 +195,25 @@ pub fn checkAndUpdate(allocator: std.mem.Allocator, cfg: config.Config) !void {
     const asset = findAsset(parsed.value.object, wanted) orelse return;
     const sums_url = findAssetUrl(parsed.value.object, "SHA256SUMS");
     try downloadAndReplace(allocator, asset.url, cfg, tag, wanted, asset.digest, sums_url);
+}
+
+fn releaseApiUrl(allocator: std.mem.Allocator) ![]const u8 {
+    if (compat.getEnvVarOwned(allocator, "KOMARI_RELEASE_API_URL")) |value| {
+        if (value.len != 0) return value;
+        allocator.free(value);
+    } else |err| switch (err) {
+        error.EnvironmentVariableMissing => {},
+        else => return err,
+    }
+    return allocator.dupe(u8, "https://api.github.com/repos/" ++ repo ++ "/releases/latest");
+}
+
+fn releaseApiUrlFromEnvValue(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    return allocator.dupe(u8, value);
+}
+
+pub fn releaseApiUrlFromEnvValueForTest(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    return releaseApiUrlFromEnvValue(allocator, value);
 }
 
 pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {

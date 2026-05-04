@@ -337,6 +337,75 @@ test_replace_systemd_discovery() {
     assert_file_contains "$LOG" "systemctl cat ${SERVICE}.service"
 }
 
+assert_no_backup_files() {
+  dir="$1"
+  ! find "$dir" -name '*.go-backup.*' -o -name '*.bak' | grep . >/dev/null 2>&1
+}
+
+test_update_binary_direct_success_no_backup() {
+  setup_case update_binary_direct
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  SCRIPT_TEST_TARGET="$target" SCRIPT_TEST_SYSTEMD_CAT=1 run_env sh "$ROOT/update-binary.sh" --binary "$target" --service "$SERVICE" >/dev/null
+  assert_file_contains "$target" "komari test agent" &&
+    assert_file_contains "$LOG" "systemctl stop ${SERVICE}.service" &&
+    assert_file_contains "$LOG" "systemctl restart ${SERVICE}.service" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
+test_update_binary_systemd_discovery_preserves_service() {
+  setup_case update_binary_systemd_find
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  SCRIPT_TEST_TARGET="$target" SCRIPT_TEST_SYSTEMD_CAT=1 run_env sh "$ROOT/update-binary.sh" --service "$SERVICE" >/dev/null
+  assert_file_contains "$target" "komari test agent" &&
+    assert_file_contains "$LOG" "systemctl cat ${SERVICE}.service" &&
+    assert_file_contains "$LOG" "systemctl stop ${SERVICE}.service" &&
+    assert_file_contains "$LOG" "systemctl restart ${SERVICE}.service" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
+test_update_binary_checksum_failure_keeps_old_no_backup() {
+  setup_case update_binary_checksum_fail
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  write_bad_checksum
+  if run_env sh "$ROOT/update-binary.sh" --binary "$target" --service "$SERVICE" >/dev/null 2>&1; then
+    return 1
+  fi
+  assert_file_contains "$target" "old-agent" &&
+    assert_file_not_contains "$target" "komari test agent" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
+test_update_binary_preflight_failure_keeps_old_no_backup() {
+  setup_case update_binary_preflight_fail
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  write_bad_preflight_asset "$FIXTURES/$ASSET"
+  if run_env sh "$ROOT/update-binary.sh" --binary "$target" --service "$SERVICE" >/dev/null 2>&1; then
+    return 1
+  fi
+  assert_file_contains "$target" "old-agent" &&
+    assert_file_not_contains "$target" "komari test agent" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
+test_update_binary_restart_failure_leaves_new_no_backup() {
+  setup_case update_binary_restart_fail
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  SCRIPT_TEST_TARGET="$target" SCRIPT_TEST_SYSTEMD_CAT=1 SCRIPT_TEST_SYSTEMD_RESTART_FAIL=1 \
+    run_env sh "$ROOT/update-binary.sh" --binary "$target" --service "$SERVICE" >/dev/null 2>&1 && return 1
+  assert_file_contains "$target" "komari test agent" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
 run_test() {
   name="$1"
   if "$name"; then
@@ -360,6 +429,11 @@ run_test test_replace_checksum_failure_keeps_old
 run_test test_replace_preflight_failure_keeps_old
 run_test test_replace_start_failure_rolls_back
 run_test test_replace_systemd_discovery
+run_test test_update_binary_direct_success_no_backup
+run_test test_update_binary_systemd_discovery_preserves_service
+run_test test_update_binary_checksum_failure_keeps_old_no_backup
+run_test test_update_binary_preflight_failure_keeps_old_no_backup
+run_test test_update_binary_restart_failure_leaves_new_no_backup
 
 printf 'script tests: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
