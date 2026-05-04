@@ -42,9 +42,12 @@ fn configureLinux(term: *std.os.linux.termios, use_utf8: bool) void {
         .IEXTEN = true,
     };
 
-    // Baud rate
-    term.ispeed = .B38400;
-    term.ospeed = .B38400;
+    // Baud rate. Some Linux ABIs such as MIPS keep speeds in cflag instead of
+    // exposing dedicated ispeed/ospeed fields in Zig's termios definition.
+    if (@hasField(std.os.linux.termios, "ispeed")) {
+        term.ispeed = .B38400;
+        term.ospeed = .B38400;
+    }
 
     // Special characters
     term.cc[@intFromEnum(V.INTR)] = 0x03; // Ctrl-C
