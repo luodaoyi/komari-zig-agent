@@ -10,6 +10,10 @@ binary_path=""
 install_dir="/opt/komari"
 tmp=""
 backup=""
+download_connect_timeout="${KOMARI_DOWNLOAD_CONNECT_TIMEOUT:-8}"
+download_max_time="${KOMARI_DOWNLOAD_MAX_TIME:-20}"
+download_low_speed_limit="${KOMARI_DOWNLOAD_LOW_SPEED_LIMIT:-1024}"
+download_low_speed_time="${KOMARI_DOWNLOAD_LOW_SPEED_TIME:-10}"
 
 log() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -64,24 +68,33 @@ esac
 download() {
   dl_url="$1"
   dl_out="$2"
-  dl_attempt=1
-  dl_max_attempts=3
+  dl_attempt="${3:-1}"
+  dl_max_attempts="${4:-1}"
   if command -v curl >/dev/null 2>&1; then
     while [ "$dl_attempt" -le "$dl_max_attempts" ]; do
-      curl -fL --connect-timeout 20 -o "$dl_out" "$dl_url" && return 0
+      curl -fL \
+        --connect-timeout "$download_connect_timeout" \
+        --max-time "$download_max_time" \
+        --speed-limit "$download_low_speed_limit" \
+        --speed-time "$download_low_speed_time" \
+        -o "$dl_out" "$dl_url" && return 0
       rm -f "$dl_out"
-      log "download failed, retry ${dl_attempt}/${dl_max_attempts}"
+      log "download failed or too slow, retry ${dl_attempt}/${dl_max_attempts}"
       dl_attempt=$((dl_attempt + 1))
-      sleep 2
+      sleep 1
     done
     return 1
   elif command -v wget >/dev/null 2>&1; then
     while [ "$dl_attempt" -le "$dl_max_attempts" ]; do
-      wget -O "$dl_out" "$dl_url" && return 0
+      wget -O "$dl_out" \
+        --connect-timeout="$download_connect_timeout" \
+        --read-timeout="$download_low_speed_time" \
+        --timeout="$download_connect_timeout" \
+        "$dl_url" && return 0
       rm -f "$dl_out"
-      log "download failed, retry ${dl_attempt}/${dl_max_attempts}"
+      log "download failed or too slow, retry ${dl_attempt}/${dl_max_attempts}"
       dl_attempt=$((dl_attempt + 1))
-      sleep 2
+      sleep 1
     done
     return 1
   else
@@ -128,6 +141,13 @@ select_fastest_proxy_url() {
   printf '%s\n' "$best_proxy"
 }
 
+download_attempts_for_url() {
+  case "$1" in
+    https://github.com/*) printf '1\n' ;;
+    *) printf '2\n' ;;
+  esac
+}
+
 try_download_binary() {
   tdb_url="$1"
   tdb_sums_url="$2"
@@ -135,11 +155,14 @@ try_download_binary() {
   tdb_sums_fallback_url="${4:-}"
   tdb_sums_out="${tdb_out}.sha256.$$"
   rm -f "$tdb_sums_out"
+  tdb_binary_attempts="$(download_attempts_for_url "$tdb_url")"
+  tdb_sums_attempts="$(download_attempts_for_url "$tdb_sums_url")"
   log "download: ${tdb_url}"
-  download "$tdb_url" "$tdb_out" || { rm -f "$tdb_sums_out"; return 1; }
-  if ! download "$tdb_sums_url" "$tdb_sums_out"; then
+  download "$tdb_url" "$tdb_out" 1 "$tdb_binary_attempts" || { rm -f "$tdb_sums_out"; return 1; }
+  if ! download "$tdb_sums_url" "$tdb_sums_out" 1 "$tdb_sums_attempts"; then
     if [ -n "$tdb_sums_fallback_url" ]; then
-      download "$tdb_sums_fallback_url" "$tdb_sums_out" || { rm -f "$tdb_out" "$tdb_sums_out"; return 1; }
+      tdb_sums_fallback_attempts="$(download_attempts_for_url "$tdb_sums_fallback_url")"
+      download "$tdb_sums_fallback_url" "$tdb_sums_out" 1 "$tdb_sums_fallback_attempts" || { rm -f "$tdb_out" "$tdb_sums_out"; return 1; }
     else
       rm -f "$tdb_out" "$tdb_sums_out"
       return 1

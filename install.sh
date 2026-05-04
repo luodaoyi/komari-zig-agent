@@ -21,6 +21,10 @@ github_proxy=""
 github_proxy_list="${KOMARI_GITHUB_PROXIES:-https://gh.llkk.cc https://gh-proxy.com https://ghproxy.net https://ghfast.top https://ghproxy.cc}"
 install_version=""
 komari_args=""
+download_connect_timeout="${KOMARI_DOWNLOAD_CONNECT_TIMEOUT:-8}"
+download_max_time="${KOMARI_DOWNLOAD_MAX_TIME:-20}"
+download_low_speed_limit="${KOMARI_DOWNLOAD_LOW_SPEED_LIMIT:-1024}"
+download_low_speed_time="${KOMARI_DOWNLOAD_LOW_SPEED_TIME:-10}"
 
 os_type="$(uname -s)"
 case "$os_type" in
@@ -182,14 +186,19 @@ mkdir -p "$target_dir"
 download_file() {
   df_url="$1"
   df_out="$2"
-  df_attempt=1
-  df_max_attempts=3
+  df_attempt="${3:-1}"
+  df_max_attempts="${4:-1}"
   while [ "$df_attempt" -le "$df_max_attempts" ]; do
-    curl -fL -o "$df_out" "$df_url" && return 0
+    curl -fL \
+      --connect-timeout "$download_connect_timeout" \
+      --max-time "$download_max_time" \
+      --speed-limit "$download_low_speed_limit" \
+      --speed-time "$download_low_speed_time" \
+      -o "$df_out" "$df_url" && return 0
     rm -f "$df_out"
-    log_warning "Download failed, retry ${df_attempt}/${df_max_attempts}"
+    log_warning "Download failed or too slow, retry ${df_attempt}/${df_max_attempts}"
     df_attempt=$((df_attempt + 1))
-    sleep 2
+    sleep 1
   done
   return 1
 }
@@ -232,6 +241,13 @@ select_fastest_proxy_url() {
   printf '%s\n' "$best_proxy"
 }
 
+download_attempts_for_url() {
+  case "$1" in
+    https://github.com/*) printf '1\n' ;;
+    *) printf '2\n' ;;
+  esac
+}
+
 try_download_binary() {
   tdb_url="$1"
   tdb_sums_url="$2"
@@ -239,11 +255,14 @@ try_download_binary() {
   tdb_sums_fallback_url="${4:-}"
   tdb_sums_out="${tdb_out}.sha256.$$"
   rm -f "$tdb_sums_out"
+  tdb_binary_attempts="$(download_attempts_for_url "$tdb_url")"
+  tdb_sums_attempts="$(download_attempts_for_url "$tdb_sums_url")"
   log_info "Downloading: ${CYAN}$tdb_url${NC}"
-  download_file "$tdb_url" "$tdb_out" || { rm -f "$tdb_sums_out"; return 1; }
-  if ! download_file "$tdb_sums_url" "$tdb_sums_out"; then
+  download_file "$tdb_url" "$tdb_out" 1 "$tdb_binary_attempts" || { rm -f "$tdb_sums_out"; return 1; }
+  if ! download_file "$tdb_sums_url" "$tdb_sums_out" 1 "$tdb_sums_attempts"; then
     if [ -n "$tdb_sums_fallback_url" ]; then
-      download_file "$tdb_sums_fallback_url" "$tdb_sums_out" || { rm -f "$tdb_out" "$tdb_sums_out"; return 1; }
+      tdb_sums_fallback_attempts="$(download_attempts_for_url "$tdb_sums_fallback_url")"
+      download_file "$tdb_sums_fallback_url" "$tdb_sums_out" 1 "$tdb_sums_fallback_attempts" || { rm -f "$tdb_out" "$tdb_sums_out"; return 1; }
     else
       rm -f "$tdb_out" "$tdb_sums_out"
       return 1

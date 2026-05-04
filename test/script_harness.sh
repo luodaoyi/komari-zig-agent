@@ -31,13 +31,13 @@ not_ok() {
 assert_file_contains() {
   file="$1"
   text="$2"
-  grep -F "$text" "$file" >/dev/null 2>&1
+  grep -F -- "$text" "$file" >/dev/null 2>&1
 }
 
 assert_file_not_contains() {
   file="$1"
   text="$2"
-  ! grep -F "$text" "$file" >/dev/null 2>&1
+  ! grep -F -- "$text" "$file" >/dev/null 2>&1
 }
 
 setup_case() {
@@ -88,6 +88,7 @@ write_fakes() {
 out=""
 fmt=""
 url=""
+orig_args="$*"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
@@ -97,6 +98,7 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
+printf 'curl-args %s\n' "$orig_args" >> "$SCRIPT_TEST_LOG"
 printf 'curl %s\n' "$url" >> "$SCRIPT_TEST_LOG"
 case "$out:$fmt" in
   /dev/null:*) printf '0.010'; exit 0 ;;
@@ -111,6 +113,9 @@ case "$url" in
 esac
 if [ "${SCRIPT_TEST_DIRECT_BINARY_FAIL:-0}" = 1 ] && [ "$is_direct" = 1 ] && [ "$is_sums" = 0 ]; then
   exit 22
+fi
+if [ "${SCRIPT_TEST_DIRECT_BINARY_SLOW:-0}" = 1 ] && [ "$is_direct" = 1 ] && [ "$is_sums" = 0 ]; then
+  exit 28
 fi
 if [ "${SCRIPT_TEST_DIRECT_SUMS_FAIL:-0}" = 1 ] && [ "$is_direct" = 1 ] && [ "$is_sums" = 1 ]; then
   exit 22
@@ -211,6 +216,7 @@ run_env() {
     SCRIPT_TEST_ASSET="$ASSET" \
     SCRIPT_TEST_DIRECT_BINARY_FAIL="${SCRIPT_TEST_DIRECT_BINARY_FAIL:-0}" \
     SCRIPT_TEST_DIRECT_SUMS_FAIL="${SCRIPT_TEST_DIRECT_SUMS_FAIL:-0}" \
+    SCRIPT_TEST_DIRECT_BINARY_SLOW="${SCRIPT_TEST_DIRECT_BINARY_SLOW:-0}" \
     SCRIPT_TEST_SYSTEMD_CAT="${SCRIPT_TEST_SYSTEMD_CAT:-0}" \
     SCRIPT_TEST_TARGET="${SCRIPT_TEST_TARGET:-}" \
     SCRIPT_TEST_SYSTEMD_RESTART_FAIL="${SCRIPT_TEST_SYSTEMD_RESTART_FAIL:-0}" \
@@ -234,6 +240,17 @@ test_install_proxy_fallback_success() {
   SCRIPT_TEST_DIRECT_BINARY_FAIL=1 run_env sh "$ROOT/install.sh" --install-dir "$INSTALL_DIR" --install-service-name "$SERVICE" -e http://server -t token >/dev/null
   [ -x "$INSTALL_DIR/agent" ] &&
     assert_file_contains "$LOG" "curl https://gh.llkk.cc/https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET"
+}
+
+test_install_slow_direct_switches_to_proxy_once() {
+  setup_case install_slow_direct
+  SCRIPT_TEST_DIRECT_BINARY_SLOW=1 run_env sh "$ROOT/install.sh" --install-dir "$INSTALL_DIR" --install-service-name "$SERVICE" -e http://server -t token >/dev/null
+  direct_count="$(grep -Fx "curl https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" "$LOG" | wc -l | tr -d ' ')"
+  [ "$direct_count" = 1 ] &&
+    assert_file_contains "$LOG" "curl https://gh.llkk.cc/https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" &&
+    assert_file_contains "$LOG" "--max-time 20" &&
+    assert_file_contains "$LOG" "--speed-limit 1024" &&
+    assert_file_contains "$LOG" "--speed-time 10"
 }
 
 test_install_explicit_proxy_success() {
@@ -279,6 +296,20 @@ test_replace_proxy_fallback_success() {
   SCRIPT_TEST_DIRECT_BINARY_FAIL=1 run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >/dev/null
   assert_file_contains "$target" "komari test agent" &&
     assert_file_contains "$LOG" "curl https://gh.llkk.cc/https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET"
+}
+
+test_replace_slow_direct_switches_to_proxy_once() {
+  setup_case replace_slow_direct
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  SCRIPT_TEST_DIRECT_BINARY_SLOW=1 run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >/dev/null
+  direct_count="$(grep -Fx "curl https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" "$LOG" | wc -l | tr -d ' ')"
+  [ "$direct_count" = 1 ] &&
+    assert_file_contains "$target" "komari test agent" &&
+    assert_file_contains "$LOG" "curl https://gh.llkk.cc/https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" &&
+    assert_file_contains "$LOG" "--max-time 20" &&
+    assert_file_contains "$LOG" "--speed-limit 1024"
 }
 
 test_replace_proxy_checksum_fallback_success() {
@@ -354,6 +385,21 @@ test_update_binary_direct_success_no_backup() {
     assert_no_backup_files "$INSTALL_DIR"
 }
 
+test_update_binary_slow_direct_switches_to_proxy_once() {
+  setup_case update_binary_slow_direct
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  chmod 0755 "$target"
+  SCRIPT_TEST_TARGET="$target" SCRIPT_TEST_SYSTEMD_CAT=1 SCRIPT_TEST_DIRECT_BINARY_SLOW=1 run_env sh "$ROOT/update-binary.sh" --binary "$target" --service "$SERVICE" >/dev/null
+  direct_count="$(grep -Fx "curl https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" "$LOG" | wc -l | tr -d ' ')"
+  [ "$direct_count" = 1 ] &&
+    assert_file_contains "$target" "komari test agent" &&
+    assert_file_contains "$LOG" "curl https://gh.llkk.cc/https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" &&
+    assert_file_contains "$LOG" "--max-time 20" &&
+    assert_file_contains "$LOG" "--speed-limit 1024" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
 test_update_binary_systemd_discovery_preserves_service() {
   setup_case update_binary_systemd_find
   target="$INSTALL_DIR/agent"
@@ -419,17 +465,20 @@ mkdir -p "$BASE"
 
 run_test test_install_direct_success
 run_test test_install_proxy_fallback_success
+run_test test_install_slow_direct_switches_to_proxy_once
 run_test test_install_explicit_proxy_success
 run_test test_install_checksum_failure
 run_test test_install_preflight_failure
 run_test test_replace_direct_success
 run_test test_replace_proxy_fallback_success
+run_test test_replace_slow_direct_switches_to_proxy_once
 run_test test_replace_proxy_checksum_fallback_success
 run_test test_replace_checksum_failure_keeps_old
 run_test test_replace_preflight_failure_keeps_old
 run_test test_replace_start_failure_rolls_back
 run_test test_replace_systemd_discovery
 run_test test_update_binary_direct_success_no_backup
+run_test test_update_binary_slow_direct_switches_to_proxy_once
 run_test test_update_binary_systemd_discovery_preserves_service
 run_test test_update_binary_checksum_failure_keeps_old_no_backup
 run_test test_update_binary_preflight_failure_keeps_old_no_backup
