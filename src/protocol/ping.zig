@@ -140,7 +140,7 @@ fn icmpPingAddress(addr: net.Address) !i64 {
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
         const n = try compat.recvFrom(sock, &buf);
-        if (isEchoReply(buf[0..n], ident, seq)) return compat.milliTimestamp() - start;
+        if (isEchoReply(buf[0..n], seq)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
@@ -172,33 +172,35 @@ fn icmp6PingAddress(addr: net.Address) !i64 {
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
         const n = try compat.recvFrom(sock, &buf);
-        if (isEchoReply6(buf[0..n], ident, seq)) return compat.milliTimestamp() - start;
+        if (isEchoReply6(buf[0..n], seq)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
 
-fn isEchoReply(bytes: []const u8, ident: u16, seq: u16) bool {
+fn isEchoReply(bytes: []const u8, seq: u16) bool {
     var off: usize = 0;
     if (bytes.len >= 20 and (bytes[0] >> 4) == 4) off = (bytes[0] & 0x0f) * 4;
     if (bytes.len < off + 8) return false;
     if (bytes[off] != 0 or bytes[off + 1] != 0) return false;
-    const got_ident = (@as(u16, bytes[off + 4]) << 8) | bytes[off + 5];
     const got_seq = (@as(u16, bytes[off + 6]) << 8) | bytes[off + 7];
-    return (got_ident == ident or got_ident == 0) and got_seq == seq;
+    return got_seq == seq;
 }
 
-fn isEchoReply6(bytes: []const u8, ident: u16, seq: u16) bool {
+fn isEchoReply6(bytes: []const u8, seq: u16) bool {
     var off: usize = 0;
     if (bytes.len >= 40 and (bytes[0] >> 4) == 6) off = 40;
     if (bytes.len < off + 8) return false;
     if (bytes[off] != 129 or bytes[off + 1] != 0) return false;
-    const got_ident = (@as(u16, bytes[off + 4]) << 8) | bytes[off + 5];
     const got_seq = (@as(u16, bytes[off + 6]) << 8) | bytes[off + 7];
-    return (got_ident == ident or got_ident == 0) and got_seq == seq;
+    return got_seq == seq;
 }
 
-pub fn isIcmp6EchoReplyForTest(bytes: []const u8, ident: u16, seq: u16) bool {
-    return isEchoReply6(bytes, ident, seq);
+pub fn isIcmpEchoReplyForTest(bytes: []const u8, _: u16, seq: u16) bool {
+    return isEchoReply(bytes, seq);
+}
+
+pub fn isIcmp6EchoReplyForTest(bytes: []const u8, _: u16, seq: u16) bool {
+    return isEchoReply6(bytes, seq);
 }
 
 pub fn parseTcpTarget(target: []const u8) !TcpTarget {

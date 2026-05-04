@@ -41,6 +41,18 @@ test "icmp checksum is deterministic" {
     try std.testing.expectEqual(@as(u16, 0), ping.icmpChecksum(&packet));
 }
 
+test "icmp echo reply parser accepts linux datagram socket rewritten identifier" {
+    var packet = [_]u8{0} ** 28;
+    packet[0] = 0x45; // IPv4 header, 20 bytes.
+    packet[20] = 0; // echo reply
+    packet[21] = 0;
+    packet[24] = 0x56; // Linux ping sockets may rewrite ICMP id.
+    packet[25] = 0x78;
+    packet[26] = 0;
+    packet[27] = 1;
+    try std.testing.expect(ping.isIcmpEchoReplyForTest(&packet, 0x1234, 1));
+}
+
 test "icmp6 echo reply parser accepts ipv6 payload" {
     var packet = [_]u8{0} ** 48;
     packet[0] = 0x60;
