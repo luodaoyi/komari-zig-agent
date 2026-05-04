@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const task = @import("protocol_task");
 
 test "empty exec task matches go result text" {
@@ -32,6 +33,14 @@ test "runCommand returns command stdout" {
     const output = try task.runCommandWithRunner(std.testing.allocator, "stdout", stdoutRunner);
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualStrings("hello", output);
+}
+
+test "runCommandDetailed executes real shell command on posix" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const result = try task.runCommandDetailed(std.testing.allocator, "printf e2e-exec-ok");
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("e2e-exec-ok", result.output);
+    try std.testing.expectEqual(@as(i32, 0), result.exit_code);
 }
 
 test "runCommandDetailed merges stderr and exit code" {

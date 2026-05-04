@@ -201,7 +201,7 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
             errdefer task_limiter.release();
             const args = try ExecTaskArgs.init(allocator, cfg, msg);
             errdefer args.deinit(allocator);
-            const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, runExecTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{}, runExecTask, .{ allocator, args });
             thread.detach();
         },
         .terminal => {

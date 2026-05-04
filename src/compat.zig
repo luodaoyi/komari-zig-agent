@@ -41,6 +41,7 @@ pub const fileWriter = fs.fileWriter;
 pub const readAll = fs.readAll;
 
 pub const closeFd = posix.closeFd;
+pub const pipe = posix.pipe;
 pub const socket = posix.socket;
 pub const sendTo = posix.sendTo;
 pub const recvFrom = posix.recvFrom;

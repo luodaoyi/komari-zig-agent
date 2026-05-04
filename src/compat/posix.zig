@@ -10,6 +10,26 @@ pub fn closeFd(fd: std.posix.fd_t) void {
     }
 }
 
+pub fn pipe() ![2]std.posix.fd_t {
+    var fds: [2]i32 = undefined;
+    if (builtin.os.tag == .linux) {
+        const rc = std.os.linux.pipe(&fds);
+        return switch (std.posix.errno(rc)) {
+            .SUCCESS => .{ fds[0], fds[1] },
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NFILE => error.SystemFdQuotaExceeded,
+            else => |err| std.posix.unexpectedErrno(err),
+        };
+    }
+    const rc = std.c.pipe(&fds);
+    return switch (std.posix.errno(rc)) {
+        .SUCCESS => .{ fds[0], fds[1] },
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        else => |err| std.posix.unexpectedErrno(err),
+    };
+}
+
 pub fn socket(domain: std.posix.sa_family_t, socket_type: u32, protocol: u32) !std.posix.fd_t {
     if (builtin.os.tag == .linux) {
         const rc = std.os.linux.socket(@intCast(domain), socket_type, protocol);

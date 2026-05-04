@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const http = @import("http.zig");
 const compat = @import("compat");
@@ -29,7 +30,8 @@ pub fn allocTaskResultJson(allocator: std.mem.Allocator, task_id: []const u8, re
 }
 
 pub fn runCommand(allocator: std.mem.Allocator, command: []const u8) ![]const u8 {
-    return runCommandWithRunner(allocator, command, realCommandRunner);
+    const result = try runCommandDetailed(allocator, command);
+    return result.output;
 }
 
 pub fn runCommandWithRunner(allocator: std.mem.Allocator, command: []const u8, runner: CommandRunner) ![]const u8 {
@@ -38,23 +40,80 @@ pub fn runCommandWithRunner(allocator: std.mem.Allocator, command: []const u8, r
 }
 
 pub fn runCommandDetailed(allocator: std.mem.Allocator, command: []const u8) !CommandResult {
-    return runCommandDetailedWithRunner(allocator, command, realCommandRunner);
+    if (command.len == 0) return .{ .output = try allocator.dupe(u8, "No command provided"), .exit_code = 0 };
+    if (builtin.os.tag == .windows) return error.UnsupportedOs;
+    return runCommandDetailedPosix(allocator, command) catch |err| switch (err) {
+        error.StreamTooLong => return .{
+            .output = try std.fmt.allocPrint(allocator, "Command output exceeded {d} bytes", .{max_command_output_bytes}),
+            .exit_code = -1,
+        },
+        else => return err,
+    };
+}
+
+fn runCommandDetailedPosix(allocator: std.mem.Allocator, command: []const u8) !CommandResult {
+    const shell_command_raw = try std.fmt.allocPrint(allocator, "PATH={s}; export PATH; exec 2>&1; {s}", .{ safe_command_path, command });
+    defer allocator.free(shell_command_raw);
+    const shell_command = try allocator.dupeZ(u8, shell_command_raw);
+    defer allocator.free(shell_command);
+    const fds = try compat.pipe();
+    errdefer {
+        compat.closeFd(fds[0]);
+        compat.closeFd(fds[1]);
+    }
+    const pid = try compat.fork();
+    if (pid == 0) {
+        compat.closeFd(fds[0]);
+        compat.dup2(fds[1], 1) catch std.process.exit(127);
+        compat.dup2(fds[1], 2) catch std.process.exit(127);
+        compat.closeFd(fds[1]);
+        const shell: [:0]const u8 = "/bin/sh";
+        const arg_c: [:0]const u8 = "-c";
+        const env_path: [:0]const u8 = "PATH=" ++ safe_command_path;
+        const argv = [_:null]?[*:0]const u8{ shell.ptr, arg_c.ptr, shell_command.ptr };
+        const envp = [_:null]?[*:0]const u8{ env_path.ptr };
+        compat.execveZ(shell.ptr, &argv, &envp) catch std.process.exit(127);
+    }
+    compat.closeFd(fds[1]);
+    var out = std.Io.Writer.Allocating.init(allocator);
+    errdefer out.deinit();
+    var total: usize = 0;
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try std.posix.read(fds[0], &buf);
+        if (n == 0) break;
+        if (total + n > max_command_output_bytes) return error.StreamTooLong;
+        try out.writer.writeAll(buf[0..n]);
+        total += n;
+    }
+    compat.closeFd(fds[0]);
+    const waited = try compat.waitPid(pid, 0);
+    const raw = try out.toOwnedSlice();
+    defer allocator.free(raw);
+    return .{
+        .output = try normalizeCommandOutput(allocator, raw),
+        .exit_code = exitCodeFromStatus(waited.status),
+    };
 }
 
 pub const CommandRunner = *const fn (std.mem.Allocator, *std.process.Environ.Map, []const u8) anyerror!std.process.RunResult;
 
 fn realCommandRunner(allocator: std.mem.Allocator, env: *std.process.Environ.Map, command: []const u8) !std.process.RunResult {
-    return std.process.run(allocator, std.Options.debug_io, .{
-        .argv = &.{ "/bin/sh", "-c", command },
-        .environ_map = env,
-        .stdout_limit = .limited(max_command_output_bytes),
-        .stderr_limit = .limited(max_command_output_bytes),
-    });
+    const work_allocator = std.heap.smp_allocator;
+    const merged_command = try std.fmt.allocPrint(work_allocator, "exec 2>&1; {s}", .{command});
+    defer work_allocator.free(merged_command);
+    const output = try compat.runOutputIgnoreStderr(work_allocator, &.{ "/bin/sh", "-c", merged_command }, env, max_command_output_bytes);
+    defer work_allocator.free(output.stdout);
+    return .{
+        .stdout = try allocator.dupe(u8, output.stdout),
+        .stderr = try allocator.dupe(u8, ""),
+        .term = output.term,
+    };
 }
 
 pub fn runCommandDetailedWithRunner(allocator: std.mem.Allocator, command: []const u8, runner: CommandRunner) !CommandResult {
     if (command.len == 0) return .{ .output = try allocator.dupe(u8, "No command provided"), .exit_code = 0 };
-    var env = try compat.currentEnvMap(allocator);
+    var env = compat.emptyEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
     const result = runner(allocator, &env, command) catch |err| switch (err) {
@@ -126,6 +185,13 @@ fn exitCode(term: std.process.Child.Term) i32 {
         .signal => |signal| 128 + @as(i32, @intCast(@intFromEnum(signal))),
         else => -1,
     };
+}
+
+fn exitCodeFromStatus(status: u32) i32 {
+    const signal = status & 0x7f;
+    if (signal == 0) return @intCast((status >> 8) & 0xff);
+    if (signal != 0x7f) return 128 + @as(i32, @intCast(signal));
+    return -1;
 }
 
 pub fn utcNow(allocator: std.mem.Allocator) ![]const u8 {

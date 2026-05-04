@@ -141,7 +141,7 @@ def make_handler(state):
                 if payload.get("task_id") != "exec-success":
                     raise ValueError("bad task_id")
                 if payload.get("exit_code") != 0:
-                    raise ValueError(f"bad exit_code {payload.get('exit_code')}")
+                    raise ValueError(f"bad exit_code {payload.get('exit_code')}: {payload.get('result', '')[:200]}")
                 if "e2e-exec-ok" not in payload.get("result", ""):
                     raise ValueError("missing exec output")
                 if not payload.get("finished_at"):
