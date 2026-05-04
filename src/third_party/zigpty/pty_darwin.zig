@@ -354,8 +354,9 @@ pub fn resetSignalHandlers() void {
     sa.handler = .{ .handler = std.c.SIG.DFL };
     var i: u8 = 1;
     while (i < std.c.NSIG) : (i += 1) {
-        if (i == posix.SIG.KILL or i == posix.SIG.STOP) continue;
-        _ = std.c.sigaction(i, &sa, null);
+        const sig: posix.SIG = @enumFromInt(i);
+        if (sig == posix.SIG.KILL or sig == posix.SIG.STOP) continue;
+        _ = std.c.sigaction(sig, &sa, null);
     }
 }
 
