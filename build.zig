@@ -6,6 +6,18 @@ pub fn build(b: *std.Build) void {
     const version = b.option([]const u8, "version", "agent version") orelse "0.0.1";
     const coverage = b.option(bool, "coverage", "Run tests through kcov") orelse false;
     const coverage_dir = b.option([]const u8, "coverage-dir", "kcov output directory") orelse "zig-out/coverage";
+    const zigpty_module = if (target.result.os.tag == .linux or target.result.os.tag == .macos) blk: {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("src/third_party/zigpty/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        if (target.result.os.tag == .linux and target.result.abi != .musl and target.result.abi != .musleabi) {
+            mod.linkSystemLibrary("util", .{});
+        }
+        break :blk mod;
+    } else null;
 
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
@@ -47,9 +59,13 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addOptions("build_options", opts);
     exe.root_module.addImport("runtime", runtime_module);
+    if (zigpty_module) |mod| exe.root_module.addImport("zigpty", mod);
     addCompatImports(exe.root_module, compat_module, net_module);
-    if (target.result.os.tag == .freebsd or target.result.os.tag == .macos) {
+    if (target.result.os.tag == .linux or target.result.os.tag == .freebsd or target.result.os.tag == .macos) {
         exe.root_module.linkSystemLibrary("c", .{});
+    }
+    if (target.result.os.tag == .linux and target.result.abi != .musl and target.result.abi != .musleabi) {
+        exe.root_module.linkSystemLibrary("util", .{});
     }
     if (target.result.os.tag == .freebsd) {
         exe.root_module.linkSystemLibrary("util", .{});

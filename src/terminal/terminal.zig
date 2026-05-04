@@ -4,6 +4,7 @@ const ws_client = @import("../protocol/ws_client.zig");
 const builtin = @import("builtin");
 const compat = @import("compat");
 const thread_stacks = @import("../thread_stacks.zig");
+const zigpty = if (builtin.os.tag == .linux or builtin.os.tag == .macos) @import("zigpty") else struct {};
 
 extern "c" fn openpty(amaster: *c_int, aslave: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const std.posix.winsize) c_int;
 extern "c" fn ioctl(fd: std.posix.fd_t, request: c_ulong, ...) c_int;
@@ -106,8 +107,8 @@ const ShellSession = struct {
     pid: if (builtin.os.tag == .windows) void else std.posix.pid_t,
 
     fn start(allocator: std.mem.Allocator) !ShellSession {
-        if (builtin.os.tag == .linux) return startLinuxPty(allocator);
-        if (builtin.os.tag == .freebsd or builtin.os.tag == .macos) return startBsdPty(allocator);
+        if (builtin.os.tag == .linux or builtin.os.tag == .macos) return startZigPty(allocator);
+        if (builtin.os.tag == .freebsd) return startBsdPty(allocator);
         return startPipeFallback(allocator);
     }
 
@@ -150,18 +151,20 @@ const ShellSession = struct {
     }
 
     fn writeInput(self: *ShellSession, bytes: []const u8) !void {
+        if (builtin.os.tag != .windows and self.input.handle == self.output.handle) {
+            try writeUnixFdAll(self.input.handle, bytes);
+            return;
+        }
         try self.input.writeStreamingAll(std.Options.debug_io, bytes);
     }
 
     fn resize(self: *ShellSession, cols: u16, rows: u16) !void {
         if (cols == 0 or rows == 0) return;
-        if (builtin.os.tag == .linux) {
-            var wsz = std.posix.winsize{ .row = rows, .col = cols, .xpixel = 0, .ypixel = 0 };
-            const rc = std.posix.system.ioctl(self.output.handle, std.posix.T.IOCSWINSZ, @intFromPtr(&wsz));
-            if (std.posix.errno(rc) != .SUCCESS) return error.ResizeFailed;
+        if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
+            try zigpty.resize(self.output.handle, cols, rows, 0, 0);
             return;
         }
-        if (builtin.os.tag == .freebsd or builtin.os.tag == .macos) {
+        if (builtin.os.tag == .freebsd) {
             var wsz = std.posix.winsize{ .row = rows, .col = cols, .xpixel = 0, .ypixel = 0 };
             const rc = ioctl(self.output.handle, tiocswinszRequest(), @intFromPtr(&wsz));
             if (std.posix.errno(rc) != .SUCCESS) return error.ResizeFailed;
@@ -173,20 +176,14 @@ const ShellSession = struct {
     }
 };
 
-fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
-    const master_file = try compat.openFile("/dev/ptmx", .{ .mode = .read_write });
-    errdefer master_file.close(std.Options.debug_io);
-    const master = master_file.handle;
+fn startZigPty(allocator: std.mem.Allocator) !ShellSession {
+    return startZigPtyWithPrelude(allocator, true) catch |err| switch (err) {
+        error.ShellExitedEarly => startZigPtyWithPrelude(allocator, false),
+        else => return err,
+    };
+}
 
-    var unlock: c_int = 0;
-    if (std.posix.errno(std.posix.system.ioctl(master, std.posix.T.IOCSPTLCK, @intFromPtr(&unlock))) != .SUCCESS) return error.PtyUnlockFailed;
-    var pty_num: c_uint = 0;
-    if (std.posix.errno(std.posix.system.ioctl(master, std.posix.T.IOCGPTN, @intFromPtr(&pty_num))) != .SUCCESS) return error.PtyNameFailed;
-
-    const slave_path_raw = try std.fmt.allocPrint(allocator, "/dev/pts/{d}", .{pty_num});
-    defer allocator.free(slave_path_raw);
-    const slave_path = try allocator.dupeZ(u8, slave_path_raw);
-    defer allocator.free(slave_path);
+fn startZigPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !ShellSession {
     const shell_path = try shellPathAlloc(allocator);
     defer allocator.free(shell_path);
     const shell = try allocator.dupeZ(u8, shell_path);
@@ -194,38 +191,60 @@ fn startLinuxPty(allocator: std.mem.Allocator) !ShellSession {
     const shell_base_raw = std.fs.path.basename(shell_path);
     const shell_base = try allocator.dupeZ(u8, shell_base_raw);
     defer allocator.free(shell_base);
-    const prelude = try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"");
-    defer allocator.free(prelude);
-    var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
+    const prelude = if (use_prelude) try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"") else null;
+    defer if (prelude) |value| allocator.free(value);
+    const cwd = try terminalCwdAlloc(allocator);
+    defer allocator.free(cwd);
+    const cwd_z = try allocator.dupeZ(u8, cwd);
+    defer allocator.free(cwd_z);
     var env_arena = std.heap.ArenaAllocator.init(allocator);
     defer env_arena.deinit();
     var env_map = try compat.currentEnvMap(env_arena.allocator());
     try env_map.put("TERM", "xterm-256color");
     try env_map.put("LANG", "C.UTF-8");
     try env_map.put("LC_ALL", "C.UTF-8");
-    const env = try env_map.createPosixBlock(env_arena.allocator(), .{});
-
-    const pid = try compat.fork();
-    if (pid == 0) {
-        _ = compat.setsid() catch {};
-        const slave_file = compat.openFile(slave_path_raw, .{ .mode = .read_write }) catch std.process.exit(127);
-        const slave = slave_file.handle;
-        _ = std.posix.system.ioctl(slave, std.posix.T.IOCSCTTY, @as(c_int, 0));
-        compat.dup2(slave, std.posix.STDIN_FILENO) catch std.process.exit(127);
-        compat.dup2(slave, std.posix.STDOUT_FILENO) catch std.process.exit(127);
-        compat.dup2(slave, std.posix.STDERR_FILENO) catch std.process.exit(127);
-        if (slave > 2) compat.closeFd(slave);
-        compat.closeFd(master);
-        compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
+    const envp = try env_map.createPosixBlock(env_arena.allocator(), .{});
+    const result = if (prelude) |value| blk: {
+        var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", value.ptr };
+        break :blk try zigpty.forkPty(.{
+            .file = shell.ptr,
+            .argv = &argv,
+            .envp = envp.slice.ptr,
+            .cwd = cwd_z.ptr,
+            .cols = 80,
+            .rows = 24,
+            .use_utf8 = true,
+        });
+    } else blk: {
+        var argv = [_:null]?[*:0]const u8{ shell.ptr };
+        break :blk try zigpty.forkPty(.{
+            .file = shell.ptr,
+            .argv = &argv,
+            .envp = envp.slice.ptr,
+            .cwd = cwd_z.ptr,
+            .cols = 80,
+            .rows = 24,
+            .use_utf8 = true,
+        });
+    };
+    const pty_file = std.Io.File{ .handle = result.fd, .flags = .{ .nonblocking = false } };
+    compat.sleep(50 * std.time.ns_per_ms);
+    const wait_result = compat.waitPid(result.pid, childNoHangFlag()) catch return error.ShellExitedEarly;
+    if (wait_result.pid != 0) {
+        pty_file.close(std.Options.debug_io);
+        return error.ShellExitedEarly;
     }
-
-    const pty_file = std.Io.File{ .handle = master, .flags = .{ .nonblocking = false } };
-    var initial_size = std.posix.winsize{ .row = 24, .col = 80, .xpixel = 0, .ypixel = 0 };
-    _ = std.posix.system.ioctl(master, std.posix.T.IOCSWINSZ, @intFromPtr(&initial_size));
-    return .{ .input = pty_file, .output = pty_file, .pid = pid };
+    return .{ .input = pty_file, .output = pty_file, .pid = result.pid };
 }
 
 fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
+    return startBsdPtyWithPrelude(allocator, true) catch |err| switch (err) {
+        error.ShellExitedEarly => startBsdPtyWithPrelude(allocator, false),
+        else => return err,
+    };
+}
+
+fn startBsdPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !ShellSession {
     const shell_path = try shellPathAlloc(allocator);
     defer allocator.free(shell_path);
     const shell = try allocator.dupeZ(u8, shell_path);
@@ -233,9 +252,8 @@ fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
     const shell_base_raw = std.fs.path.basename(shell_path);
     const shell_base = try allocator.dupeZ(u8, shell_base_raw);
     defer allocator.free(shell_base);
-    const prelude = try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"");
-    defer allocator.free(prelude);
-    var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", prelude.ptr, shell_base.ptr };
+    const prelude = if (use_prelude) try allocator.dupeZ(u8, "for f in /etc/update-motd.d/*; do [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"") else null;
+    defer if (prelude) |value| allocator.free(value);
     var env_arena = std.heap.ArenaAllocator.init(allocator);
     defer env_arena.deinit();
     var env_map = try compat.currentEnvMap(env_arena.allocator());
@@ -262,12 +280,28 @@ fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
         compat.dup2(slave, std.posix.STDERR_FILENO) catch std.process.exit(127);
         if (slave > 2) compat.closeFd(slave);
         compat.closeFd(master);
-        compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
+        if (prelude) |value| {
+            var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", value.ptr };
+            compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
+        } else {
+            var argv = [_:null]?[*:0]const u8{ shell_base.ptr };
+            compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
+        }
     }
 
     compat.closeFd(slave);
     const pty_file = std.Io.File{ .handle = master, .flags = .{ .nonblocking = false } };
+    compat.sleep(50 * std.time.ns_per_ms);
+    const result = compat.waitPid(pid, childNoHangFlag()) catch return error.ShellExitedEarly;
+    if (result.pid != 0) {
+        pty_file.close(std.Options.debug_io);
+        return error.ShellExitedEarly;
+    }
     return .{ .input = pty_file, .output = pty_file, .pid = pid };
+}
+
+fn childNoHangFlag() u32 {
+    return if (builtin.os.tag == .linux) std.os.linux.W.NOHANG else std.c.W.NOHANG;
 }
 
 fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
@@ -275,7 +309,7 @@ fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
     const argv = if (builtin.os.tag == .windows)
         &.{shell}
     else
-        &.{ "script", "-q", "/dev/null", shell };
+        &.{ "script", "-q", "-c", shell, "/dev/null" };
     var child = try std.process.spawn(std.Options.debug_io, .{
         .argv = argv,
         .environ_map = try terminalEnv(allocator),
@@ -364,6 +398,14 @@ fn terminalEnv(allocator: std.mem.Allocator) !*std.process.Environ.Map {
 
 fn pipeShellOutputToWs(allocator: std.mem.Allocator, from: std.Io.File, ws: *ws_client.Client) void {
     defer ws.release(allocator);
+    if (builtin.os.tag != .windows and from.handle >= 0) {
+        var buf: [4096]u8 = undefined;
+        while (true) {
+            const n = readUnixFd(from.handle, &buf) catch return;
+            if (n == 0) return;
+            ws.writeBinary(buf[0..n]) catch return;
+        }
+    }
     var reader_buf: [4096]u8 = undefined;
     var reader = from.reader(std.Options.debug_io, &reader_buf);
     var buf: [4096]u8 = undefined;
@@ -371,5 +413,42 @@ fn pipeShellOutputToWs(allocator: std.mem.Allocator, from: std.Io.File, ws: *ws_
         const n = reader.interface.readSliceShort(&buf) catch return;
         if (n == 0) return;
         ws.writeBinary(buf[0..n]) catch return;
+    }
+}
+
+fn terminalCwdAlloc(allocator: std.mem.Allocator) ![]u8 {
+    if (compat.getEnvVarOwned(allocator, "HOME")) |home| {
+        if (home.len != 0) return home;
+        allocator.free(home);
+    } else |_| {}
+    return allocator.dupe(u8, "/");
+}
+
+fn writeUnixFdAll(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const rc = std.c.write(@intCast(fd), bytes.ptr + offset, bytes.len - offset);
+        if (rc < 0) {
+            const err = @as(std.posix.E, @enumFromInt(std.c._errno().*));
+            if (err == .INTR) continue;
+            return error.WriteFailed;
+        }
+        offset += @intCast(rc);
+    }
+}
+
+fn readUnixFd(fd: std.posix.fd_t, buf: []u8) !usize {
+    while (true) {
+        const rc = std.c.read(@intCast(fd), buf.ptr, buf.len);
+        if (rc < 0) {
+            const err = @as(std.posix.E, @enumFromInt(std.c._errno().*));
+            if (err == .INTR) continue;
+            if (err == .IO or err == .AGAIN) {
+                compat.sleep(20 * std.time.ns_per_ms);
+                continue;
+            }
+            return error.ReadFailed;
+        }
+        return @intCast(rc);
     }
 }
