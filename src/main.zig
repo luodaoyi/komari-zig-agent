@@ -13,6 +13,7 @@ const version = @import("version.zig");
 const builtin = @import("builtin");
 const compat = @import("compat");
 const runtime = @import("runtime");
+const thread_stacks = @import("thread_stacks.zig");
 
 /// Agent entrypoint that wires config, reporting, updates, and shutdown.
 pub const std_options: std.Options = .{
@@ -196,7 +197,7 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
 }
 
 fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, basicInfoLoop, .{ allocator, cfg }) catch return;
+    const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, basicInfoLoop, .{ allocator, cfg }) catch return;
     thread.detach();
 }
 

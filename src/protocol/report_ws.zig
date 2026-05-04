@@ -12,6 +12,7 @@ const update = @import("../update.zig");
 const ws_client = @import("ws_client.zig");
 const compat = @import("compat");
 const timing = @import("report_timing.zig");
+const thread_stacks = @import("../thread_stacks.zig");
 /// Report websocket loop and server task dispatch.
 pub const ws_message = @import("ws_message.zig");
 
@@ -192,7 +193,7 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
             errdefer task_limiter.release();
             const args = try PingTaskArgs.init(allocator, conn, cfg, msg);
             errdefer args.deinit(allocator);
-            const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, runPingTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, runPingTask, .{ allocator, args });
             thread.detach();
         },
         .exec => {
@@ -200,7 +201,7 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
             errdefer task_limiter.release();
             const args = try ExecTaskArgs.init(allocator, cfg, msg);
             errdefer args.deinit(allocator);
-            const thread = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, runExecTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, runExecTask, .{ allocator, args });
             thread.detach();
         },
         .terminal => {
@@ -208,7 +209,7 @@ fn handleServerMessage(allocator: std.mem.Allocator, conn: *ws_client.Client, cf
             errdefer task_limiter.release();
             const args = try TerminalTaskArgs.init(allocator, cfg, msg);
             errdefer args.deinit(allocator);
-            const thread = try std.Thread.spawn(.{ .stack_size = 512 * 1024 }, runTerminalTask, .{ allocator, args });
+            const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.terminal_worker_stack_size }, runTerminalTask, .{ allocator, args });
             thread.detach();
         },
         .unknown => {},

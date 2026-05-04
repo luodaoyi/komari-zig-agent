@@ -114,6 +114,8 @@ pub fn build(b: *std.Build) void {
         "test/coverage_test.zig",
         "test/ws_message_test.zig",
         "test/ws_client_test.zig",
+        "test/raw_conn_test.zig",
+        "test/thread_stack_test.zig",
         "test/report_interval_test.zig",
         "test/netstatic_test.zig",
         "test/update_test.zig",
@@ -151,6 +153,11 @@ fn addTest(
     tests.root_module.addOptions("build_options", opts);
     addCompatImports(tests.root_module, compat_module, net_module);
     tests.root_module.addImport("version", version_module);
+    tests.root_module.addImport("thread_stacks", b.createModule(.{
+        .root_source_file = b.path("src/thread_stacks.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
     const config_module = b.createModule(.{
         .root_source_file = b.path("src/config.zig"),
         .target = target,
@@ -183,6 +190,14 @@ fn addTest(
     protocol_http.addImport("idna", idna_module);
     protocol_http.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_http", protocol_http);
+    const protocol_raw_conn = b.createModule(.{
+        .root_source_file = b.path("src/protocol/raw_conn.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addCompatImports(protocol_raw_conn, compat_module, net_module);
+    protocol_raw_conn.addImport("dns", dns_module);
+    tests.root_module.addImport("protocol_raw_conn", protocol_raw_conn);
     const update_module = b.createModule(.{
         .root_source_file = b.path("src/update.zig"),
         .target = target,

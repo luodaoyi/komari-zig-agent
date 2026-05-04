@@ -11,14 +11,7 @@ pub const AddressFamily = enum {
     ipv6,
 };
 
-const CaBundleCache = if (std.http.Client.disable_tls) struct {} else struct {
-    mutex: compat.Mutex = .{},
-    rwlock: std.Io.RwLock = .init,
-    loaded: bool = false,
-    bundle: std.crypto.Certificate.Bundle = .empty,
-};
-
-var ca_bundle_cache: CaBundleCache = .{};
+pub const tls_ca_bundle_storage = if (std.http.Client.disable_tls) "disabled" else "per_connection";
 
 pub const RawConn = struct {
     allocator: std.mem.Allocator,
@@ -120,7 +113,9 @@ pub const RawConn = struct {
         } else {
             var random_buffer: [std.crypto.tls.Client.Options.entropy_len]u8 = undefined;
             std.Options.debug_io.random(&random_buffer);
-            const ca_bundle = try cachedCaBundle();
+            var ca_bundle = try loadCaBundle();
+            defer ca_bundle.deinit(std.heap.page_allocator);
+            var ca_bundle_lock: std.Io.RwLock = .init;
             self.tls_client = std.crypto.tls.Client.init(
                 &self.stream_reader.interface,
                 &self.stream_writer.interface,
@@ -129,8 +124,8 @@ pub const RawConn = struct {
                     .ca = .{ .bundle = .{
                         .gpa = std.heap.page_allocator,
                         .io = std.Options.debug_io,
-                        .lock = &ca_bundle_cache.rwlock,
-                        .bundle = ca_bundle,
+                        .lock = &ca_bundle_lock,
+                        .bundle = &ca_bundle,
                     } },
                     .read_buffer = self.tls_read_buf[0..],
                     .write_buffer = self.tls_write_buf[0..],
@@ -168,16 +163,18 @@ pub const RawConn = struct {
     }
 };
 
-fn cachedCaBundle() !*std.crypto.Certificate.Bundle {
+fn loadCaBundle() !std.crypto.Certificate.Bundle {
     if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
-    ca_bundle_cache.mutex.lock();
-    defer ca_bundle_cache.mutex.unlock();
-    if (!ca_bundle_cache.loaded) {
-        ca_bundle_cache.bundle = .empty;
-        try ca_bundle_cache.bundle.rescan(std.heap.page_allocator, std.Options.debug_io, std.Io.Timestamp.now(std.Options.debug_io, .real));
-        ca_bundle_cache.loaded = true;
-    }
-    return &ca_bundle_cache.bundle;
+    var bundle: std.crypto.Certificate.Bundle = .empty;
+    errdefer bundle.deinit(std.heap.page_allocator);
+    try bundle.rescan(std.heap.page_allocator, std.Options.debug_io, std.Io.Timestamp.now(std.Options.debug_io, .real));
+    return bundle;
+}
+
+pub fn rescanCaBundleForTest() !void {
+    if (std.http.Client.disable_tls) return;
+    var bundle = try loadCaBundle();
+    defer bundle.deinit(std.heap.page_allocator);
 }
 
 fn familyMatches(addr: net.Address, family: AddressFamily) bool {
