@@ -120,7 +120,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 fn runPingDiagnostic(allocator: std.mem.Allocator, args: []const []const u8) !bool {
     if (args.len < 4 or !std.mem.eql(u8, args[1], "ping-test")) return false;
     const custom_dns = if (args.len >= 5) args[4] else "";
-    const value = ping.measure(allocator, args[2], args[3], custom_dns);
+    const icmp_mode = if (args.len >= 6) args[5] else "";
+    const value = ping.measureDiagnostic(allocator, args[2], args[3], custom_dns, icmp_mode);
     var stdout_buf: [256]u8 = undefined;
     var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
     defer stdout.flush() catch {};

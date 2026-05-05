@@ -32,6 +32,19 @@ jobs:
         run: zig build test
       - name: Build native agent
         run: zig build -Doptimize=ReleaseSmall -Dversion=dev
+      - name: Native ICMP ping smoke
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          sudo sysctl -w net.ipv4.ping_group_range='0 2147483647' >/dev/null
+          raw="$(sudo zig-out/bin/komari-agent ping-test icmp 127.0.0.1 '' raw)"
+          auto="$(sudo zig-out/bin/komari-agent ping-test icmp 127.0.0.1)"
+          echo "raw=$raw auto=$auto"
+          test "$raw" -ge 0
+          test "$auto" -ge 0
+          datagram="$(zig-out/bin/komari-agent ping-test icmp 127.0.0.1 '' datagram)"
+          echo "datagram=$datagram"
+          test "$datagram" -ge 0
       - name: Native mock panel business smoke
         if: runner.os != 'Windows'
         run: python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --cf --no-exec

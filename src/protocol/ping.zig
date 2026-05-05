@@ -18,6 +18,12 @@ const PingKind = enum {
     icmp,
 };
 
+const IcmpMode = enum {
+    auto,
+    raw,
+    datagram,
+};
+
 pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type: []const u8, value: i64, finished_at: []const u8) ![]const u8 {
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
@@ -31,15 +37,23 @@ pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type
 }
 
 pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8) i64 {
+    return measureWithIcmpMode(allocator, ping_type, target, custom_dns, .auto);
+}
+
+pub fn measureDiagnostic(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8, icmp_mode: []const u8) i64 {
+    return measureWithIcmpMode(allocator, ping_type, target, custom_dns, parseIcmpMode(icmp_mode) orelse .auto);
+}
+
+fn measureWithIcmpMode(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) i64 {
     const kind = normalizePingType(ping_type) orelse return -1;
     const high_latency_threshold: i64 = 1000;
-    const first = measureOnce(allocator, kind, target, custom_dns);
+    const first = measureOnce(allocator, kind, target, custom_dns, icmp_mode);
     if (first < 0) return -1;
     if (first <= high_latency_threshold) return first;
     var latency = first;
     var attempt: u8 = 0;
     while (attempt < 3) : (attempt += 1) {
-        const value = measureOnce(allocator, kind, target, custom_dns);
+        const value = measureOnce(allocator, kind, target, custom_dns, icmp_mode);
         if (value < 0) return -1;
         latency = value;
         if (latency <= high_latency_threshold) return latency;
@@ -47,12 +61,19 @@ pub fn measure(allocator: std.mem.Allocator, ping_type: []const u8, target: []co
     return -1;
 }
 
-fn measureOnce(allocator: std.mem.Allocator, kind: PingKind, target: []const u8, custom_dns: []const u8) i64 {
+fn measureOnce(allocator: std.mem.Allocator, kind: PingKind, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) i64 {
     return switch (kind) {
         .tcp => tcpPing(allocator, target, custom_dns) catch -1,
         .http => httpPing(allocator, target, custom_dns) catch -1,
-        .icmp => icmpPing(allocator, target, custom_dns) catch -1,
+        .icmp => icmpPing(allocator, target, custom_dns, icmp_mode) catch -1,
     };
+}
+
+fn parseIcmpMode(value: []const u8) ?IcmpMode {
+    if (value.len == 0 or std.ascii.eqlIgnoreCase(value, "auto")) return .auto;
+    if (std.ascii.eqlIgnoreCase(value, "raw") or std.ascii.eqlIgnoreCase(value, "privileged")) return .raw;
+    if (std.ascii.eqlIgnoreCase(value, "datagram") or std.ascii.eqlIgnoreCase(value, "dgram") or std.ascii.eqlIgnoreCase(value, "ping_socket")) return .datagram;
+    return null;
 }
 
 fn normalizePingType(ping_type: []const u8) ?PingKind {
@@ -96,13 +117,13 @@ pub fn icmpChecksum(bytes: []const u8) u16 {
     return @as(u16, @intCast(~sum & 0xffff));
 }
 
-fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const u8) !i64 {
+fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) !i64 {
     if (builtin.os.tag == .windows) return error.Unsupported;
     const addrs = try dns.resolveHost(allocator, parseHostOnly(target), 0, custom_dns);
     defer allocator.free(addrs);
     for (addrs) |addr| {
         if (!net.isIpv4(addr) and !net.isIpv6(addr)) continue;
-        return icmpPingAddress(addr) catch |err| switch (err) {
+        return icmpPingAddress(addr, icmp_mode) catch |err| switch (err) {
             error.AccessDenied => continue,
             else => continue,
         };
@@ -110,13 +131,11 @@ fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
     return -1;
 }
 
-fn icmpPingAddress(addr: net.Address) !i64 {
-    if (net.isIpv6(addr)) return icmp6PingAddress(addr);
-    const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
-    const sock = compat.socket(std.posix.AF.INET, flags, std.posix.IPPROTO.ICMP) catch |err| switch (err) {
-        error.AccessDenied => try compat.socket(std.posix.AF.INET, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMP),
-        else => return err,
-    };
+fn icmpPingAddress(addr: net.Address, icmp_mode: IcmpMode) !i64 {
+    if (net.isIpv6(addr)) return icmp6PingAddress(addr, icmp_mode);
+    const opened = try openIcmp4Socket(icmp_mode);
+    const sock = opened.fd;
+    const privileged = opened.privileged;
     defer compat.closeFd(sock);
 
     var packet: [16]u8 = .{0} ** 16;
@@ -127,6 +146,7 @@ fn icmpPingAddress(addr: net.Address) !i64 {
     std.mem.writeInt(u16, packet[4..6], ident, .big);
     std.mem.writeInt(u16, packet[6..8], seq, .big);
     std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
+    const payload = packet[8..16];
     const csum = icmpChecksum(&packet);
     std.mem.writeInt(u16, packet[2..4], csum, .big);
 
@@ -140,17 +160,36 @@ fn icmpPingAddress(addr: net.Address) !i64 {
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
         const n = try compat.recvFrom(sock, &buf);
-        if (isEchoReply(buf[0..n], seq)) return compat.milliTimestamp() - start;
+        if (isEchoReply(buf[0..n], ident, seq, payload, privileged)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
 
-fn icmp6PingAddress(addr: net.Address) !i64 {
-    const flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
-    const sock = compat.socket(std.posix.AF.INET6, flags, std.posix.IPPROTO.ICMPV6) catch |err| switch (err) {
-        error.AccessDenied => try compat.socket(std.posix.AF.INET6, std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0, std.posix.IPPROTO.ICMPV6),
-        else => return err,
+const IcmpSocket = struct {
+    fd: std.posix.fd_t,
+    privileged: bool,
+};
+
+fn openIcmp4Socket(icmp_mode: IcmpMode) !IcmpSocket {
+    const dgram_flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
+    const raw_flags = std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
+    return switch (icmp_mode) {
+        .raw => .{ .fd = try compat.socket(std.posix.AF.INET, raw_flags, std.posix.IPPROTO.ICMP), .privileged = true },
+        .datagram => .{ .fd = try compat.socket(std.posix.AF.INET, dgram_flags, std.posix.IPPROTO.ICMP), .privileged = false },
+        .auto => blk: {
+            const raw = compat.socket(std.posix.AF.INET, raw_flags, std.posix.IPPROTO.ICMP) catch |err| switch (err) {
+                error.AccessDenied => break :blk .{ .fd = try compat.socket(std.posix.AF.INET, dgram_flags, std.posix.IPPROTO.ICMP), .privileged = false },
+                else => return err,
+            };
+            break :blk .{ .fd = raw, .privileged = true };
+        },
     };
+}
+
+fn icmp6PingAddress(addr: net.Address, icmp_mode: IcmpMode) !i64 {
+    const opened = try openIcmp6Socket(icmp_mode);
+    const sock = opened.fd;
+    const privileged = opened.privileged;
     defer compat.closeFd(sock);
 
     var packet: [16]u8 = .{0} ** 16;
@@ -161,6 +200,7 @@ fn icmp6PingAddress(addr: net.Address) !i64 {
     std.mem.writeInt(u16, packet[4..6], ident, .big);
     std.mem.writeInt(u16, packet[6..8], seq, .big);
     std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
+    const payload = packet[8..16];
 
     const start = compat.milliTimestamp();
     const sa = net.sockAddr(addr);
@@ -172,35 +212,64 @@ fn icmp6PingAddress(addr: net.Address) !i64 {
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
         const n = try compat.recvFrom(sock, &buf);
-        if (isEchoReply6(buf[0..n], seq)) return compat.milliTimestamp() - start;
+        if (isEchoReply6(buf[0..n], ident, seq, payload, privileged)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
 
-fn isEchoReply(bytes: []const u8, seq: u16) bool {
+
+fn openIcmp6Socket(icmp_mode: IcmpMode) !IcmpSocket {
+    const dgram_flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
+    const raw_flags = std.posix.SOCK.RAW | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;
+    return switch (icmp_mode) {
+        .raw => .{ .fd = try compat.socket(std.posix.AF.INET6, raw_flags, std.posix.IPPROTO.ICMPV6), .privileged = true },
+        .datagram => .{ .fd = try compat.socket(std.posix.AF.INET6, dgram_flags, std.posix.IPPROTO.ICMPV6), .privileged = false },
+        .auto => blk: {
+            const raw = compat.socket(std.posix.AF.INET6, raw_flags, std.posix.IPPROTO.ICMPV6) catch |err| switch (err) {
+                error.AccessDenied => break :blk .{ .fd = try compat.socket(std.posix.AF.INET6, dgram_flags, std.posix.IPPROTO.ICMPV6), .privileged = false },
+                else => return err,
+            };
+            break :blk .{ .fd = raw, .privileged = true };
+        },
+    };
+}
+
+fn isEchoReply(bytes: []const u8, ident: u16, seq: u16, payload: []const u8, privileged: bool) bool {
     var off: usize = 0;
     if (bytes.len >= 20 and (bytes[0] >> 4) == 4) off = (bytes[0] & 0x0f) * 4;
     if (bytes.len < off + 8) return false;
     if (bytes[off] != 0 or bytes[off + 1] != 0) return false;
+    if (privileged) {
+        const got_ident = (@as(u16, bytes[off + 4]) << 8) | bytes[off + 5];
+        if (got_ident != ident) return false;
+    }
     const got_seq = (@as(u16, bytes[off + 6]) << 8) | bytes[off + 7];
-    return got_seq == seq;
+    if (got_seq != seq) return false;
+    const body = bytes[off + 8 ..];
+    return body.len == payload.len and std.mem.eql(u8, body, payload);
 }
 
-fn isEchoReply6(bytes: []const u8, seq: u16) bool {
+fn isEchoReply6(bytes: []const u8, ident: u16, seq: u16, payload: []const u8, privileged: bool) bool {
     var off: usize = 0;
     if (bytes.len >= 40 and (bytes[0] >> 4) == 6) off = 40;
     if (bytes.len < off + 8) return false;
     if (bytes[off] != 129 or bytes[off + 1] != 0) return false;
+    if (privileged) {
+        const got_ident = (@as(u16, bytes[off + 4]) << 8) | bytes[off + 5];
+        if (got_ident != ident) return false;
+    }
     const got_seq = (@as(u16, bytes[off + 6]) << 8) | bytes[off + 7];
-    return got_seq == seq;
+    if (got_seq != seq) return false;
+    const body = bytes[off + 8 ..];
+    return body.len == payload.len and std.mem.eql(u8, body, payload);
 }
 
-pub fn isIcmpEchoReplyForTest(bytes: []const u8, _: u16, seq: u16) bool {
-    return isEchoReply(bytes, seq);
+pub fn isIcmpEchoReplyForTest(bytes: []const u8, ident: u16, seq: u16, payload: []const u8, privileged: bool) bool {
+    return isEchoReply(bytes, ident, seq, payload, privileged);
 }
 
-pub fn isIcmp6EchoReplyForTest(bytes: []const u8, _: u16, seq: u16) bool {
-    return isEchoReply6(bytes, seq);
+pub fn isIcmp6EchoReplyForTest(bytes: []const u8, ident: u16, seq: u16, payload: []const u8, privileged: bool) bool {
+    return isEchoReply6(bytes, ident, seq, payload, privileged);
 }
 
 pub fn parseTcpTarget(target: []const u8) !TcpTarget {

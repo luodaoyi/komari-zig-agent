@@ -50,16 +50,39 @@ test "icmp echo reply parser accepts linux datagram socket rewritten identifier"
     packet[25] = 0x78;
     packet[26] = 0;
     packet[27] = 1;
-    try std.testing.expect(ping.isIcmpEchoReplyForTest(&packet, 0x1234, 1));
+    const payload = &[_]u8{ 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22 };
+    // Append expected payload after the ICMP header.
+    var packet_with_payload = [_]u8{0} ** 36;
+    @memcpy(packet_with_payload[0..28], &packet);
+    @memcpy(packet_with_payload[28..36], payload);
+    try std.testing.expect(ping.isIcmpEchoReplyForTest(&packet_with_payload, 0x1234, 1, payload, false));
+    try std.testing.expect(!ping.isIcmpEchoReplyForTest(&packet_with_payload, 0x1234, 1, payload, true));
 }
 
 test "icmp6 echo reply parser accepts ipv6 payload" {
-    var packet = [_]u8{0} ** 48;
+    var packet = [_]u8{0} ** 56;
     packet[0] = 0x60;
     packet[40] = 129;
     packet[41] = 0;
     packet[44] = 0x12;
     packet[45] = 0x34;
     packet[47] = 1;
-    try std.testing.expect(ping.isIcmp6EchoReplyForTest(&packet, 0x1234, 1));
+    const payload = &[_]u8{ 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80 };
+    @memcpy(packet[48..56], payload);
+    try std.testing.expect(ping.isIcmp6EchoReplyForTest(&packet, 0x1234, 1, payload, false));
+}
+
+test "icmp echo reply parser rejects mismatched payload even when seq matches" {
+    var packet = [_]u8{0} ** 36;
+    packet[0] = 0x45;
+    packet[20] = 0;
+    packet[21] = 0;
+    packet[24] = 0;
+    packet[25] = 1;
+    packet[26] = 0;
+    packet[27] = 1;
+    const payload = &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    @memcpy(packet[28..36], payload);
+    const wrong = &[_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 };
+    try std.testing.expect(!ping.isIcmpEchoReplyForTest(&packet, 0x1234, 1, wrong, false));
 }
