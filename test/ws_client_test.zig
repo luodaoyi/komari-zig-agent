@@ -44,7 +44,7 @@ test "websocket masked writer handles extended payload in chunks" {
     try std.testing.expectEqual(@as(u8, 0x80 | 126), frame[1]);
     const len = (@as(usize, frame[2]) << 8) | frame[3];
     try std.testing.expectEqual(payload.len, len);
-    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, frame[4..8]);
+    try std.testing.expect(frame[4] != 1 or frame[5] != 2 or frame[6] != 3 or frame[7] != 4);
     try std.testing.expectEqual(payload.len + 8, frame.len);
 
     for (payload, 0..) |b, i| {
@@ -68,4 +68,22 @@ test "websocket small incoming frames reuse client read pool" {
     try std.testing.expect(second.pooled);
     try std.testing.expectEqual(first_ptr, second.payload.ptr);
     try std.testing.expectEqualStrings("bye", second.payload);
+}
+
+
+test "websocket accept digest is derived from nonce" {
+    const accept = try ws_client.expectedAcceptForTest(std.testing.allocator, "dGhlIHNhbXBsZSBub25jZQ==");
+    defer std.testing.allocator.free(accept);
+    try std.testing.expectEqualStrings("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", accept);
+}
+
+test "websocket writer masks payload with non-fixed frame mask" {
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+
+    try ws_client.writeMaskedFrameForTest(&out.writer, 0x1, "hello");
+    const frame = out.written();
+    try std.testing.expectEqual(@as(u8, 0x81), frame[0]);
+    try std.testing.expectEqual(@as(u8, 0x80 | 5), frame[1]);
+    try std.testing.expect(frame[4] != 1 or frame[5] != 2 or frame[6] != 3 or frame[7] != 4);
 }

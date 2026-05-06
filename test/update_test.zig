@@ -104,6 +104,11 @@ test "self update checksum file parser accepts common formats" {
     try std.testing.expect(update.checksumFromSums(sums, "missing") == null);
 }
 
+test "self update treats preflight OutOfMemory as fatal" {
+    try std.testing.expect(update.preflightErrorIsFatalForTest(error.OutOfMemory));
+    try std.testing.expect(update.preflightErrorIsFatalForTest(error.UpdatePreflightFailed));
+}
+
 test "pending update allows first start then rolls back next unconfirmed start" {
     var state = update.PendingUpdateState{
         .previous_version = "v0.1.2",

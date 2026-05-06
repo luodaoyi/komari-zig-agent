@@ -185,7 +185,10 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any);
     errdefer raw_http.close(allocator);
     const raw = raw_http.conn;
-    const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
+    const nonce_bytes = try randomBytes(allocator, 16);
+    defer allocator.free(nonce_bytes);
+    const nonce = try encodeBase64(allocator, nonce_bytes);
+    defer allocator.free(nonce);
     var req = std.Io.Writer.Allocating.init(allocator);
     defer req.deinit();
     const request_target = if (raw_http.proxied_plain) url else target.path;
@@ -201,8 +204,7 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     defer allocator.free(request);
     try raw.writer().writeAll(request);
     try raw.flush();
-    const code = try readHandshake(raw.reader());
-    if (code != 101) return error.WebSocketHandshakeFailed;
+    try readHandshake(raw.reader(), nonce, allocator);
     const client = try allocator.create(Client);
     client.* = .{ .raw = raw };
     if (raw_http.proxy_authorization) |authorization| allocator.free(authorization);
@@ -265,17 +267,26 @@ fn readFrameFromReader(client: *Client, allocator: std.mem.Allocator, reader: an
     return .{ .opcode = opcode, .payload = payload, .pooled = pooled != null };
 }
 
-fn readHandshake(reader: *std.Io.Reader) !u16 {
+fn readHandshake(reader: *std.Io.Reader, nonce: []const u8, allocator: std.mem.Allocator) !void {
     var line: [1024]u8 = undefined;
     const n = try readLine(reader, &line);
     const first = line[0..n];
     if (first.len < 12 or !std.mem.startsWith(u8, first, "HTTP/1.")) return error.WebSocketHandshakeFailed;
     const code = try std.fmt.parseInt(u16, first[9..12], 10);
+    var accept: ?[]const u8 = null;
     while (true) {
         const len = try readLine(reader, &line);
         if (len == 0) break;
+        const header = line[0..len];
+        if (header.len >= "Sec-WebSocket-Accept:".len and std.ascii.startsWithIgnoreCase(header, "Sec-WebSocket-Accept:")) {
+            accept = try allocator.dupe(u8, std.mem.trim(u8, header["Sec-WebSocket-Accept:".len..], " \t"));
+        }
     }
-    return code;
+    defer if (accept) |value| allocator.free(value);
+    if (code != 101) return error.WebSocketHandshakeFailed;
+    const expected = try expectedAccept(allocator, nonce);
+    defer allocator.free(expected);
+    if (accept == null or !std.mem.eql(u8, accept.?, expected)) return error.WebSocketHandshakeFailed;
 }
 
 fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {
@@ -292,8 +303,59 @@ fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {
     return error.LineTooLong;
 }
 
+fn randomBytes(allocator: std.mem.Allocator, len: usize) ![]u8 {
+    const out = try allocator.alloc(u8, len);
+    fillRandomBytes(out);
+    return out;
+}
+
+fn fillRandomBytes(buf: []u8) void {
+    var i: usize = 0;
+    while (i < buf.len) {
+        const remaining = buf.len - i;
+        if (@hasDecl(std.os, "linux") and @TypeOf(std.os.linux.getrandom) != void) {
+            const n = std.os.linux.getrandom(buf[i..].ptr, remaining, 0);
+            i += n;
+            continue;
+        }
+        if (@hasDecl(std.c, "getrandom") and @TypeOf(std.c.getrandom) != void) {
+            const n = @as(usize, @intCast(std.c.getrandom(buf[i..].ptr, remaining, 0)));
+            i += n;
+            continue;
+        }
+        if (@hasDecl(std.c, "arc4random_buf") and @TypeOf(std.c.arc4random_buf) != void) {
+            std.c.arc4random_buf(buf[i..].ptr, remaining);
+            i = buf.len;
+            continue;
+        }
+        @compileError("no secure random source available");
+    }
+}
+
+fn encodeBase64(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    const encoded_len = std.base64.standard.Encoder.calcSize(data.len);
+    const out = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(out, data);
+    return out;
+}
+
+fn expectedAccept(allocator: std.mem.Allocator, nonce: []const u8) ![]u8 {
+    const input = try std.fmt.allocPrint(allocator, "{s}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", .{nonce});
+    defer allocator.free(input);
+    var digest: [20]u8 = undefined;
+    std.crypto.hash.Sha1.hash(input, &digest, .{});
+    const encoded_len = std.base64.standard.Encoder.calcSize(digest.len);
+    const out = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(out, &digest);
+    return out;
+}
+
 pub fn writeMaskedFrameForTest(writer: anytype, opcode: u8, payload: []const u8) !void {
     try writeMaskedFrame(writer, opcode, payload);
+}
+
+pub fn expectedAcceptForTest(allocator: std.mem.Allocator, nonce: []const u8) ![]u8 {
+    return expectedAccept(allocator, nonce);
 }
 
 pub fn readFrameFromBytesForTest(client: *Client, allocator: std.mem.Allocator, bytes: []const u8) !Frame {
@@ -322,7 +384,8 @@ fn writeMaskedFrame(writer: anytype, opcode: u8, payload: []const u8) !void {
         std.mem.writeInt(u64, header[header_len..][0..8], payload.len, .big);
         header_len += 8;
     }
-    const mask = [_]u8{ 1, 2, 3, 4 };
+    var mask: [4]u8 = undefined;
+    fillRandomBytes(&mask);
     @memcpy(header[header_len..][0..4], &mask);
     header_len += 4;
 

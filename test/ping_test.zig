@@ -86,3 +86,10 @@ test "icmp echo reply parser rejects mismatched payload even when seq matches" {
     const wrong = &[_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 };
     try std.testing.expect(!ping.isIcmpEchoReplyForTest(&packet, 0x1234, 1, wrong, false));
 }
+
+
+test "best latency selector keeps the lowest successful sample and ignores failures" {
+    try std.testing.expectEqual(@as(i64, 42), ping.bestLatencyFromSamplesForTest(&.{ -1, 130, 42, 1001 }));
+    try std.testing.expectEqual(@as(i64, 1001), ping.bestLatencyFromSamplesForTest(&.{ 1500, 1001, 2000 }));
+    try std.testing.expectEqual(@as(i64, -1), ping.bestLatencyFromSamplesForTest(&.{ -1, -1, -1 }));
+}

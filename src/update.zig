@@ -217,7 +217,7 @@ pub fn releaseApiUrlFromEnvValueForTest(allocator: std.mem.Allocator, value: []c
 }
 
 pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
-    const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, updateLoop, .{ allocator, cfg }) catch return;
+    const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.update_worker_stack_size }, updateLoop, .{ allocator, cfg }) catch return;
     thread.detach();
 }
 
@@ -275,7 +275,7 @@ fn downloadAndReplace(
     }
     runBinaryPreflight(allocator, tmp) catch |err| {
         logUpdateStageError("preflight", err);
-        if (err != error.OutOfMemory) return err;
+        if (preflightErrorIsFatal(err)) return err;
     };
     try copyFileAbsolute(exe, backup);
     errdefer deleteFileIgnoreMissing(backup);
@@ -605,12 +605,65 @@ fn copyFileAbsolute(src: []const u8, dst: []const u8) !void {
 }
 
 fn runBinaryPreflight(allocator: std.mem.Allocator, path: []const u8) !void {
-    _ = allocator;
-    const term = try compat.runIgnoreOutput(&.{ path, "--show-warning" }, null);
-    switch (term) {
-        .exited => |code| if (code != 0) return error.UpdatePreflightFailed,
+    switch (builtin.os.tag) {
+        .linux => return runBinaryPreflightLinux(allocator, path),
+        else => {
+            const term = try compat.runIgnoreOutput(&.{ path, "--show-warning" }, null);
+            switch (term) {
+                .exited => |code| if (code != 0) return error.UpdatePreflightFailed,
+                else => return error.UpdatePreflightFailed,
+            }
+        },
+    }
+}
+
+fn runBinaryPreflightLinux(allocator: std.mem.Allocator, path: []const u8) !void {
+    const linux = std.os.linux;
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const dev_null = linux.open("/dev/null", .{ .ACCMODE = .RDWR, .CLOEXEC = true }, 0);
+    if (std.posix.errno(dev_null) != .SUCCESS) return error.UpdatePreflightFailed;
+    const dev_null_fd: std.posix.fd_t = @intCast(dev_null);
+    defer _ = linux.close(dev_null_fd);
+
+    const rc = linux.fork();
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => {},
+        .AGAIN, .NOMEM => return error.SystemResources,
         else => return error.UpdatePreflightFailed,
     }
+
+    const pid: std.posix.pid_t = @intCast(rc);
+    if (pid == 0) {
+        _ = linux.dup2(dev_null_fd, std.posix.STDIN_FILENO);
+        _ = linux.dup2(dev_null_fd, std.posix.STDOUT_FILENO);
+        _ = linux.dup2(dev_null_fd, std.posix.STDERR_FILENO);
+        const argv: [*:null]const ?[*:0]const u8 = @ptrCast(&[_:null]?[*:0]const u8{ path_z.ptr, "--show-warning" });
+        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(&[_:null]?[*:0]const u8{});
+        _ = linux.execve(path_z.ptr, argv, envp);
+        linux.exit(127);
+    }
+
+    var status: u32 = undefined;
+    while (true) {
+        const wait_rc = linux.waitpid(pid, &status, 0);
+        switch (std.posix.errno(wait_rc)) {
+            .SUCCESS => break,
+            .INTR => continue,
+            else => return error.UpdatePreflightFailed,
+        }
+    }
+    if (!std.posix.W.IFEXITED(status) or std.posix.W.EXITSTATUS(status) != 0) return error.UpdatePreflightFailed;
+}
+
+fn preflightErrorIsFatal(err: anyerror) bool {
+    _ = @errorName(err);
+    return true;
+}
+
+pub fn preflightErrorIsFatalForTest(err: anyerror) bool {
+    return preflightErrorIsFatal(err);
 }
 
 fn deleteFileIgnoreMissing(path: []const u8) void {

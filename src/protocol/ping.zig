@@ -46,19 +46,28 @@ pub fn measureDiagnostic(allocator: std.mem.Allocator, ping_type: []const u8, ta
 
 fn measureWithIcmpMode(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) i64 {
     const kind = normalizePingType(ping_type) orelse return -1;
-    const high_latency_threshold: i64 = 1000;
-    const first = measureOnce(allocator, kind, target, custom_dns, icmp_mode);
-    if (first < 0) return -1;
-    if (first <= high_latency_threshold) return first;
-    var latency = first;
-    var attempt: u8 = 0;
-    while (attempt < 3) : (attempt += 1) {
+    const attempts = 3;
+    var best: ?i64 = null;
+
+    var attempt: usize = 0;
+    while (attempt < attempts) : (attempt += 1) {
         const value = measureOnce(allocator, kind, target, custom_dns, icmp_mode);
-        if (value < 0) return -1;
-        latency = value;
-        if (latency <= high_latency_threshold) return latency;
+        if (value >= 0) {
+            best = if (best) |current| @min(current, value) else value;
+        }
     }
-    return -1;
+
+    return best orelse -1;
+}
+
+pub fn bestLatencyFromSamplesForTest(samples: []const i64) i64 {
+    var best: ?i64 = null;
+    for (samples) |value| {
+        if (value >= 0) {
+            best = if (best) |current| @min(current, value) else value;
+        }
+    }
+    return best orelse -1;
 }
 
 fn measureOnce(allocator: std.mem.Allocator, kind: PingKind, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) i64 {
