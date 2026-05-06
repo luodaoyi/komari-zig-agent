@@ -310,26 +310,7 @@ fn randomBytes(allocator: std.mem.Allocator, len: usize) ![]u8 {
 }
 
 fn fillRandomBytes(buf: []u8) void {
-    var i: usize = 0;
-    while (i < buf.len) {
-        const remaining = buf.len - i;
-        if (@hasDecl(std.os, "linux") and @TypeOf(std.os.linux.getrandom) != void) {
-            const n = std.os.linux.getrandom(buf[i..].ptr, remaining, 0);
-            i += n;
-            continue;
-        }
-        if (@hasDecl(std.c, "getrandom") and @TypeOf(std.c.getrandom) != void) {
-            const n = @as(usize, @intCast(std.c.getrandom(buf[i..].ptr, remaining, 0)));
-            i += n;
-            continue;
-        }
-        if (@hasDecl(std.c, "arc4random_buf") and @TypeOf(std.c.arc4random_buf) != void) {
-            std.c.arc4random_buf(buf[i..].ptr, remaining);
-            i = buf.len;
-            continue;
-        }
-        @compileError("no secure random source available");
-    }
+    std.Options.debug_io.randomSecure(buf) catch @panic("secure random source unavailable");
 }
 
 fn encodeBase64(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
