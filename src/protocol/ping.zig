@@ -25,8 +25,9 @@ const IcmpMode = enum {
 };
 
 // Concurrent ICMP tasks need unique request markers so replies are not
-// accidentally consumed by a sibling socket on the same host.
-var icmp_probe_counter = std.atomic.Value(u64).init(1);
+// accidentally consumed by a sibling socket on the same host. Keep the atomic
+// counter 32-bit so cross-compiles to 32-bit targets can still use fetchAdd.
+var icmp_probe_counter = std.atomic.Value(u32).init(1);
 
 const IcmpProbeIdentity = struct {
     ident: u16,
@@ -148,7 +149,7 @@ fn icmpProbeIdentityFromNonce(nonce: u64) IcmpProbeIdentity {
 }
 
 fn nextIcmpProbeIdentity() IcmpProbeIdentity {
-    return icmpProbeIdentityFromNonce(icmp_probe_counter.fetchAdd(1, .monotonic));
+    return icmpProbeIdentityFromNonce(@as(u64, icmp_probe_counter.fetchAdd(1, .monotonic)));
 }
 
 pub fn icmpProbeIdentityForTest(nonce: u64) IcmpProbeIdentity {
