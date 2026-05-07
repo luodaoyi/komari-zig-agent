@@ -124,7 +124,6 @@ pub fn build(b: *std.Build) void {
         "test/network_filter_test.zig",
         "test/cpu_proc_test.zig",
         "test/task_test.zig",
-        "test/task_limiter_test.zig",
         "test/ping_test.zig",
         "test/ip_extract_test.zig",
         "test/coverage_test.zig",
@@ -247,11 +246,6 @@ fn addTest(
     });
     addCompatImports(protocol_task, compat_module, net_module);
     tests.root_module.addImport("protocol_task", protocol_task);
-    tests.root_module.addImport("protocol_task_limiter", b.createModule(.{
-        .root_source_file = b.path("src/protocol/task_limiter.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
     const protocol_ping = b.createModule(.{
         .root_source_file = b.path("src/protocol/ping.zig"),
         .target = target,

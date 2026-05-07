@@ -41,6 +41,17 @@ test "icmp checksum is deterministic" {
     try std.testing.expectEqual(@as(u16, 0), ping.icmpChecksum(&packet));
 }
 
+test "icmp probe identity stays unique across concurrent-style nonces" {
+    const first = ping.icmpProbeIdentityForTest(1);
+    const second = ping.icmpProbeIdentityForTest(2);
+    const wrapped = ping.icmpProbeIdentityForTest(0x1_0001);
+
+    try std.testing.expect(first.seq != second.seq);
+    try std.testing.expect(!std.mem.eql(u8, first.payload[0..], second.payload[0..]));
+    try std.testing.expect(first.ident != wrapped.ident);
+    try std.testing.expect(!std.mem.eql(u8, first.payload[0..], wrapped.payload[0..]));
+}
+
 test "icmp echo reply parser accepts linux datagram socket rewritten identifier" {
     var packet = [_]u8{0} ** 28;
     packet[0] = 0x45; // IPv4 header, 20 bytes.
@@ -86,7 +97,6 @@ test "icmp echo reply parser rejects mismatched payload even when seq matches" {
     const wrong = &[_]u8{ 8, 7, 6, 5, 4, 3, 2, 1 };
     try std.testing.expect(!ping.isIcmpEchoReplyForTest(&packet, 0x1234, 1, wrong, false));
 }
-
 
 test "best latency selector keeps the lowest successful sample and ignores failures" {
     try std.testing.expectEqual(@as(i64, 42), ping.bestLatencyFromSamplesForTest(&.{ -1, 130, 42, 1001 }));

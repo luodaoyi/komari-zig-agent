@@ -24,6 +24,16 @@ const IcmpMode = enum {
     datagram,
 };
 
+// Concurrent ICMP tasks need unique request markers so replies are not
+// accidentally consumed by a sibling socket on the same host.
+var icmp_probe_counter = std.atomic.Value(u64).init(1);
+
+const IcmpProbeIdentity = struct {
+    ident: u16,
+    seq: u16,
+    payload: [8]u8,
+};
+
 pub fn allocPingResultJson(allocator: std.mem.Allocator, task_id: u64, ping_type: []const u8, value: i64, finished_at: []const u8) ![]const u8 {
     var out = std.Io.Writer.Allocating.init(allocator);
     defer out.deinit();
@@ -126,6 +136,25 @@ pub fn icmpChecksum(bytes: []const u8) u16 {
     return @as(u16, @intCast(~sum & 0xffff));
 }
 
+fn icmpProbeIdentityFromNonce(nonce: u64) IcmpProbeIdentity {
+    const value = if (nonce == 0) 1 else nonce;
+    var payload: [8]u8 = undefined;
+    std.mem.writeInt(u64, payload[0..], value, .big);
+    return .{
+        .ident = @truncate(value >> 16),
+        .seq = @truncate(value),
+        .payload = payload,
+    };
+}
+
+fn nextIcmpProbeIdentity() IcmpProbeIdentity {
+    return icmpProbeIdentityFromNonce(icmp_probe_counter.fetchAdd(1, .monotonic));
+}
+
+pub fn icmpProbeIdentityForTest(nonce: u64) IcmpProbeIdentity {
+    return icmpProbeIdentityFromNonce(nonce);
+}
+
 fn icmpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) !i64 {
     if (builtin.os.tag == .windows) return error.Unsupported;
     const addrs = try dns.resolveHost(allocator, parseHostOnly(target), 0, custom_dns);
@@ -148,13 +177,12 @@ fn icmpPingAddress(addr: net.Address, icmp_mode: IcmpMode) !i64 {
     defer compat.closeFd(sock);
 
     var packet: [16]u8 = .{0} ** 16;
+    const probe = nextIcmpProbeIdentity();
     packet[0] = 8;
     packet[1] = 0;
-    const ident: u16 = @truncate(@as(u64, @intCast(compat.milliTimestamp())) & 0xffff);
-    const seq: u16 = 1;
-    std.mem.writeInt(u16, packet[4..6], ident, .big);
-    std.mem.writeInt(u16, packet[6..8], seq, .big);
-    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
+    std.mem.writeInt(u16, packet[4..6], probe.ident, .big);
+    std.mem.writeInt(u16, packet[6..8], probe.seq, .big);
+    @memcpy(packet[8..16], probe.payload[0..]);
     const payload = packet[8..16];
     const csum = icmpChecksum(&packet);
     std.mem.writeInt(u16, packet[2..4], csum, .big);
@@ -169,7 +197,7 @@ fn icmpPingAddress(addr: net.Address, icmp_mode: IcmpMode) !i64 {
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
         const n = try compat.recvFrom(sock, &buf);
-        if (isEchoReply(buf[0..n], ident, seq, payload, privileged)) return compat.milliTimestamp() - start;
+        if (isEchoReply(buf[0..n], probe.ident, probe.seq, payload, privileged)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
@@ -202,13 +230,12 @@ fn icmp6PingAddress(addr: net.Address, icmp_mode: IcmpMode) !i64 {
     defer compat.closeFd(sock);
 
     var packet: [16]u8 = .{0} ** 16;
+    const probe = nextIcmpProbeIdentity();
     packet[0] = 128;
     packet[1] = 0;
-    const ident: u16 = @truncate(@as(u64, @intCast(compat.milliTimestamp())) & 0xffff);
-    const seq: u16 = 1;
-    std.mem.writeInt(u16, packet[4..6], ident, .big);
-    std.mem.writeInt(u16, packet[6..8], seq, .big);
-    std.mem.writeInt(u64, packet[8..16], @truncate(@as(u128, @bitCast(compat.nanoTimestamp()))), .big);
+    std.mem.writeInt(u16, packet[4..6], probe.ident, .big);
+    std.mem.writeInt(u16, packet[6..8], probe.seq, .big);
+    @memcpy(packet[8..16], probe.payload[0..]);
     const payload = packet[8..16];
 
     const start = compat.milliTimestamp();
@@ -221,11 +248,10 @@ fn icmp6PingAddress(addr: net.Address, icmp_mode: IcmpMode) !i64 {
         if (ready == 0) return error.Timeout;
         var buf: [1500]u8 = undefined;
         const n = try compat.recvFrom(sock, &buf);
-        if (isEchoReply6(buf[0..n], ident, seq, payload, privileged)) return compat.milliTimestamp() - start;
+        if (isEchoReply6(buf[0..n], probe.ident, probe.seq, payload, privileged)) return compat.milliTimestamp() - start;
     }
     return error.Timeout;
 }
-
 
 fn openIcmp6Socket(icmp_mode: IcmpMode) !IcmpSocket {
     const dgram_flags = std.posix.SOCK.DGRAM | if (builtin.os.tag == .linux) std.posix.SOCK.CLOEXEC else 0;

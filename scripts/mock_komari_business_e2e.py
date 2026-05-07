@@ -24,11 +24,18 @@ CF_SECRET = "business-cf-secret"
 
 
 class State:
-    def __init__(self, token=TOKEN, expect_cf=False, exec_enabled=True, terminal=False):
+    def __init__(self, token=TOKEN, expect_cf=False, exec_enabled=True, terminal=False, ping_tasks=None):
         self.token = token
         self.expect_cf = expect_cf
         self.exec_enabled = exec_enabled
         self.terminal_enabled = terminal
+        self.ping_tasks = ping_tasks if ping_tasks is not None else [{
+            "task_id": 77,
+            "ping_type": "tcp",
+            "ping_target": "",
+        }]
+        self.expected_ping = {task["task_id"]: task for task in self.ping_tasks}
+        self.ping_results = {}
         self.error = None
         self.upload_seen = threading.Event()
         self.register_seen = threading.Event()
@@ -38,7 +45,6 @@ class State:
         self.terminal_seen = threading.Event()
         self.ws_seen = threading.Event()
         self.task_sent = False
-        self.tcp_port = 0
         self.uploads = 0
         self.reports = 0
         self.lock = threading.Lock()
@@ -86,6 +92,8 @@ def make_handler(state):
                 self.handle_report(parsed)
             elif parsed.path == "/api/clients/terminal":
                 self.handle_terminal(parsed)
+            elif parsed.path == "/probe-ok":
+                self.send_plain(200, b"ok")
             else:
                 self.send_plain(404, b"not found")
 
@@ -168,12 +176,13 @@ def make_handler(state):
             sent = False
             while time.monotonic() < deadline:
                 if not sent:
-                    write_ws_frame(self.connection, 0x1, json.dumps({
-                        "message": "ping",
-                        "ping_task_id": 77,
-                        "ping_type": "tcp",
-                        "ping_target": f"127.0.0.1:{state.tcp_port}",
-                    }).encode())
+                    for ping_task in state.ping_tasks:
+                        write_ws_frame(self.connection, 0x1, json.dumps({
+                            "message": "ping",
+                            "ping_task_id": ping_task["task_id"],
+                            "ping_type": ping_task["ping_type"],
+                            "ping_target": ping_task["ping_target"],
+                        }).encode())
                     if state.exec_enabled:
                         write_ws_frame(self.connection, 0x1, json.dumps({
                             "message": "exec",
@@ -211,10 +220,18 @@ def make_handler(state):
                 if "cpu" in data and "ram" in data and "load" in data:
                     state.reports += 1
                     state.report_seen.set()
-                if data.get("type") == "ping_result" and data.get("task_id") == 77:
-                    if data.get("ping_type") != "tcp" or data.get("value", -1) < 0:
+                if data.get("type") == "ping_result":
+                    task_id = data.get("task_id")
+                    expected = state.expected_ping.get(task_id)
+                    if expected is None:
+                        set_error(state, f"unexpected ping result: {data}")
+                        return
+                    if data.get("ping_type") != expected["ping_type"] or data.get("value", -1) < 0:
                         set_error(state, f"bad ping result: {data}")
-                    state.ping_seen.set()
+                        return
+                    state.ping_results[task_id] = data
+                    if len(state.ping_results) == len(state.expected_ping):
+                        state.ping_seen.set()
                 if self.done():
                     return
 
@@ -410,9 +427,8 @@ def terminate(proc):
 
 def run_panel_e2e(args):
     exec_enabled = not args.no_exec
-    state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal)
+    state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal, ping_tasks=[])
     tcp = TcpAcceptServer(("127.0.0.1", 0), TcpAcceptHandler)
-    state.tcp_port = tcp.server_address[1]
     threading.Thread(target=tcp.serve_forever, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -434,7 +450,35 @@ def run_panel_e2e(args):
         env["NO_PROXY"] = ""
     endpoint = f"http://{endpoint_host}:{server.server_address[1]}"
 
+    ping_tasks = []
+    next_task_id = 77
+    for _ in range(args.tcp_ping_count):
+        ping_tasks.append({
+            "task_id": next_task_id,
+            "ping_type": "tcp",
+            "ping_target": f"127.0.0.1:{tcp.server_address[1]}",
+        })
+        next_task_id += 1
+    for _ in range(args.http_ping_count):
+        ping_tasks.append({
+            "task_id": next_task_id,
+            "ping_type": "http",
+            "ping_target": f"127.0.0.1:{server.server_address[1]}/probe-ok",
+        })
+        next_task_id += 1
+    for _ in range(args.icmp_ping_count):
+        ping_tasks.append({
+            "task_id": next_task_id,
+            "ping_type": "icmp",
+            "ping_target": "127.0.0.1",
+        })
+        next_task_id += 1
+    state.ping_tasks = ping_tasks
+    state.expected_ping = {task["task_id"]: task for task in ping_tasks}
+
     cmd = [os.path.abspath(args.agent), "--endpoint", endpoint]
+    if args.sudo_agent:
+        cmd = ["sudo", "--non-interactive"] + cmd
     if args.autodiscovery:
         cmd += ["--auto-discovery", DISCOVERY_KEY]
     else:
@@ -471,7 +515,11 @@ def run_panel_e2e(args):
             if state.error:
                 raise RuntimeError(f"{state.error}\n{''.join(output[-120:])}")
             time.sleep(0.05)
-        raise RuntimeError(f"timeout; uploads={state.uploads} reports={state.reports} task_sent={state.task_sent}\n{''.join(output[-120:])}")
+        missing = sorted(set(state.expected_ping) - set(state.ping_results))
+        raise RuntimeError(
+            f"timeout; uploads={state.uploads} reports={state.reports} task_sent={state.task_sent} "
+            f"ping_seen={len(state.ping_results)}/{len(state.expected_ping)} missing={missing}\n{''.join(output[-120:])}"
+        )
     except Exception as exc:
         print(f"business e2e failed: {exc}", file=sys.stderr)
         return 1
@@ -545,10 +593,13 @@ def run_self_update_e2e(args):
             second = subprocess.run([old_path, "--show-warning"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10)
             if second.returncode != 0:
                 raise RuntimeError(f"updated binary preflight failed: {second.returncode}\n{second.stdout}")
-            confirm_state = State(token=TOKEN, exec_enabled=False)
             tcp = TcpAcceptServer(("127.0.0.1", 0), TcpAcceptHandler)
-            confirm_state.tcp_port = tcp.server_address[1]
             threading.Thread(target=tcp.serve_forever, daemon=True).start()
+            confirm_state = State(token=TOKEN, exec_enabled=False, ping_tasks=[{
+                "task_id": 77,
+                "ping_type": "tcp",
+                "ping_target": f"127.0.0.1:{tcp.server_address[1]}",
+            }])
             panel = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(confirm_state))
             threading.Thread(target=panel.serve_forever, daemon=True).start()
             output = []
@@ -628,6 +679,10 @@ def main():
     panel.add_argument("--proxy", action="store_true")
     panel.add_argument("--cf", action="store_true")
     panel.add_argument("--custom-dns", action="store_true")
+    panel.add_argument("--sudo-agent", action="store_true")
+    panel.add_argument("--tcp-ping-count", type=int, default=1)
+    panel.add_argument("--http-ping-count", type=int, default=0)
+    panel.add_argument("--icmp-ping-count", type=int, default=0)
     update = sub.add_parser("self-update")
     update.add_argument("--old-agent", required=True)
     update.add_argument("--new-agent", required=True)
