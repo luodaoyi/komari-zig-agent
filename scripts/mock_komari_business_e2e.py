@@ -477,6 +477,8 @@ def run_panel_e2e(args):
     state.expected_ping = {task["task_id"]: task for task in ping_tasks}
 
     cmd = [os.path.abspath(args.agent), "--endpoint", endpoint]
+    if args.sudo_agent:
+        cmd = ["sudo", "--non-interactive"] + cmd
     if args.autodiscovery:
         cmd += ["--auto-discovery", DISCOVERY_KEY]
     else:
@@ -677,6 +679,7 @@ def main():
     panel.add_argument("--proxy", action="store_true")
     panel.add_argument("--cf", action="store_true")
     panel.add_argument("--custom-dns", action="store_true")
+    panel.add_argument("--sudo-agent", action="store_true")
     panel.add_argument("--tcp-ping-count", type=int, default=1)
     panel.add_argument("--http-ping-count", type=int, default=0)
     panel.add_argument("--icmp-ping-count", type=int, default=0)

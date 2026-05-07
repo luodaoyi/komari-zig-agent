@@ -195,7 +195,7 @@ jobs:
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --autodiscovery --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --proxy --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --custom-dns --no-exec
-          python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --no-exec --tcp-ping-count 10 --http-ping-count 2 --icmp-ping-count 2
+          python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --no-exec --sudo-agent --tcp-ping-count 10 --http-ping-count 2 --icmp-ping-count 2
       - name: Run self-update E2E
         run: |
           set -eu
