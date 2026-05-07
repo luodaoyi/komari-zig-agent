@@ -136,12 +136,10 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       - name: Install Zig
+        shell: bash
         run: |
           set -eu
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
-          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          bash scripts/install_zig_ci.sh "zig-x86_64-linux-${ZIG_VERSION}.tar.xz" "${ZIG_SHA256}"
       - name: Build
         run: |
           set -eu
