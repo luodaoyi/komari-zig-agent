@@ -134,10 +134,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
-          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          bash scripts/install_zig_ci.sh "zig-x86_64-linux-${ZIG_VERSION}.tar.xz" "${ZIG_SHA256}"
       - name: Test
         shell: bash
         run: zig build test
@@ -156,14 +153,8 @@ jobs:
             pkg install -y curl python3
           run: |
             set -eu
-            curl -fsSLO "https://ziglang.org/download/${{ env.ZIG_VERSION }}/zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz"
-            actual="$(sha256 -q "zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz")"
-            if [ "$actual" != "${{ env.FREEBSD_ZIG_SHA256 }}" ]; then
-              echo "FreeBSD Zig checksum mismatch: $actual" >&2
-              exit 1
-            fi
-            tar -xf "zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz"
-            export PATH="$PWD/zig-x86_64-freebsd-${{ env.ZIG_VERSION }}:$PATH"
+            zig_dir="$(sh scripts/install_zig_ci.sh "zig-x86_64-freebsd-${{ env.ZIG_VERSION }}.tar.xz" "${{ env.FREEBSD_ZIG_SHA256 }}" "github-komari-zig-agent-freebsd-ci")"
+            export PATH="$zig_dir:$PATH"
             zig build test
             zig build -Doptimize=ReleaseSmall -Dversion=dev
             zig-out/bin/komari-agent --show-warning
@@ -264,10 +255,7 @@ jobs:
       - name: Install Zig
         run: |
           set -eu
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
-          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          bash scripts/install_zig_ci.sh "zig-x86_64-linux-${ZIG_VERSION}.tar.xz" "${ZIG_SHA256}"
       - name: Build static Linux binary
         run: |
           set -eu
@@ -332,10 +320,7 @@ jobs:
           set -eu
           sudo apt-get update
           sudo apt-get install -y qemu-user-static
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
-          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          bash scripts/install_zig_ci.sh "zig-x86_64-linux-${ZIG_VERSION}.tar.xz" "${ZIG_SHA256}"
       - name: Build and run agent smoke
         run: |
           set -eu
@@ -421,10 +406,7 @@ jobs:
       - name: Install Zig
         run: |
           set -eu
-          curl -fsSLO "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "${ZIG_SHA256}  zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | sha256sum -c -
-          tar -xf "zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          bash scripts/install_zig_ci.sh "zig-x86_64-linux-${ZIG_VERSION}.tar.xz" "${ZIG_SHA256}"
       - name: Build
         run: |
           set -eu
