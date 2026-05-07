@@ -196,6 +196,7 @@ jobs:
       - name: Run business panel E2E
         run: |
           set -eu
+          sudo sysctl -w net.ipv4.ping_group_range='0 2147483647' >/dev/null
           python3 -m py_compile scripts/mock_komari_business_e2e.py
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --cf --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent
