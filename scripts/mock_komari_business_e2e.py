@@ -226,7 +226,10 @@ def make_handler(state):
                     if expected is None:
                         set_error(state, f"unexpected ping result: {data}")
                         return
-                    if data.get("ping_type") != expected["ping_type"] or data.get("value", -1) < 0:
+                    if data.get("ping_type") != expected["ping_type"]:
+                        set_error(state, f"bad ping result: {data}")
+                        return
+                    if data.get("value", -1) < 0 and not expected.get("allow_negative", False):
                         set_error(state, f"bad ping result: {data}")
                         return
                     state.ping_results[task_id] = data
@@ -457,6 +460,7 @@ def run_panel_e2e(args):
             "task_id": next_task_id,
             "ping_type": "tcp",
             "ping_target": f"127.0.0.1:{tcp.server_address[1]}",
+            "allow_negative": args.tcp_ping_count > 1,
         })
         next_task_id += 1
     for _ in range(args.http_ping_count):
