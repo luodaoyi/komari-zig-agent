@@ -24,6 +24,9 @@ const IcmpMode = enum {
     datagram,
 };
 
+const high_latency_threshold_ms: i64 = 1000;
+const retry_drop_threshold_tcping_ms: i64 = 800;
+
 // Concurrent ICMP tasks need unique request markers so replies are not
 // accidentally consumed by a sibling socket on the same host. Keep the atomic
 // counter 32-bit so cross-compiles to 32-bit targets can still use fetchAdd.
@@ -58,17 +61,14 @@ pub fn measureDiagnostic(allocator: std.mem.Allocator, ping_type: []const u8, ta
 fn measureWithIcmpMode(allocator: std.mem.Allocator, ping_type: []const u8, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) i64 {
     const kind = normalizePingType(ping_type) orelse return -1;
     const attempts = 3;
-    var best: ?i64 = null;
+    var samples = [_]i64{ -1, -1, -1 };
 
     var attempt: usize = 0;
     while (attempt < attempts) : (attempt += 1) {
-        const value = measureOnce(allocator, kind, target, custom_dns, icmp_mode);
-        if (value >= 0) {
-            best = if (best) |current| @min(current, value) else value;
-        }
+        samples[attempt] = measureOnce(allocator, kind, target, custom_dns, icmp_mode);
     }
 
-    return best orelse -1;
+    return selectLatencyFromSamples(kind, &samples);
 }
 
 pub fn bestLatencyFromSamplesForTest(samples: []const i64) i64 {
@@ -79,6 +79,29 @@ pub fn bestLatencyFromSamplesForTest(samples: []const i64) i64 {
         }
     }
     return best orelse -1;
+}
+
+fn selectLatencyFromSamples(kind: PingKind, samples: []const i64) i64 {
+    // Match newer Go-agent behavior for tcp ping: if the first successful
+    // handshake is very slow, but a retry drops by ~one SYN retransmit window,
+    // treat it as failure instead of reporting a misleading low retry latency.
+    if (kind == .tcp and samples.len != 0) {
+        const first = samples[0];
+        if (first > high_latency_threshold_ms) {
+            for (samples[1..]) |value| {
+                if (value >= 0 and value <= high_latency_threshold_ms and first - value > retry_drop_threshold_tcping_ms) {
+                    return -1;
+                }
+            }
+        }
+    }
+
+    return bestLatencyFromSamplesForTest(samples);
+}
+
+pub fn selectLatencyFromSamplesForTest(ping_type: []const u8, samples: []const i64) i64 {
+    const kind = normalizePingType(ping_type) orelse return -1;
+    return selectLatencyFromSamples(kind, samples);
 }
 
 fn measureOnce(allocator: std.mem.Allocator, kind: PingKind, target: []const u8, custom_dns: []const u8, icmp_mode: IcmpMode) i64 {

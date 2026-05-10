@@ -103,3 +103,9 @@ test "best latency selector keeps the lowest successful sample and ignores failu
     try std.testing.expectEqual(@as(i64, 1001), ping.bestLatencyFromSamplesForTest(&.{ 1500, 1001, 2000 }));
     try std.testing.expectEqual(@as(i64, -1), ping.bestLatencyFromSamplesForTest(&.{ -1, -1, -1 }));
 }
+
+test "tcp latency selector rejects retransmission-like retry drops" {
+    try std.testing.expectEqual(@as(i64, -1), ping.selectLatencyFromSamplesForTest("tcp", &.{ 1205, 115, 118 }));
+    try std.testing.expectEqual(@as(i64, 450), ping.selectLatencyFromSamplesForTest("tcp", &.{ 1205, 450, -1 }));
+    try std.testing.expectEqual(@as(i64, 115), ping.selectLatencyFromSamplesForTest("http", &.{ 1205, 115, 118 }));
+}
