@@ -98,6 +98,8 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
                 break;
             };
             if (!update_confirmed) {
+                // Pending update state is only confirmed after the replacement
+                // binary survives long enough to send a regular report.
                 update_confirmed = update.confirmPendingUpdate(allocator) catch false;
             }
             const sleep_ms = remainingSleepMs(report_start_ms, reportIntervalMs(cfg.interval), compat.milliTimestamp());

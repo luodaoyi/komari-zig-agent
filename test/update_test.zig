@@ -122,6 +122,19 @@ test "pending update allows first start then rolls back next unconfirmed start" 
     try std.testing.expectEqual(update.PendingAction.rollback, update.pendingAction(state));
 }
 
+test "pending update suppresses startup check but still starts background loop" {
+    const pending = update.startupUpdatePolicy(true);
+    try std.testing.expect(!pending.run_startup_check);
+    try std.testing.expect(pending.start_background_loop);
+
+    const clean = update.startupUpdatePolicy(false);
+    try std.testing.expect(clean.run_startup_check);
+    try std.testing.expect(clean.start_background_loop);
+
+    try std.testing.expect(!update.canCheckForUpdates(true));
+    try std.testing.expect(update.canCheckForUpdates(false));
+}
+
 test "pending update state roundtrips json" {
     const state = update.PendingUpdateState{
         .previous_version = "v0.1.2",

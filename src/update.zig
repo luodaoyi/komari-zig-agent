@@ -34,6 +34,11 @@ pub const PendingUpdateState = struct {
     }
 };
 
+pub const StartupUpdatePolicy = struct {
+    run_startup_check: bool,
+    start_background_loop: bool,
+};
+
 const ReleaseAsset = struct {
     url: []const u8,
     digest: ?[]const u8 = null,
@@ -157,6 +162,20 @@ pub fn hasPendingUpdate(allocator: std.mem.Allocator) bool {
     return true;
 }
 
+/// A pending update marker only blocks the immediate startup re-check.
+/// The background updater must still be started so future releases are
+/// discovered after the fresh binary later confirms itself healthy.
+pub fn startupUpdatePolicy(has_pending_update: bool) StartupUpdatePolicy {
+    return .{
+        .run_startup_check = !has_pending_update,
+        .start_background_loop = true,
+    };
+}
+
+pub fn canCheckForUpdates(has_pending_update: bool) bool {
+    return !has_pending_update;
+}
+
 pub fn confirmPendingUpdate(allocator: std.mem.Allocator) !bool {
     const exe = try compat.selfExePathAlloc(allocator);
     defer allocator.free(exe);
@@ -224,6 +243,9 @@ pub fn startBackground(allocator: std.mem.Allocator, cfg: config.Config) void {
 fn updateLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     while (true) {
         compat.sleep(6 * 60 * 60 * std.time.ns_per_s);
+        // Keep honoring the pending marker inside the loop so an unconfirmed
+        // replacement cannot chain into another update before it proves healthy.
+        if (!canCheckForUpdates(hasPendingUpdate(allocator))) continue;
         checkAndUpdate(allocator, cfg) catch |err| logUpdateError(err);
     }
 }

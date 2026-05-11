@@ -91,11 +91,19 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
     defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
 
-    if (!cfg.disable_auto_update and !update.hasPendingUpdate(allocator)) {
-        update.checkAndUpdate(allocator, cfg) catch |err| {
-            try stdout.print("Auto update check failed: {s}\n", .{@errorName(err)});
-        };
-        update.startBackground(allocator, cfg);
+    if (!cfg.disable_auto_update) {
+        const has_pending_update = update.hasPendingUpdate(allocator);
+        const update_policy = update.startupUpdatePolicy(has_pending_update);
+        // The pending marker is cleared later from the report loop after the new
+        // binary successfully uploads a normal report. Do not gate the background
+        // updater on this marker, or the node gets stranded on its first updated
+        // version until an operator manually restarts it.
+        if (update_policy.run_startup_check) {
+            update.checkAndUpdate(allocator, cfg) catch |err| {
+                try stdout.print("Auto update check failed: {s}\n", .{@errorName(err)});
+            };
+        }
+        if (update_policy.start_background_loop) update.startBackground(allocator, cfg);
     }
 
     printMonitoringLists(allocator, cfg) catch {};
