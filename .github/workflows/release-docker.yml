@@ -4,6 +4,15 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to publish, e.g. v0.1.26
+        required: false
+        type: string
+      source_ref:
+        description: Git ref to build from; defaults to the release tag
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -17,12 +26,42 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          [ -n "$VERSION" ] || VERSION="${{ github.event.release.tag_name }}"
+          if [ -z "$VERSION" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+          fi
+
+          SOURCE_REF="${{ github.event.inputs.source_ref }}"
+          [ -n "$SOURCE_REF" ] || SOURCE_REF="$VERSION"
+          [ -n "$SOURCE_REF" ] || SOURCE_REF="${{ github.sha }}"
+
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAGS="${IMAGE}:latest"
+          if [ -n "$VERSION" ]; then
+            TAGS="${IMAGE}:${VERSION}"$'\n'"${TAGS}"
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "source_ref=$SOURCE_REF"
+            echo "docker_tags<<EOF"
+            printf "%s\n" "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ steps.release_meta.outputs.source_ref }}
+          fetch-depth: 0
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.16.0
       - run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ steps.release_meta.outputs.version }}"
           [ -n "$VERSION" ] || VERSION="${{ github.sha }}"
           zig build -Doptimize=ReleaseSmall -Dversion="$VERSION" -Dtarget=x86_64-linux-musl
           cp zig-out/bin/komari-agent komari-agent-linux-amd64
@@ -39,9 +78,7 @@ jobs:
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ github.event.release.tag_name }}
-            type=raw,value=latest
+          tags: ${{ steps.release_meta.outputs.docker_tags }}
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
