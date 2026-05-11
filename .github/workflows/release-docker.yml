@@ -40,16 +40,15 @@ jobs:
           [ -n "$SOURCE_REF" ] || SOURCE_REF="$VERSION"
           [ -n "$SOURCE_REF" ] || SOURCE_REF="${{ github.sha }}"
 
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          TAGS="${IMAGE}:latest"
+          TAGS="type=raw,value=latest"
           if [ -n "$VERSION" ]; then
-            TAGS="${IMAGE}:${VERSION}"$'\n'"${TAGS}"
+            TAGS="type=raw,value=${VERSION}"$'\n'"${TAGS}"
           fi
 
           {
             echo "version=$VERSION"
             echo "source_ref=$SOURCE_REF"
-            echo "docker_tags<<EOF"
+            echo "metadata_tags<<EOF"
             printf "%s\n" "$TAGS"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
@@ -78,7 +77,7 @@ jobs:
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: ${{ steps.release_meta.outputs.docker_tags }}
+          tags: ${{ steps.release_meta.outputs.metadata_tags }}
       - uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
