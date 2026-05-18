@@ -2,6 +2,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const autodiscovery = @import("protocol/autodiscovery.zig");
 const basic_info = @import("protocol/basic_info.zig");
+const debug = @import("protocol/debug.zig");
 const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
 const ip = @import("protocol/ip.zig");
@@ -42,6 +43,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var cfg = try config.parseArgs(config_allocator, args);
     try cfg.loadEnv(config_allocator);
     if (cfg.config_file.len != 0) try cfg.loadJsonFile(config_allocator, cfg.config_file);
+    debug.setEnabled(cfg.debug_log);
 
     if (cfg.command == .list_disk) {
         const disks = try provider.diskList(allocator);
@@ -109,7 +111,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     printMonitoringLists(allocator, cfg) catch {};
 
     if (shutdown_requested.load(.acquire)) return;
-    try uploadBasicInfoOnce(allocator, cfg);
+    try uploadBasicInfoOnce(allocator, cfg, false);
     if (shutdown_requested.load(.acquire)) return;
     startBasicInfoLoop(allocator, cfg);
 
@@ -120,7 +122,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stdout.print("Report websocket exited: {s}\n", .{@errorName(err)});
         };
         if (shutdown_requested.load(.acquire)) break;
-        try uploadBasicInfoOnce(allocator, cfg);
+        try uploadBasicInfoOnce(allocator, cfg, false);
     }
     try stdout.writeAll("shutting down gracefully...\n");
 }
@@ -187,21 +189,26 @@ fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) voi
     allocator.free(values);
 }
 
-fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
+fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_external_ip_lookup: bool) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     var stdout_buf: [4096]u8 = undefined;
     var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
     defer stdout.flush() catch {};
+    debug.log("starting basic info collection (allow_external_ip_lookup={})", .{allow_external_ip_lookup});
     var info = try provider.basicInfo(scratch);
-    try applyIpConfig(scratch, cfg, &info);
+    debug.log("basic info collected: local_ipv4={s} local_ipv6={s}", .{ info.ipv4, info.ipv6 });
+    try applyIpConfig(scratch, cfg, &info, allow_external_ip_lookup);
     const info_json = try basic_info.allocBasicInfoJson(scratch, info, true);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
+    debug.log("basic info prepared: upload_bytes={d} final_ipv4={s} final_ipv6={s}", .{ info_json.len, info.ipv4, info.ipv6 });
     basic_info.upload(scratch, cfg, info) catch |err| {
         try stdout.print("Basic info upload failed: {s}\n", .{@errorName(err)});
+        debug.log("basic info upload failed: {s}", .{@errorName(err)});
         return err;
     };
+    debug.log("basic info upload finished successfully", .{});
     try stdout.writeAll("Basic info uploaded successfully\n");
 }
 
@@ -218,21 +225,41 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
         defer arena.deinit();
         const scratch = arena.allocator();
         var info = provider.basicInfo(scratch) catch continue;
-        applyIpConfig(scratch, cfg, &info) catch {};
+        applyIpConfig(scratch, cfg, &info, true) catch {};
         basic_info.upload(scratch, cfg, info) catch {};
     }
 }
 
-fn applyIpConfig(allocator: std.mem.Allocator, cfg: config.Config, info: *common.BasicInfo) !void {
+fn applyIpConfig(allocator: std.mem.Allocator, cfg: config.Config, info: *common.BasicInfo, allow_external_ip_lookup: bool) !void {
     if (cfg.get_ip_addr_from_nic) {
         const local = try provider.localIpFromInterfaces(allocator, cfg.include_nics, cfg.exclude_nics);
         if (local.ipv4.len != 0 or local.ipv6.len != 0) {
             info.ipv4 = local.ipv4;
             info.ipv6 = local.ipv6;
+            debug.log("using interface IPs from config override: ipv4={s} ipv6={s}", .{ info.ipv4, info.ipv6 });
             return;
         }
     }
 
-    info.ipv4 = if (cfg.custom_ipv4.len != 0) cfg.custom_ipv4 else try ip.getIPv4Address(allocator, cfg);
-    info.ipv6 = if (cfg.custom_ipv6.len != 0) cfg.custom_ipv6 else try ip.getIPv6Address(allocator, cfg);
+    if (cfg.custom_ipv4.len != 0) {
+        info.ipv4 = cfg.custom_ipv4;
+        debug.log("using custom IPv4 override: {s}", .{info.ipv4});
+    } else if (ip.shouldLookupExternalAddress(info.ipv4, cfg.custom_ipv4, allow_external_ip_lookup)) {
+        debug.log("local IPv4 missing, probing public IPv4", .{});
+        info.ipv4 = try ip.getIPv4Address(allocator, cfg);
+        debug.log("public IPv4 probe result: {s}", .{info.ipv4});
+    } else if (!allow_external_ip_lookup and info.ipv4.len == 0) {
+        debug.log("skipping public IPv4 lookup during synchronous startup upload", .{});
+    }
+
+    if (cfg.custom_ipv6.len != 0) {
+        info.ipv6 = cfg.custom_ipv6;
+        debug.log("using custom IPv6 override: {s}", .{info.ipv6});
+    } else if (ip.shouldLookupExternalAddress(info.ipv6, cfg.custom_ipv6, allow_external_ip_lookup)) {
+        debug.log("local IPv6 missing, probing public IPv6", .{});
+        info.ipv6 = try ip.getIPv6Address(allocator, cfg);
+        debug.log("public IPv6 probe result: {s}", .{info.ipv6});
+    } else if (!allow_external_ip_lookup and info.ipv6.len == 0) {
+        debug.log("skipping public IPv6 lookup during synchronous startup upload", .{});
+    }
 }

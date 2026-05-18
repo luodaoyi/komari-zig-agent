@@ -15,3 +15,10 @@ test "returns null when no address is present" {
     try std.testing.expect(ip.findIPv4("status=ok\nno-address-here\n") == null);
     try std.testing.expect(ip.findIPv6("status=ok\nno-address-here\n") == null);
 }
+
+test "external lookup only runs when allowed and local ip is missing" {
+    try std.testing.expect(ip.shouldLookupExternalAddress("", "", true));
+    try std.testing.expect(!ip.shouldLookupExternalAddress("192.0.2.10", "", true));
+    try std.testing.expect(!ip.shouldLookupExternalAddress("", "198.51.100.8", true));
+    try std.testing.expect(!ip.shouldLookupExternalAddress("", "", false));
+}

@@ -166,6 +166,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://gh.llkk
 --install-service-name <name>  服务名，默认 komari-agent
 --install-ghproxy <url>        指定 GitHub 下载代理；不指定时直连失败会自动测速代理池
 --install-version <tag>        指定 Release tag；不填则用 latest
+--debug-log                    输出关键启动/连接调试日志；也可用 `AGENT_DEBUG_LOG=1`
 ```
 
 脚本会自动识别 Linux、OpenWrt/procd、OpenRC、systemd、FreeBSD rc.d、macOS launchd，并创建服务。

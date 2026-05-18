@@ -1,5 +1,6 @@
 const std = @import("std");
 const config = @import("../config.zig");
+const debug = @import("debug.zig");
 const http = @import("http.zig");
 const common = @import("../platform/common.zig");
 const provider = @import("../platform/provider.zig");
@@ -144,7 +145,9 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
     var retry: i32 = 0;
     while (retry <= cfg.max_retries) : (retry += 1) {
         if (isStopRequested(stop_requested)) return error.ShutdownRequested;
+        debug.log("report websocket connect attempt {d} to {s}", .{ retry + 1, cfg.endpoint });
         return connectReportWs(allocator, cfg) catch |err| {
+            debug.log("report websocket connect attempt {d} failed: {s}", .{ retry + 1, @errorName(err) });
             if (retry >= cfg.max_retries) return err;
             if (sleepOrStop(reconnectSleepSeconds(cfg.reconnect_interval), stop_requested)) return error.ShutdownRequested;
             continue;

@@ -9,6 +9,7 @@ test "defaults match Go agent" {
     try std.testing.expectEqual(@as(i32, 5), cfg.info_report_interval);
     try std.testing.expect(!cfg.disable_auto_update);
     try std.testing.expect(!cfg.disable_web_ssh);
+    try std.testing.expect(!cfg.debug_log);
 }
 
 test "cli aliases parse" {
@@ -58,6 +59,7 @@ test "full go-compatible cli flags parse" {
         "1.1.1.1",
         "--gpu",
         "--show-warning",
+        "--debug-log",
         "--custom-ipv4",
         "192.0.2.10",
         "--custom-ipv6",
@@ -83,6 +85,7 @@ test "full go-compatible cli flags parse" {
     try std.testing.expectEqualStrings("1.1.1.1", cfg.custom_dns);
     try std.testing.expect(cfg.enable_gpu);
     try std.testing.expect(cfg.show_warning);
+    try std.testing.expect(cfg.debug_log);
     try std.testing.expectEqualStrings("192.0.2.10", cfg.custom_ipv4);
     try std.testing.expectEqualStrings("2001:db8::10", cfg.custom_ipv6);
     try std.testing.expect(cfg.get_ip_addr_from_nic);
@@ -135,6 +138,7 @@ test "go-style equals bool cli flags parse" {
         "--memory-exclude-bcf=true",
         "--gpu=true",
         "--show-warning=true",
+        "--debug-log=true",
         "--get-ip-addr-from-nic=true",
     };
     const cfg = try config.parseArgs(arena.allocator(), &args);
@@ -146,6 +150,7 @@ test "go-style equals bool cli flags parse" {
     try std.testing.expect(cfg.memory_report_raw_used);
     try std.testing.expect(cfg.enable_gpu);
     try std.testing.expect(cfg.show_warning);
+    try std.testing.expect(cfg.debug_log);
     try std.testing.expect(cfg.get_ip_addr_from_nic);
 }
 
@@ -162,6 +167,7 @@ test "go-style equals bool cli flags parse false values" {
         "--memory-exclude-bcf=off",
         "--gpu=false",
         "--show-warning=0",
+        "--debug-log=off",
         "--get-ip-addr-from-nic=FALSE",
     };
     const cfg = try config.parseArgs(arena.allocator(), &args);
@@ -173,6 +179,7 @@ test "go-style equals bool cli flags parse false values" {
     try std.testing.expect(!cfg.memory_report_raw_used);
     try std.testing.expect(!cfg.enable_gpu);
     try std.testing.expect(!cfg.show_warning);
+    try std.testing.expect(!cfg.debug_log);
     try std.testing.expect(!cfg.get_ip_addr_from_nic);
 }
 
@@ -247,6 +254,7 @@ test "json config keys parse" {
         \\  "memory_report_raw_used": true,
         \\  "custom_dns": "1.1.1.1",
         \\  "enable_gpu": true,
+        \\  "debug_log": true,
         \\  "custom_ipv4": "192.0.2.1",
         \\  "custom_ipv6": "2001:db8::1",
         \\  "get_ip_addr_from_nic": true,
@@ -272,6 +280,7 @@ test "json config keys parse" {
     try std.testing.expect(cfg.memory_report_raw_used);
     try std.testing.expectEqualStrings("1.1.1.1", cfg.custom_dns);
     try std.testing.expect(cfg.enable_gpu);
+    try std.testing.expect(cfg.debug_log);
     try std.testing.expectEqualStrings("192.0.2.1", cfg.custom_ipv4);
     try std.testing.expectEqualStrings("2001:db8::1", cfg.custom_ipv6);
     try std.testing.expect(cfg.get_ip_addr_from_nic);

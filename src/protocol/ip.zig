@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("debug.zig");
 const http = @import("http.zig");
 const net = @import("net");
 const raw_conn = @import("raw_conn.zig");
@@ -29,6 +30,10 @@ pub fn getIPv6Address(allocator: std.mem.Allocator, cfg: anytype) ![]const u8 {
     return getAddressFromApis(allocator, cfg, &ipv6_apis, .ipv6, findIPv6);
 }
 
+pub fn shouldLookupExternalAddress(existing: []const u8, custom: []const u8, allow_external_lookup: bool) bool {
+    return allow_external_lookup and custom.len == 0 and existing.len == 0;
+}
+
 fn getAddressFromApis(
     allocator: std.mem.Allocator,
     cfg: anytype,
@@ -37,10 +42,19 @@ fn getAddressFromApis(
     finder: fn ([]const u8) ?[]const u8,
 ) ![]const u8 {
     for (apis) |url| {
-        const body = http.getReadCfgFamily(allocator, url, cfg, family, "curl/8.0.1") catch continue;
+        debug.log("public IP lookup ({s}) probing {s}", .{ @tagName(family), url });
+        const body = http.getReadCfgFamily(allocator, url, cfg, family, "curl/8.0.1") catch |err| {
+            debug.log("public IP lookup ({s}) failed via {s}: {s}", .{ @tagName(family), url, @errorName(err) });
+            continue;
+        };
         defer allocator.free(body);
-        if (finder(body)) |addr| return allocator.dupe(u8, addr);
+        if (finder(body)) |addr| {
+            debug.log("public IP lookup ({s}) resolved via {s}: {s}", .{ @tagName(family), url, addr });
+            return allocator.dupe(u8, addr);
+        }
+        debug.log("public IP lookup ({s}) returned no parsable address via {s}", .{ @tagName(family), url });
     }
+    debug.log("public IP lookup ({s}) exhausted all providers", .{@tagName(family)});
     return allocator.dupe(u8, "");
 }
 

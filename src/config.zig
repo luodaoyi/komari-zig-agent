@@ -32,6 +32,7 @@ pub const Config = struct {
     custom_dns: []const u8 = "",
     enable_gpu: bool = false,
     show_warning: bool = false,
+    debug_log: bool = false,
     custom_ipv4: []const u8 = "",
     custom_ipv6: []const u8 = "",
     get_ip_addr_from_nic: bool = false,
@@ -69,6 +70,7 @@ pub const Config = struct {
         try setStringJson(allocator, object, "custom_dns", &self.custom_dns);
         try setBoolJson(object, "enable_gpu", &self.enable_gpu);
         try setBoolJson(object, "show_warning", &self.show_warning);
+        try setBoolJson(object, "debug_log", &self.debug_log);
         try setStringJson(allocator, object, "custom_ipv4", &self.custom_ipv4);
         try setStringJson(allocator, object, "custom_ipv6", &self.custom_ipv6);
         try setBoolJson(object, "get_ip_addr_from_nic", &self.get_ip_addr_from_nic);
@@ -105,6 +107,7 @@ pub const Config = struct {
         try setStringEnv(allocator, "AGENT_CUSTOM_DNS", &self.custom_dns);
         setBoolEnv("AGENT_ENABLE_GPU", &self.enable_gpu);
         setBoolEnv("AGENT_SHOW_WARNING", &self.show_warning);
+        setBoolEnv("AGENT_DEBUG_LOG", &self.debug_log);
         try setStringEnv(allocator, "AGENT_CUSTOM_IPV4", &self.custom_ipv4);
         try setStringEnv(allocator, "AGENT_CUSTOM_IPV6", &self.custom_ipv6);
         setBoolEnv("AGENT_GET_IP_ADDR_FROM_NIC", &self.get_ip_addr_from_nic);
@@ -174,6 +177,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.enable_gpu = v;
         } else if (boolOptionValue(arg, "--show-warning")) |v| {
             cfg.show_warning = v;
+        } else if (boolOptionValue(arg, "--debug-log")) |v| {
+            cfg.debug_log = v;
         } else if (boolOptionValue(arg, "--get-ip-addr-from-nic")) |v| {
             cfg.get_ip_addr_from_nic = v;
         } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--token")) {
@@ -218,6 +223,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.enable_gpu = true;
         } else if (std.mem.eql(u8, arg, "--show-warning")) {
             cfg.show_warning = true;
+        } else if (std.mem.eql(u8, arg, "--debug-log")) {
+            cfg.debug_log = true;
         } else if (std.mem.eql(u8, arg, "--custom-ipv4")) {
             if (nextValue(args, &i)) |v| cfg.custom_ipv4 = try allocator.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--custom-ipv6")) {
