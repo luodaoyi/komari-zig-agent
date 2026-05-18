@@ -7,6 +7,7 @@ const compat = @import("compat");
 /// HTTP and proxy helpers shared by agent protocol clients.
 pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
 const max_redirects: u32 = 5;
+pub const default_timeout_ms: u64 = 30_000;
 
 pub const Headers = struct {
     cf_access_client_id: ?[]const u8 = null,
@@ -14,7 +15,7 @@ pub const Headers = struct {
 };
 
 pub const ClientOptions = struct {
-    timeout_ms: u64 = 30000,
+    timeout_ms: u64 = default_timeout_ms,
     ignore_unsafe_cert: bool = false,
     max_retries: u32 = 3,
 };
@@ -352,6 +353,7 @@ pub fn connectRawHttp(
     ignore_unsafe_cert: bool,
     custom_dns: []const u8,
     family: raw_conn.AddressFamily,
+    timeout_ms: u64,
 ) !RawConnection {
     const proxy_url = try proxyFromProcess(allocator, scheme, host, port);
     defer if (proxy_url) |value| allocator.free(value);
@@ -359,7 +361,7 @@ pub fn connectRawHttp(
         const proxy = try parseProxyUrl(allocator, value);
         defer proxy.deinit(allocator);
         if (proxy.tls) return error.UnsupportedProxyScheme;
-        var conn = try raw_conn.RawConn.connectWithFamily(allocator, proxy.host, proxy.port, false, false, "", .any);
+        var conn = try raw_conn.RawConn.connectWithFamily(allocator, proxy.host, proxy.port, false, false, "", .any, timeout_ms);
         errdefer conn.close();
         if (use_tls) {
             try sendConnectTunnel(allocator, conn, host, port, proxy.authorization);
@@ -371,7 +373,7 @@ pub fn connectRawHttp(
         return .{ .conn = conn, .proxied_plain = true, .proxy_authorization = authorization };
     }
     return .{
-        .conn = try raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, family),
+        .conn = try raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, family, timeout_ms),
     };
 }
 
@@ -391,8 +393,9 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
     var current_url: []const u8 = try allocator.dupe(u8, url);
     defer allocator.free(current_url);
     var redirects: u32 = 0;
+    const timeout_ms = timeoutMsForConfig(cfg);
     while (true) {
-        var response = try requestReadWithFamilyAuthOnce(allocator, current_url, method, payload, content_type, cfg, family, user_agent, authorization);
+        var response = try requestReadWithFamilyAuthOnce(allocator, current_url, method, payload, content_type, cfg, family, user_agent, authorization, timeout_ms);
         errdefer response.deinit(allocator);
         if (response.status == 200) return response.body;
         if (isRedirectStatus(response.status)) {
@@ -410,7 +413,7 @@ fn requestReadWithFamilyAuth(allocator: std.mem.Allocator, url: []const u8, meth
     }
 }
 
-fn requestReadWithFamilyAuthOnce(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8, authorization: []const u8) !HttpResponse {
+fn requestReadWithFamilyAuthOnce(allocator: std.mem.Allocator, url: []const u8, method: []const u8, payload: []const u8, content_type: []const u8, cfg: anytype, family: raw_conn.AddressFamily, user_agent: []const u8, authorization: []const u8, timeout_ms: u64) !HttpResponse {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -422,7 +425,7 @@ fn requestReadWithFamilyAuthOnce(allocator: std.mem.Allocator, url: []const u8, 
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family) catch |err| {
+        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family, timeout_ms) catch |err| {
             if (attempt < max_retries) {
                 compat.sleep(2 * std.time.ns_per_s);
                 continue;
@@ -470,8 +473,9 @@ fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anyty
     var current_url: []const u8 = try allocator.dupe(u8, url);
     defer allocator.free(current_url);
     var redirects: u32 = 0;
+    const timeout_ms = timeoutMsForConfig(cfg);
     while (true) {
-        const result = try requestToFileSha256Once(allocator, current_url, cfg, file);
+        const result = try requestToFileSha256Once(allocator, current_url, cfg, file, timeout_ms);
         switch (result) {
             .ok => |digest| return digest,
             .redirect => |location| {
@@ -486,7 +490,7 @@ fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anyty
     }
 }
 
-fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) !FileFetchResult {
+fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File, timeout_ms: u64) !FileFetchResult {
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
@@ -501,7 +505,7 @@ fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: a
         var reset_writer = file.writer(std.Options.debug_io, &.{});
         try reset_writer.seekTo(0);
         try file.setLength(std.Options.debug_io, 0);
-        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any) catch |err| {
+        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any, timeout_ms) catch |err| {
             if (attempt < max_retries) {
                 compat.sleep(2 * std.time.ns_per_s);
                 continue;
@@ -533,6 +537,11 @@ fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: a
             .redirect => return result,
         }
     }
+}
+
+pub fn timeoutMsForConfig(cfg: anytype) u64 {
+    if (@hasField(@TypeOf(cfg), "timeout_ms")) return @field(cfg, "timeout_ms");
+    return default_timeout_ms;
 }
 
 fn uriHost(allocator: std.mem.Allocator, uri: std.Uri) ![]const u8 {

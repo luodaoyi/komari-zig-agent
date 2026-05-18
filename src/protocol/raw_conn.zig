@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const dns = @import("dns");
 const compat = @import("compat");
+const debug = @import("debug.zig");
 const net = @import("net");
 
 /// Raw TCP/TLS connection wrapper used by HTTP and websocket clients.
@@ -32,8 +33,9 @@ pub const RawConn = struct {
         use_tls: bool,
         ignore_unsafe_cert: bool,
         custom_dns: []const u8,
+        timeout_ms: u64,
     ) !*RawConn {
-        return connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, .any);
+        return connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, .any, timeout_ms);
     }
 
     pub fn connectWithFamily(
@@ -44,14 +46,18 @@ pub const RawConn = struct {
         ignore_unsafe_cert: bool,
         custom_dns: []const u8,
         family: AddressFamily,
+        timeout_ms: u64,
     ) !*RawConn {
         const addrs = try dns.resolveHost(allocator, host, port, custom_dns);
         defer allocator.free(addrs);
         var last_err: ?anyerror = null;
         for (addrs) |addr| {
             if (!familyMatches(addr, family)) continue;
-            return connectResolved(allocator, addr, host, use_tls, ignore_unsafe_cert) catch |err| {
+            var addr_buf: [96]u8 = undefined;
+            debug.log("tcp connect start {s}:{d} via {s} tls={}", .{ host, port, formatAddress(&addr_buf, addr), use_tls });
+            return connectResolved(allocator, addr, host, use_tls, ignore_unsafe_cert, timeout_ms) catch |err| {
                 last_err = err;
+                debug.log("tcp connect failed via {s}: {s}", .{ formatAddress(&addr_buf, addr), @errorName(err) });
                 continue;
             };
         }
@@ -64,9 +70,12 @@ pub const RawConn = struct {
         tls_host: []const u8,
         use_tls: bool,
         ignore_unsafe_cert: bool,
+        timeout_ms: u64,
     ) !*RawConn {
-        const stream = try connectStreamAddress(addr);
+        const stream = try connectStreamAddress(addr, timeout_ms);
         errdefer net.close(stream);
+        var addr_buf: [96]u8 = undefined;
+        debug.log("tcp connect established via {s}", .{formatAddress(&addr_buf, addr)});
         return fromStream(allocator, stream, tls_host, use_tls, ignore_unsafe_cert);
     }
 
@@ -185,7 +194,13 @@ fn familyMatches(addr: net.Address, family: AddressFamily) bool {
     };
 }
 
-fn connectStreamAddress(addr: net.Address) !net.Stream {
+fn connectStreamAddress(addr: net.Address, timeout_ms: u64) !net.Stream {
     _ = builtin;
-    return net.connect(addr);
+    return net.connectWithTimeout(addr, timeout_ms);
+}
+
+fn formatAddress(buf: *[96]u8, addr: net.Address) []const u8 {
+    var writer: std.Io.Writer = .fixed(buf);
+    addr.format(&writer) catch return "<invalid-address>";
+    return writer.buffered();
 }

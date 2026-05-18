@@ -146,12 +146,14 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
     while (retry <= cfg.max_retries) : (retry += 1) {
         if (isStopRequested(stop_requested)) return error.ShutdownRequested;
         debug.log("report websocket connect attempt {d} to {s}", .{ retry + 1, cfg.endpoint });
-        return connectReportWs(allocator, cfg) catch |err| {
+        const ws = connectReportWs(allocator, cfg) catch |err| {
             debug.log("report websocket connect attempt {d} failed: {s}", .{ retry + 1, @errorName(err) });
             if (retry >= cfg.max_retries) return err;
             if (sleepOrStop(reconnectSleepSeconds(cfg.reconnect_interval), stop_requested)) return error.ShutdownRequested;
             continue;
         };
+        debug.log("report websocket connected on attempt {d}", .{retry + 1});
+        return ws;
     }
     return error.WebSocketHandshakeFailed;
 }

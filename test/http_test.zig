@@ -84,6 +84,13 @@ test "http client shell keeps timeout tls and retry settings" {
     try std.testing.expect(!client.shouldRetry(0, null, 200));
 }
 
+test "http timeout falls back to default when config omits it" {
+    try std.testing.expectEqual(http.default_timeout_ms, http.timeoutMsForConfig(config.Config{}));
+    try std.testing.expectEqual(@as(u64, 1234), http.timeoutMsForConfig(struct {
+        timeout_ms: u64 = 1234,
+    }{}));
+}
+
 test "bounded response writer enforces limit while writing" {
     const exact = try http.collectBoundedResponseForTest(std.testing.allocator, 4, &.{ "ab", "cd" });
     defer std.testing.allocator.free(exact);

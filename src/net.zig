@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 pub const net = std.Io.net;
@@ -80,6 +81,14 @@ pub fn connect(addr: Address) !Stream {
     return addr.connect(std.Options.debug_io, .{ .mode = .stream });
 }
 
+pub fn connectWithTimeout(addr: Address, timeout_ms: u64) !Stream {
+    if (builtin.os.tag == .windows) return connect(addr);
+    return addr.connect(std.Options.debug_io, .{
+        .mode = .stream,
+        .timeout = timeoutFromMilliseconds(timeout_ms),
+    });
+}
+
 pub fn close(stream: Stream) void {
     stream.close(std.Options.debug_io);
 }
@@ -134,6 +143,17 @@ fn addressToPosix(addr: Address, storage: *PosixAddress) std.posix.socklen_t {
                 .scope_id = ip6.interface.index,
             };
             return @sizeOf(std.posix.sockaddr.in6);
+        },
+    };
+}
+
+fn timeoutFromMilliseconds(timeout_ms: u64) std.Io.Timeout {
+    if (timeout_ms == 0) return .none;
+    const clamped = std.math.cast(i64, timeout_ms) orelse std.math.maxInt(i64);
+    return .{
+        .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(clamped),
+            .clock = .awake,
         },
     };
 }

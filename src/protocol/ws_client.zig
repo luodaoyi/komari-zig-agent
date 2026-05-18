@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = @import("debug.zig");
 const http = @import("http.zig");
 const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
@@ -182,9 +183,11 @@ pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cl
 fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
     const target = try parseUrl(url);
     const scheme = if (target.tls) "wss" else "ws";
-    const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any);
+    debug.log("websocket transport connect start host={s} port={d} tls={}", .{ target.host, target.port, target.tls });
+    const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any, http.timeoutMsForConfig(cfg));
     errdefer raw_http.close(allocator);
     const raw = raw_http.conn;
+    debug.log("websocket transport connected host={s} port={d}", .{ target.host, target.port });
     const nonce_bytes = try randomBytes(allocator, 16);
     defer allocator.free(nonce_bytes);
     const nonce = try encodeBase64(allocator, nonce_bytes);
@@ -204,7 +207,9 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     defer allocator.free(request);
     try raw.writer().writeAll(request);
     try raw.flush();
+    debug.log("websocket upgrade request sent path={s}", .{request_target});
     try readHandshake(raw.reader(), nonce, allocator);
+    debug.log("websocket handshake accepted path={s}", .{request_target});
     const client = try allocator.create(Client);
     client.* = .{ .raw = raw };
     if (raw_http.proxy_authorization) |authorization| allocator.free(authorization);

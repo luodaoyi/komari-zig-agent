@@ -7,6 +7,8 @@ const net = @import("net");
 const compat = @import("compat");
 
 /// Ping task implementations for ICMP, TCP, and HTTP probes.
+const ping_connect_timeout_ms: u64 = 30_000;
+
 pub const TcpTarget = struct {
     host: []const u8,
     port: []const u8,
@@ -394,7 +396,7 @@ fn httpPing(allocator: std.mem.Allocator, target: []const u8, custom_dns: []cons
 
     const start = compat.milliTimestamp();
     for (addrs) |addr| {
-        var conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, false) catch continue;
+        var conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, false, ping_connect_timeout_ms) catch continue;
         defer conn.close();
         const request = try std.fmt.allocPrint(allocator, "GET {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n\r\n", .{ path, host_raw });
         defer allocator.free(request);
