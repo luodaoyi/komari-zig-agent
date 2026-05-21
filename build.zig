@@ -119,6 +119,7 @@ pub fn build(b: *std.Build) void {
         "src/autodiscovery_test.zig",
         "test/http_test.zig",
         "test/dns_idna_test.zig",
+        "test/basic_info_flow_test.zig",
         "test/linux_basic_info_test.zig",
         "test/disk_filter_test.zig",
         "test/network_filter_test.zig",
@@ -231,6 +232,11 @@ fn addTest(
         .optimize = optimize,
     });
     addCompatImports(report_netstatic, compat_module, net_module);
+    tests.root_module.addImport("basic_info_flow", b.createModule(.{
+        .root_source_file = b.path("src/basic_info_flow.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
     const platform_linux = b.createModule(.{
         .root_source_file = b.path("src/platform/linux.zig"),
         .target = target,

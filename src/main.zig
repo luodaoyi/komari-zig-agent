@@ -2,6 +2,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const autodiscovery = @import("protocol/autodiscovery.zig");
 const basic_info = @import("protocol/basic_info.zig");
+const basic_info_flow = @import("basic_info_flow.zig");
 const debug = @import("protocol/debug.zig");
 const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
@@ -111,7 +112,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     printMonitoringLists(allocator, cfg) catch {};
 
     if (shutdown_requested.load(.acquire)) return;
-    try uploadBasicInfoOnce(allocator, cfg, false);
+    try runForegroundBasicInfoUpload(allocator, cfg, false, .startup);
     if (shutdown_requested.load(.acquire)) return;
     startBasicInfoLoop(allocator, cfg);
 
@@ -122,7 +123,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             try stdout.print("Report websocket exited: {s}\n", .{@errorName(err)});
         };
         if (shutdown_requested.load(.acquire)) break;
-        try uploadBasicInfoOnce(allocator, cfg, false);
+        try runForegroundBasicInfoUpload(allocator, cfg, false, .websocket_reconnect);
     }
     try stdout.writeAll("shutting down gracefully...\n");
 }
@@ -203,13 +204,24 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_e
     const info_json = try basic_info.allocBasicInfoJson(scratch, info, true);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
     debug.log("basic info prepared: upload_bytes={d} final_ipv4={s} final_ipv6={s}", .{ info_json.len, info.ipv4, info.ipv6 });
-    basic_info.upload(scratch, cfg, info) catch |err| {
-        try stdout.print("Basic info upload failed: {s}\n", .{@errorName(err)});
-        debug.log("basic info upload failed: {s}", .{@errorName(err)});
-        return err;
-    };
-    debug.log("basic info upload finished successfully", .{});
-    try stdout.writeAll("Basic info uploaded successfully\n");
+    try basic_info.upload(scratch, cfg, info);
+}
+
+fn runForegroundBasicInfoUpload(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    allow_external_ip_lookup: bool,
+    context: basic_info_flow.UploadContext,
+) !void {
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+    defer stdout.flush() catch {};
+
+    const outcome = try basic_info_flow.handleForegroundUploadResult(&stdout, context, uploadBasicInfoOnce(allocator, cfg, allow_external_ip_lookup));
+    switch (outcome) {
+        .success => debug.log("basic info upload finished successfully during {s}", .{basic_info_flow.contextLabel(context)}),
+        .failure => |err| debug.log("basic info upload failed during {s}: {s}", .{ basic_info_flow.contextLabel(context), @errorName(err) }),
+    }
 }
 
 fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
@@ -226,7 +238,9 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
         const scratch = arena.allocator();
         var info = provider.basicInfo(scratch) catch continue;
         applyIpConfig(scratch, cfg, &info, true) catch {};
-        basic_info.upload(scratch, cfg, info) catch {};
+        basic_info.upload(scratch, cfg, info) catch |err| {
+            debug.log("background basic info upload failed: {s}", .{@errorName(err)});
+        };
     }
 }
 
