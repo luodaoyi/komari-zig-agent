@@ -82,6 +82,21 @@ test "cpuinfo parser ignores processor indexes and prefers real model names" {
     try std.testing.expect(linux.parseCpuNameFromCpuInfo("Processor\t: 0\n") == null);
 }
 
+test "cpuinfo parser decodes arm implementer and part when model keys are missing" {
+    const openwrt_arm64 =
+        \\processor       : 0
+        \\BogoMIPS        : 26.00
+        \\Features        : fp asimd evtstrm aes pmull sha1 sha2 crc32 cpuid
+        \\CPU implementer : 0x41
+        \\CPU architecture: 8
+        \\CPU variant     : 0x0
+        \\CPU part        : 0xd03
+        \\CPU revision    : 4
+        \\
+    ;
+    try std.testing.expectEqualStrings("ARM Cortex-A53", linux.parseCpuNameFromCpuInfo(openwrt_arm64) orelse "");
+}
+
 test "meminfo parser honors memory modes" {
     const text =
         \\MemTotal:       1000 kB

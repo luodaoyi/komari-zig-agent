@@ -1349,7 +1349,10 @@ fn cpuName(allocator: std.mem.Allocator) ![]const u8 {
 
 pub fn parseCpuNameFromCpuInfo(bytes: []const u8) ?[]const u8 {
     var it = std.mem.splitScalar(u8, bytes, '\n');
-    var fallback: ?[]const u8 = null;
+    var strong_fallback: ?[]const u8 = null;
+    var weak_fallback: ?[]const u8 = null;
+    var arm_implementer: ?u16 = null;
+    var arm_part: ?u16 = null;
     while (it.next()) |line| {
         const idx = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         const key = std.mem.trim(u8, line[0..idx], " \t");
@@ -1360,16 +1363,32 @@ pub fn parseCpuNameFromCpuInfo(bytes: []const u8) ?[]const u8 {
             switch (priority) {
                 0 => return value,
                 1 => {
-                    if (fallback == null) fallback = value;
+                    if (strong_fallback == null) strong_fallback = value;
                 },
                 2 => {
-                    if (fallback == null and !isNumericCpuValue(value)) fallback = value;
+                    if (weak_fallback == null and !isNumericCpuValue(value)) weak_fallback = value;
                 },
                 else => {},
             }
+            continue;
+        }
+
+        if (arm_implementer == null and std.ascii.eqlIgnoreCase(key, "CPU implementer")) {
+            arm_implementer = parseCpuInfoHex(value);
+            continue;
+        }
+        if (arm_part == null and std.ascii.eqlIgnoreCase(key, "CPU part")) {
+            arm_part = parseCpuInfoHex(value);
+            continue;
         }
     }
-    return fallback;
+    if (strong_fallback) |name| return name;
+    if (arm_implementer) |implementer| {
+        if (arm_part) |part| {
+            if (armCpuNameFromIds(implementer, part)) |name| return name;
+        }
+    }
+    return weak_fallback;
 }
 
 fn cpuNamePriority(key: []const u8) ?u8 {
@@ -1377,6 +1396,35 @@ fn cpuNamePriority(key: []const u8) ?u8 {
     if (std.ascii.eqlIgnoreCase(key, "model") or std.ascii.eqlIgnoreCase(key, "hardware")) return 1;
     if (std.mem.eql(u8, key, "Processor")) return 2;
     return null;
+}
+
+fn parseCpuInfoHex(value: []const u8) ?u16 {
+    const trimmed = std.mem.trim(u8, value, " \t\r");
+    const digits = if (trimmed.len >= 2 and trimmed[0] == '0' and (trimmed[1] == 'x' or trimmed[1] == 'X')) trimmed[2..] else trimmed;
+    if (digits.len == 0) return null;
+    return std.fmt.parseInt(u16, digits, 16) catch null;
+}
+
+fn armCpuNameFromIds(implementer: u16, part: u16) ?[]const u8 {
+    return switch (implementer) {
+        0x41 => switch (part) {
+            0xc07 => "ARM Cortex-A7",
+            0xc08 => "ARM Cortex-A8",
+            0xc09 => "ARM Cortex-A9",
+            0xc0f => "ARM Cortex-A15",
+            0xd03 => "ARM Cortex-A53",
+            0xd04 => "ARM Cortex-A35",
+            0xd05 => "ARM Cortex-A55",
+            0xd06 => "ARM Cortex-A65",
+            0xd07 => "ARM Cortex-A57",
+            0xd08 => "ARM Cortex-A72",
+            0xd09 => "ARM Cortex-A73",
+            0xd0a => "ARM Cortex-A75",
+            0xd0b => "ARM Cortex-A76",
+            else => null,
+        },
+        else => null,
+    };
 }
 
 fn isNumericCpuValue(value: []const u8) bool {
