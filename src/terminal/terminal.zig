@@ -14,11 +14,12 @@ pub const Input = union(enum) {
     input: []const u8,
     resize: struct { cols: u16, rows: u16 },
     raw: []const u8,
+    ignored: void,
 
     pub fn deinit(self: Input, allocator: std.mem.Allocator) void {
         switch (self) {
             .input => |bytes| allocator.free(bytes),
-            .resize, .raw => {},
+            .resize, .raw, .ignored => {},
         }
     }
 };
@@ -26,9 +27,10 @@ pub const Input = union(enum) {
 pub fn parseInput(allocator: std.mem.Allocator, bytes: []const u8) Input {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return .{ .raw = bytes };
     defer parsed.deinit();
+    if (parsed.value != .object) return .{ .raw = bytes };
     const obj = parsed.value.object;
-    const typ = obj.get("type") orelse return .{ .raw = bytes };
-    if (typ != .string) return .{ .raw = bytes };
+    const typ = obj.get("type") orelse return .{ .ignored = {} };
+    if (typ != .string) return .{ .ignored = {} };
     if (std.mem.eql(u8, typ.string, "input")) {
         if (obj.get("input")) |v| if (v == .string) return .{ .input = allocator.dupe(u8, v.string) catch return .{ .raw = bytes } };
     }
@@ -37,14 +39,14 @@ pub fn parseInput(allocator: std.mem.Allocator, bytes: []const u8) Input {
         const rows = if (obj.get("rows")) |v| if (v == .integer) @as(u16, @intCast(v.integer)) else 0 else 0;
         return .{ .resize = .{ .cols = cols, .rows = rows } };
     }
-    return .{ .raw = bytes };
+    return .{ .ignored = {} };
 }
 
 pub fn isCloseInput(input: Input) bool {
     return switch (input) {
         .input => |bytes| isCloseBytes(bytes),
         .raw => |bytes| isCloseBytes(bytes),
-        .resize => false,
+        .resize, .ignored => false,
     };
 }
 
@@ -96,6 +98,7 @@ pub fn startSession(allocator: std.mem.Allocator, cfg: anytype, request_id: []co
         switch (input) {
             .input => |bytes| try session.writeInput(bytes),
             .raw => |bytes| try session.writeInput(bytes),
+            .ignored => {},
             .resize => |size| session.resize(size.cols, size.rows) catch {},
         }
     }

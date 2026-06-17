@@ -134,6 +134,7 @@ pub fn build(b: *std.Build) void {
         "test/windows_process_test.zig",
         "test/ip_extract_test.zig",
         "test/coverage_test.zig",
+        "src/terminal_test.zig",
         "test/ws_message_test.zig",
         "test/ws_client_test.zig",
         "test/raw_conn_test.zig",
