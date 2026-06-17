@@ -2,6 +2,7 @@ const std = @import("std");
 const common = @import("common.zig");
 const netstatic = @import("report_netstatic");
 const compat = @import("compat");
+const debug = @import("debug");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rocm/bin";
 
@@ -96,7 +97,9 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
         .gpu_name = try gpuName(allocator),
         .virtualization = try virtualization(allocator),
     };
-    fillLocalIp(allocator, &info) catch {};
+    fillLocalIp(allocator, &info) catch |err| {
+        debug.log("linux local IP collection failed: {s}", .{@errorName(err)});
+    };
     return info;
 }
 
@@ -681,16 +684,28 @@ pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const
     var ipv4: []const u8 = "";
     var ipv6: []const u8 = "";
 
-    const output = commandOutput(allocator, &.{ "ip", "-o", "addr", "show", "scope", "global" }) catch null;
+    const output = commandOutput(allocator, &.{ "ip", "-o", "addr", "show", "scope", "global" }) catch |err| blk: {
+        debug.log("local IP collection via `ip -o addr show scope global` failed: {s}", .{@errorName(err)});
+        break :blk null;
+    };
     if (output) |bytes| {
         defer allocator.free(bytes);
         const parsed = parseIpAddrOutput(bytes, include_nics, exclude_nics);
         if (parsed.ipv4.len != 0) ipv4 = try allocator.dupe(u8, parsed.ipv4);
         if (parsed.ipv6.len != 0) ipv6 = try allocator.dupe(u8, parsed.ipv6);
+        if (parsed.ipv4.len == 0 and parsed.ipv6.len == 0) {
+            debug.log("local IP collection via `ip -o addr show scope global` found no usable addresses", .{});
+        }
     }
 
-    if (ipv4.len == 0) ipv4 = try routeSourceAddress(allocator, &.{ "ip", "-4", "route", "get", "1.1.1.1" }, include_nics, exclude_nics, .ipv4);
-    if (ipv6.len == 0) ipv6 = try routeSourceAddress(allocator, &.{ "ip", "-6", "route", "get", "2001:4860:4860::8888" }, include_nics, exclude_nics, .ipv6);
+    if (ipv4.len == 0) {
+        ipv4 = try routeSourceAddress(allocator, &.{ "ip", "-4", "route", "get", "1.1.1.1" }, include_nics, exclude_nics, .ipv4);
+        debug.log("local IPv4 route fallback result: {s}", .{ipv4});
+    }
+    if (ipv6.len == 0) {
+        ipv6 = try routeSourceAddress(allocator, &.{ "ip", "-6", "route", "get", "2001:4860:4860::8888" }, include_nics, exclude_nics, .ipv6);
+        debug.log("local IPv6 route fallback result: {s}", .{ipv6});
+    }
 
     return .{ .ipv4 = ipv4, .ipv6 = ipv6 };
 }
@@ -723,22 +738,24 @@ pub fn parseIpAddrOutput(bytes: []const u8, include_nics: []const u8, exclude_ni
 }
 
 pub fn parseIpRouteGetSource(bytes: []const u8, include_nics: []const u8, exclude_nics: []const u8, family: RouteFamily) ?[]const u8 {
-    var dev: ?[]const u8 = null;
-    var src: ?[]const u8 = null;
-    var fields = std.mem.tokenizeAny(u8, bytes, " \t\r\n");
-    while (fields.next()) |field| {
-        if (std.mem.eql(u8, field, "dev")) {
-            dev = normalizeInterfaceName(fields.next() orelse return null);
-        } else if (std.mem.eql(u8, field, "src")) {
-            src = fields.next() orelse return null;
-        }
-    }
-
-    const interface_name = dev orelse return null;
+    const parsed = parseIpRouteOutput(bytes);
+    const interface_name = parsed.dev orelse return null;
     if (!shouldIncludeNetworkInterface(interface_name, include_nics, exclude_nics)) return null;
-    const candidate = src orelse return null;
+    const candidate = parsed.src orelse return null;
     if (family == .ipv6 and std.mem.startsWith(u8, candidate, "fe80:")) return null;
     return candidate;
+}
+
+pub fn canProbeRoute(bytes: []const u8, include_nics: []const u8, exclude_nics: []const u8, family: RouteFamily) bool {
+    const parsed = parseIpRouteOutput(bytes);
+    const interface_name = parsed.dev orelse return false;
+    if (!shouldIncludeNetworkInterface(interface_name, include_nics, exclude_nics)) return false;
+    if (family == .ipv6) {
+        if (parsed.src) |candidate| {
+            if (std.mem.startsWith(u8, candidate, "fe80:")) return false;
+        }
+    }
+    return true;
 }
 
 fn stripCidr(allocator: std.mem.Allocator, cidr: []const u8) ![]const u8 {
@@ -755,6 +772,24 @@ fn normalizeInterfaceName(name: []const u8) []const u8 {
     return name[0..alias];
 }
 
+const ParsedRoute = struct {
+    dev: ?[]const u8 = null,
+    src: ?[]const u8 = null,
+};
+
+fn parseIpRouteOutput(bytes: []const u8) ParsedRoute {
+    var parsed = ParsedRoute{};
+    var fields = std.mem.tokenizeAny(u8, bytes, " \t\r\n");
+    while (fields.next()) |field| {
+        if (std.mem.eql(u8, field, "dev")) {
+            parsed.dev = normalizeInterfaceName(fields.next() orelse return parsed);
+        } else if (std.mem.eql(u8, field, "src")) {
+            parsed.src = fields.next() orelse return parsed;
+        }
+    }
+    return parsed;
+}
+
 fn routeSourceAddress(
     allocator: std.mem.Allocator,
     argv: []const []const u8,
@@ -762,16 +797,29 @@ fn routeSourceAddress(
     exclude_nics: []const u8,
     family: RouteFamily,
 ) ![]const u8 {
-    const line = commandOutputFirstLine(allocator, argv) catch return "";
-    defer allocator.free(line);
-    const src = parseIpRouteGetSource(line, include_nics, exclude_nics, family) orelse return "";
+    const output = commandOutput(allocator, argv) catch |err| {
+        debug.log("route source lookup failed for {s}: {s}", .{ @tagName(family), @errorName(err) });
+        return "";
+    };
+    defer allocator.free(output);
+    const src = parseIpRouteGetSource(output, include_nics, exclude_nics, family) orelse {
+        debug.log("route source lookup found no usable {s} source in output: {s}", .{ @tagName(family), std.mem.trim(u8, output, " \t\r\n") });
+        return "";
+    };
     return allocator.dupe(u8, src);
 }
 
 pub fn canProbeIpv6(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !bool {
-    const line = commandOutputFirstLine(allocator, &.{ "ip", "-6", "route", "get", "2001:4860:4860::8888" }) catch return false;
-    defer allocator.free(line);
-    return parseIpRouteGetSource(line, include_nics, exclude_nics, .ipv6) != null;
+    const output = commandOutput(allocator, &.{ "ip", "-6", "route", "get", "2001:4860:4860::8888" }) catch |err| {
+        debug.log("ipv6 probe route check failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    defer allocator.free(output);
+    const probeable = canProbeRoute(output, include_nics, exclude_nics, .ipv6);
+    if (!probeable) {
+        debug.log("ipv6 probe route check found no usable route in output: {s}", .{std.mem.trim(u8, output, " \t\r\n")});
+    }
+    return probeable;
 }
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {

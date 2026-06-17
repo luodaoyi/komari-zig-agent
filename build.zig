@@ -37,6 +37,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const debug_module = b.createModule(.{
+        .root_source_file = b.path("src/protocol/debug.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const enable_crash_trace = !(target.result.os.tag == .freebsd and target.result.cpu.arch == .x86);
     const crash_trace_options = .{
         .strip = false,
@@ -144,7 +149,7 @@ pub fn build(b: *std.Build) void {
         "test/update_test.zig",
     };
     for (test_paths) |test_path| {
-        addTest(b, test_step, test_path, target, optimize, opts, version_module, compat_module, net_module, coverage, coverage_dir);
+        addTest(b, test_step, test_path, target, optimize, opts, version_module, compat_module, net_module, debug_module, coverage, coverage_dir);
     }
 }
 
@@ -163,6 +168,7 @@ fn addTest(
     version_module: *std.Build.Module,
     compat_module: *std.Build.Module,
     net_module: *std.Build.Module,
+    debug_module: *std.Build.Module,
     coverage: bool,
     coverage_dir: []const u8,
 ) void {
@@ -175,6 +181,7 @@ fn addTest(
     });
     tests.root_module.addOptions("build_options", opts);
     addCompatImports(tests.root_module, compat_module, net_module);
+    tests.root_module.addImport("debug", debug_module);
     const report_netstatic = b.createModule(.{
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
@@ -190,6 +197,7 @@ fn addTest(
             .optimize = optimize,
         });
         addCompatImports(platform_provider, compat_module, net_module);
+        platform_provider.addImport("debug", debug_module);
         platform_provider.addImport("report_netstatic", report_netstatic);
         tests.root_module.addImport("platform_provider", platform_provider);
     }
@@ -262,6 +270,7 @@ fn addTest(
         .optimize = optimize,
     });
     addCompatImports(platform_linux, compat_module, net_module);
+    platform_linux.addImport("debug", debug_module);
     platform_linux.addImport("report_netstatic", report_netstatic);
     tests.root_module.addImport("platform_linux", platform_linux);
     const protocol_task = b.createModule(.{

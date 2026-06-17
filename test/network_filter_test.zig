@@ -80,3 +80,31 @@ test "ip route parser extracts source address from allowed interface" {
         ) == null,
     );
 }
+
+test "ip route parser extracts IPv6 source from multiline route output" {
+    const ipv6 = linux.parseIpRouteGetSource(
+        \\2001:4860:4860::8888 from :: via fe80::1 dev ens3 proto ra metric 100 pref medium
+        \\    cache from :: src 2001:db8::10 metric 100 pref medium
+        ,
+        "",
+        "",
+        .ipv6,
+    ) orelse "";
+    try std.testing.expectEqualStrings("2001:db8::10", ipv6);
+}
+
+test "ipv6 probe route accepts allowed interface without explicit source" {
+    try std.testing.expect(linux.canProbeRoute(
+        "2001:4860:4860::8888 from :: via fe80::1 dev ens3 proto ra metric 100 pref medium",
+        "",
+        "",
+        .ipv6,
+    ));
+
+    try std.testing.expect(!linux.canProbeRoute(
+        "2001:4860:4860::8888 from :: via fe80::1 dev vmbr0 proto ra metric 100 pref medium",
+        "",
+        "",
+        .ipv6,
+    ));
+}
