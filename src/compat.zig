@@ -11,6 +11,10 @@ const format = @import("compat/format.zig");
 /// Compatibility facade kept stable while internals move to Zig 0.16 modules.
 pub const Mutex = sync.Mutex;
 
+pub fn io() std.Io {
+    return runtime.io();
+}
+
 pub fn currentEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
     return runtime.currentEnvMap(allocator);
 }

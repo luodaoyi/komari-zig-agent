@@ -326,7 +326,8 @@ fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
     const cwd = try terminalCwdAlloc(allocator);
     defer allocator.free(cwd);
     const argv = &.{ "script", "-q", "-c", shell, "/dev/null" };
-    var child = try std.process.spawn(std.Options.debug_io, .{
+    const io = compat.io();
+    var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .environ_map = env,
@@ -335,7 +336,7 @@ fn startPipeFallback(allocator: std.mem.Allocator) !ShellSession {
         .stderr = .ignore,
     });
     if (child.stdin == null or child.stdout == null) {
-        child.kill(std.Options.debug_io);
+        child.kill(io);
         return error.ShellPipeFailed;
     }
     return .{

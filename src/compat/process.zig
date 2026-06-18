@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const runtime = @import("runtime");
 const windows = std.os.windows;
 
 /// Process spawning helpers with bounded stdout capture.
@@ -25,18 +26,19 @@ pub fn runOutputIgnoreStderr(
     environ_map: ?*const std.process.Environ.Map,
     stdout_limit: usize,
 ) !RunOutputResult {
-    var child = try std.process.spawn(std.Options.debug_io, .{
+    const io = runtime.io();
+    var child = try std.process.spawn(io, .{
         .argv = argv,
         .environ_map = environ_map,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
     });
-    defer child.kill(std.Options.debug_io);
+    defer child.kill(io);
 
     const stdout_file = child.stdout orelse return error.CommandFailed;
     var reader_buf: [4096]u8 = undefined;
-    var reader = stdout_file.reader(std.Options.debug_io, &reader_buf);
+    var reader = stdout_file.reader(io, &reader_buf);
     var out = std.Io.Writer.Allocating.init(allocator);
     errdefer out.deinit();
     var total: usize = 0;
@@ -50,7 +52,7 @@ pub fn runOutputIgnoreStderr(
     }
 
     return .{
-        .term = try child.wait(std.Options.debug_io),
+        .term = try child.wait(io),
         .stdout = try out.toOwnedSlice(),
     };
 }
@@ -66,15 +68,16 @@ pub fn spawnWindowsPiped(allocator: std.mem.Allocator, argv: []const []const u8,
 }
 
 pub fn runIgnoreOutput(argv: []const []const u8, environ_map: ?*const std.process.Environ.Map) !std.process.Child.Term {
-    var child = try std.process.spawn(std.Options.debug_io, .{
+    const io = runtime.io();
+    var child = try std.process.spawn(io, .{
         .argv = argv,
         .environ_map = environ_map,
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
     });
-    defer child.kill(std.Options.debug_io);
-    return child.wait(std.Options.debug_io);
+    defer child.kill(io);
+    return child.wait(io);
 }
 
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
