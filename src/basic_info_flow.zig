@@ -8,6 +8,7 @@ pub const UploadContext = enum {
 
 pub const ForegroundUploadOutcome = union(enum) {
     success,
+    deferred,
     failure: anyerror,
 };
 
@@ -24,6 +25,10 @@ pub fn handleForegroundUploadResult(
     result: anyerror!void,
 ) !ForegroundUploadOutcome {
     result catch |err| {
+        if (err == error.BasicInfoDeferredUntilPublicIp) {
+            try writer.print("Basic info upload deferred during {s}: waiting for public IP refresh\n", .{contextLabel(context)});
+            return .deferred;
+        }
         try writer.print("Basic info upload failed during {s}: {s}\n", .{ contextLabel(context), @errorName(err) });
         return .{ .failure = err };
     };

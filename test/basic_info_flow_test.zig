@@ -8,10 +8,23 @@ test "foreground upload success keeps success log" {
     const outcome = try flow.handleForegroundUploadResult(&out.writer, .startup, {});
     switch (outcome) {
         .success => {},
-        .failure => return error.TestUnexpectedResult,
+        .deferred, .failure => return error.TestUnexpectedResult,
     }
 
     try std.testing.expectEqualStrings("Basic info uploaded successfully\n", out.written());
+}
+
+test "foreground upload deferral is reported without failure" {
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+
+    const outcome = try flow.handleForegroundUploadResult(&out.writer, .startup, error.BasicInfoDeferredUntilPublicIp);
+    switch (outcome) {
+        .deferred => {},
+        .success, .failure => return error.TestUnexpectedResult,
+    }
+
+    try std.testing.expectEqualStrings("Basic info upload deferred during startup: waiting for public IP refresh\n", out.written());
 }
 
 test "foreground upload failure during startup is tolerated and logged" {
@@ -20,7 +33,7 @@ test "foreground upload failure during startup is tolerated and logged" {
 
     const outcome = try flow.handleForegroundUploadResult(&out.writer, .startup, error.Timeout);
     switch (outcome) {
-        .success => return error.TestUnexpectedResult,
+        .success, .deferred => return error.TestUnexpectedResult,
         .failure => |err| try std.testing.expectEqual(error.Timeout, err),
     }
 
@@ -33,7 +46,7 @@ test "foreground upload failure during websocket reconnect is tolerated and logg
 
     const outcome = try flow.handleForegroundUploadResult(&out.writer, .websocket_reconnect, error.HttpStatusNotOk);
     switch (outcome) {
-        .success => return error.TestUnexpectedResult,
+        .success, .deferred => return error.TestUnexpectedResult,
         .failure => |err| try std.testing.expectEqual(error.HttpStatusNotOk, err),
     }
 

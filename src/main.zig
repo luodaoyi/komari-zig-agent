@@ -202,6 +202,10 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_e
     var info = try provider.basicInfo(scratch);
     debug.log("basic info collected: local_ipv4={s} local_ipv6={s}", .{ info.ipv4, info.ipv6 });
     try applyIpConfig(scratch, cfg, &info, allow_external_ip_lookup);
+    if (!allow_external_ip_lookup and info.ipv4.len == 0) {
+        debug.log("deferring foreground basic info upload until public IP refresh because IPv4 is empty", .{});
+        return error.BasicInfoDeferredUntilPublicIp;
+    }
     const info_json = try basic_info.allocBasicInfoJson(scratch, info, true);
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
     debug.log("basic info prepared: upload_bytes={d} final_ipv4={s} final_ipv6={s}", .{ info_json.len, info.ipv4, info.ipv6 });
@@ -221,6 +225,7 @@ fn runForegroundBasicInfoUpload(
     const outcome = try basic_info_flow.handleForegroundUploadResult(&stdout, context, uploadBasicInfoOnce(allocator, cfg, allow_external_ip_lookup));
     switch (outcome) {
         .success => debug.log("basic info upload finished successfully during {s}", .{basic_info_flow.contextLabel(context)}),
+        .deferred => debug.log("basic info upload deferred during {s}", .{basic_info_flow.contextLabel(context)}),
         .failure => |err| debug.log("basic info upload failed during {s}: {s}", .{ basic_info_flow.contextLabel(context), @errorName(err) }),
     }
 }
@@ -233,15 +238,18 @@ fn startBasicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
 fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config) void {
     const mins: u64 = if (cfg.info_report_interval <= 0) 5 else @intCast(cfg.info_report_interval);
     while (true) {
-        compat.sleep(mins * 60 * std.time.ns_per_s);
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
-        var info = provider.basicInfo(scratch) catch continue;
+        var info = provider.basicInfo(scratch) catch {
+            compat.sleep(mins * 60 * std.time.ns_per_s);
+            continue;
+        };
         applyIpConfig(scratch, cfg, &info, true) catch {};
         basic_info.upload(scratch, cfg, info) catch |err| {
             debug.log("background basic info upload failed: {s}", .{@errorName(err)});
         };
+        compat.sleep(mins * 60 * std.time.ns_per_s);
     }
 }
 

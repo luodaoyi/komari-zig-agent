@@ -660,8 +660,9 @@ fn parseMiB(value: []const u8) u64 {
 }
 
 fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
-    try ensureExecutable(allocator, argv[0]);
-    const result = try compat.runOutputIgnoreStderr(allocator, argv, null, 64 * 1024);
+    const resolved_argv = try resolveExecutableArgv(allocator, argv);
+    defer freeResolvedArgv(allocator, resolved_argv, argv);
+    const result = try compat.runOutputIgnoreStderr(allocator, resolved_argv, null, 64 * 1024);
     defer allocator.free(result.stdout);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     var it = std.mem.splitScalar(u8, result.stdout, '\n');
@@ -810,10 +811,7 @@ fn routeSourceAddress(
 }
 
 pub fn canProbeIpv6(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !bool {
-    const output = commandOutput(allocator, &.{ "ip", "-6", "route", "get", "2001:4860:4860::8888" }) catch |err| {
-        debug.log("ipv6 probe route check failed: {s}", .{@errorName(err)});
-        return false;
-    };
+    const output = try commandOutput(allocator, &.{ "ip", "-6", "route", "get", "2001:4860:4860::8888" });
     defer allocator.free(output);
     const probeable = canProbeRoute(output, include_nics, exclude_nics, .ipv6);
     if (!probeable) {
@@ -823,30 +821,48 @@ pub fn canProbeIpv6(allocator: std.mem.Allocator, include_nics: []const u8, excl
 }
 
 fn commandOutput(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
-    try ensureExecutable(allocator, argv[0]);
+    const resolved_argv = try resolveExecutableArgv(allocator, argv);
+    defer freeResolvedArgv(allocator, resolved_argv, argv);
     var env = compat.emptyEnvMap(allocator);
     defer env.deinit();
     try env.put("PATH", safe_command_path);
-    const result = try compat.runOutputIgnoreStderr(allocator, argv, &env, 256 * 1024);
+    const result = try compat.runOutputIgnoreStderr(allocator, resolved_argv, &env, 256 * 1024);
     errdefer allocator.free(result.stdout);
     if (result.term != .exited or result.term.exited != 0) return error.CommandFailed;
     return result.stdout;
 }
 
-fn ensureExecutable(allocator: std.mem.Allocator, exe: []const u8) !void {
+fn resolveExecutableArgv(allocator: std.mem.Allocator, argv: []const []const u8) ![]const []const u8 {
+    if (argv.len == 0) return error.InvalidArgs;
+    const resolved_exe = try resolveExecutable(allocator, argv[0]);
+    errdefer if (resolved_exe.ptr != argv[0].ptr) allocator.free(resolved_exe);
+    const resolved = try allocator.dupe([]const u8, argv);
+    resolved[0] = resolved_exe;
+    return resolved;
+}
+
+fn freeResolvedArgv(allocator: std.mem.Allocator, resolved: []const []const u8, original: []const []const u8) void {
+    if (resolved.len != 0 and original.len != 0 and resolved[0].ptr != original[0].ptr) allocator.free(resolved[0]);
+    allocator.free(resolved);
+}
+
+pub fn resolveExecutable(allocator: std.mem.Allocator, exe: []const u8) ![]const u8 {
     if (std.mem.indexOfScalar(u8, exe, '/')) |_| {
         const stat = compat.statFile(exe) catch return error.FileNotFound;
         if (stat.kind != .file) return error.FileNotFound;
-        return;
+        return exe;
     }
 
     var dirs = std.mem.splitScalar(u8, safe_command_path, ':');
     while (dirs.next()) |dir| {
         if (dir.len == 0) continue;
         const full = try std.fs.path.join(allocator, &.{ dir, exe });
-        defer allocator.free(full);
-        const stat = compat.statFile(full) catch continue;
-        if (stat.kind == .file) return;
+        const stat = compat.statFile(full) catch {
+            allocator.free(full);
+            continue;
+        };
+        if (stat.kind == .file) return full;
+        allocator.free(full);
     }
     return error.FileNotFound;
 }
