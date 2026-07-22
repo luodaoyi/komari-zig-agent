@@ -92,12 +92,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     if (cfg.month_rotate != 0) {
-        netstatic.startOrContinue() catch |err| try stdout.print("Failed to start netstatic monitoring: {s}\n", .{@errorName(err)});
-        const nics = provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics) catch &.{};
-        netstatic.setNewConfig(.{ .nics = nics }) catch |err| try stdout.print("Failed to set netstatic config: {s}\n", .{@errorName(err)});
-        netstatic_active.store(true, .release);
+        if (netstatic.startOrContinue()) |_| {
+            const nics = provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics) catch &.{};
+            netstatic.setNewConfig(.{ .nics = nics }) catch |err| try stdout.print("Failed to set netstatic config: {s}\n", .{@errorName(err)});
+            netstatic_active.store(true, .release);
+        } else |err| {
+            try stdout.print("Failed to start netstatic monitoring: {s}; existing state file was not modified\n", .{@errorName(err)});
+        }
     }
-    defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
+    defer if (netstatic_active.load(.acquire)) netstatic.stop() catch {};
 
     if (!cfg.disable_auto_update) {
         const has_pending_update = update.hasPendingUpdate(allocator);
