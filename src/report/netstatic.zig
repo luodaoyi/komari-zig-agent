@@ -103,15 +103,14 @@ var runtime: ?*Runtime = null;
 pub fn startOrContinue() !void {
     const allocator = std.heap.page_allocator;
     const rt = try getRuntime(allocator);
-    rt.mutex.lock();
-    if (rt.running) {
-        rt.mutex.unlock();
-        return;
+    {
+        rt.mutex.lock();
+        defer rt.mutex.unlock();
+        if (rt.running) return;
+        try loadFromFileLocked(rt);
+        rt.running = true;
+        rt.stop_requested = false;
     }
-    try loadFromFileLocked(rt);
-    rt.running = true;
-    rt.stop_requested = false;
-    rt.mutex.unlock();
 
     const sampler = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, sampleLoop, .{rt});
     sampler.detach();
@@ -478,12 +477,9 @@ fn loadFromFileLocked(rt: *Runtime) !void {
 }
 
 fn parseNetStaticJsonInto(rt: *Runtime, bytes: []const u8) !void {
-    var parsed = std.json.parseFromSlice(std.json.Value, rt.allocator, bytes, .{}) catch {
-        std.Io.Dir.cwd().rename(saveFilePath(), std.Io.Dir.cwd(), "net_static.json.bak", std.Options.debug_io) catch {};
-        return;
-    };
+    var parsed = try parsePersistedJson(rt.allocator, bytes);
     defer parsed.deinit();
-    if (parsed.value != .object) return;
+    if (parsed.value != .object) return error.InvalidNetStaticState;
     if (parsed.value.object.get("config")) |cfg_value| {
         if (cfg_value == .object) {
             rt.config.data_preserve_day = jsonFloat(cfg_value.object.get("data_preserve_day")) orelse rt.config.data_preserve_day;
@@ -509,6 +505,21 @@ fn parseNetStaticJsonInto(rt: *Runtime, bytes: []const u8) !void {
     }
 }
 
+fn parsePersistedJson(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        if (!std.mem.endsWith(u8, bytes, "}}}")) return error.InvalidNetStaticState;
+        return std.json.parseFromSlice(std.json.Value, allocator, bytes[0 .. bytes.len - 1], .{}) catch error.InvalidNetStaticState;
+    };
+}
+
+pub fn validatePersistedState(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    var parsed = try parsePersistedJson(allocator, bytes);
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidNetStaticState;
+    const interfaces = parsed.value.object.get("interfaces") orelse return error.InvalidNetStaticState;
+    if (interfaces != .object) return error.InvalidNetStaticState;
+}
+
 fn saveToFileLocked(rt: *Runtime) !void {
     var writer = std.Io.Writer.Allocating.init(rt.allocator);
     defer writer.deinit();
@@ -530,7 +541,7 @@ fn saveToFileLocked(rt: *Runtime) !void {
         if (i != 0) try writer.writer.writeByte(',');
         try writer.writer.print("{f}", .{std.json.fmt(nic, .{})});
     }
-    try writer.writer.writeAll("]}}}");
+    try writer.writer.writeAll("]}}");
     const bytes = try writer.toOwnedSlice();
     defer rt.allocator.free(bytes);
     const tmp = "net_static.json.tmp";

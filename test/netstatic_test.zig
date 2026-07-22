@@ -33,3 +33,17 @@ test "store json round trips baseline counters" {
     try std.testing.expectEqual(@as(u64, 456), parsed.up);
     try std.testing.expectEqual(@as(u64, 789), parsed.down);
 }
+
+test "invalid persisted traffic data is rejected" {
+    try std.testing.expectError(error.InvalidNetStaticState, netstatic.validatePersistedState(std.testing.allocator, "{\"interfaces\":"));
+}
+
+test "legacy persisted traffic with one extra closing brace remains readable" {
+    const legacy = "{\"interfaces\":{},\"config\":{\"data_preserve_day\":31}}}";
+    try netstatic.validatePersistedState(std.testing.allocator, legacy);
+}
+
+test "valid persisted traffic remains readable" {
+    const valid = "{\"interfaces\":{},\"config\":{\"data_preserve_day\":31}}";
+    try netstatic.validatePersistedState(std.testing.allocator, valid);
+}
