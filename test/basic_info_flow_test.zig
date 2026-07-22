@@ -33,6 +33,17 @@ test "foreground upload deferral is the only case that restarts background loop 
     try std.testing.expect(!flow.shouldStartBackgroundLoopImmediately(.{ .failure = error.Timeout }));
 }
 
+test "automatic foreground upload defers non-public IPv4" {
+    try std.testing.expect(flow.shouldDeferForPublicIPv4(false, false, "", false));
+    try std.testing.expect(!flow.shouldDeferForPublicIPv4(false, false, "", true));
+}
+
+test "explicit IPv4 modes preserve user-selected addresses" {
+    try std.testing.expect(!flow.shouldDeferForPublicIPv4(false, false, "10.0.0.5", false));
+    try std.testing.expect(!flow.shouldDeferForPublicIPv4(false, true, "", false));
+    try std.testing.expect(!flow.shouldDeferForPublicIPv4(true, false, "", false));
+}
+
 test "foreground upload failure during startup is tolerated and logged" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();

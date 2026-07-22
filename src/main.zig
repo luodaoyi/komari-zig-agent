@@ -206,8 +206,13 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_e
     var info = try provider.basicInfo(scratch);
     debug.log("basic info collected: local_ipv4={s} local_ipv6={s}", .{ info.ipv4, info.ipv6 });
     try applyIpConfig(scratch, cfg, &info, allow_external_ip_lookup);
-    if (!allow_external_ip_lookup and info.ipv4.len == 0) {
-        debug.log("deferring foreground basic info upload until public IP refresh because IPv4 is empty", .{});
+    if (basic_info_flow.shouldDeferForPublicIPv4(
+        allow_external_ip_lookup,
+        cfg.get_ip_addr_from_nic,
+        cfg.custom_ipv4,
+        ip.isPubliclyRoutableIPv4(info.ipv4),
+    )) {
+        debug.log("deferring foreground basic info upload until public IP refresh because IPv4 is not publicly routable: {s}", .{info.ipv4});
         return error.BasicInfoDeferredUntilPublicIp;
     }
     const info_json = try basic_info.allocBasicInfoJson(scratch, info, true, true);

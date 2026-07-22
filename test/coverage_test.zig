@@ -23,3 +23,14 @@ test "coverage external lookup runs in automatic mode unless explicitly overridd
     try std.testing.expect(!ip.shouldLookupExternalAddress("", "198.51.100.8", true));
     try std.testing.expect(!ip.shouldLookupExternalAddress("", "", false));
 }
+
+test "coverage classifies public and non-public IPv4 addresses" {
+    try std.testing.expect(ip.isPubliclyRoutableIPv4("1.1.1.1"));
+    try std.testing.expect(ip.isPubliclyRoutableIPv4("198.20.0.1"));
+    try std.testing.expect(!ip.isPubliclyRoutableIPv4(""));
+    try std.testing.expect(!ip.isPubliclyRoutableIPv4("10.91.0.28"));
+    try std.testing.expect(!ip.isPubliclyRoutableIPv4("100.64.0.1"));
+    try std.testing.expect(!ip.isPubliclyRoutableIPv4("192.168.1.1"));
+    try std.testing.expect(!ip.isPubliclyRoutableIPv4("203.0.113.1"));
+    try std.testing.expect(!ip.isPubliclyRoutableIPv4("255.255.255.255"));
+}

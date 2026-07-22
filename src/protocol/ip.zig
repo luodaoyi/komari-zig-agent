@@ -38,6 +38,39 @@ pub fn shouldLookupExternalAddress(existing: []const u8, custom: []const u8, all
     return allow_external_lookup and custom.len == 0;
 }
 
+/// Returns true only for IPv4 addresses suitable for public node identity.
+pub fn isPubliclyRoutableIPv4(value: []const u8) bool {
+    const octets = parseIPv4Octets(value) orelse return false;
+    const a = octets[0];
+    const b = octets[1];
+    const c = octets[2];
+
+    if (a == 0 or a == 10 or a == 127) return false;
+    if (a == 100 and b >= 64 and b <= 127) return false;
+    if (a == 169 and b == 254) return false;
+    if (a == 172 and b >= 16 and b <= 31) return false;
+    if (a == 192 and b == 0 and (c == 0 or c == 2)) return false;
+    if (a == 192 and b == 88 and c == 99) return false;
+    if (a == 192 and b == 168) return false;
+    if (a == 198 and (b == 18 or b == 19)) return false;
+    if (a == 198 and b == 51 and c == 100) return false;
+    if (a == 203 and b == 0 and c == 113) return false;
+    if (a >= 224) return false;
+    return true;
+}
+
+fn parseIPv4Octets(value: []const u8) ?[4]u8 {
+    var octets: [4]u8 = undefined;
+    var parts = std.mem.splitScalar(u8, value, '.');
+    var index: usize = 0;
+    while (parts.next()) |part| {
+        if (index >= octets.len or part.len == 0) return null;
+        octets[index] = std.fmt.parseInt(u8, part, 10) catch return null;
+        index += 1;
+    }
+    return if (index == octets.len) octets else null;
+}
+
 fn getAddressFromApis(
     allocator: std.mem.Allocator,
     cfg: anytype,
