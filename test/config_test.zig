@@ -220,6 +220,15 @@ test "check-mem subcommand is recognized" {
     try std.testing.expectEqual(config.Command.check_mem, cfg.command);
 }
 
+test "socket-timeout-smoke subcommand is recognized" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const args = [_][]const u8{ "komari-agent", "socket-timeout-smoke" };
+    const cfg = try config.parseArgs(arena.allocator(), &args);
+    try std.testing.expectEqual(config.Command.socket_timeout_smoke, cfg.command);
+}
+
 test "unknown flags are ignored" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

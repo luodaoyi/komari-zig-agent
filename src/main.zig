@@ -8,6 +8,7 @@ const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
 const ip = @import("protocol/ip.zig");
 const netstatic = @import("report_netstatic");
+const net = @import("net");
 const ping = @import("protocol/ping.zig");
 const report_ws = @import("protocol/report_ws.zig");
 const v2_state = @import("protocol/v2_state.zig");
@@ -73,6 +74,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
         defer stdout.flush() catch {};
         try provider.printMemoryCheck(allocator, &stdout, cfg.memory_include_cache, cfg.memory_report_raw_used);
+        return;
+    }
+
+    if (cfg.command == .socket_timeout_smoke) {
+        try net.socketTimeoutSmoke(30_000);
         return;
     }
 

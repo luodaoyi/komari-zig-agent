@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const net = @import("net");
 const raw_conn = @import("protocol_raw_conn");
 
 test "tls ca bundle storage is per connection" {
@@ -11,4 +13,9 @@ test "tls ca bundle storage is per connection" {
 
 test "tls ca bundle can be rescanned without global cache" {
     try raw_conn.rescanCaBundleForTest();
+}
+
+test "linux socket timeout ABI follows kernel long width" {
+    if (builtin.os.tag != .linux) return;
+    try std.testing.expectEqual(@sizeOf(c_long) * 2, net.linuxSocketTimevalSize());
 }

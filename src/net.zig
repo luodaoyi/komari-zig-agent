@@ -5,6 +5,11 @@ pub const net = std.Io.net;
 pub const Address = net.IpAddress;
 pub const Stream = net.Stream;
 
+const LinuxSocketTimeval = extern struct {
+    sec: c_long,
+    usec: c_long,
+};
+
 pub fn parseIp(text: []const u8, p: u16) !Address {
     return Address.parse(text, p);
 }
@@ -169,12 +174,41 @@ fn connectWithTimeoutLinux(addr: Address, timeout_ms: u64) !Stream {
 fn setStreamTimeouts(stream: Stream, timeout_ms: u64) !void {
     switch (builtin.os.tag) {
         .windows => return,
+        .linux => {
+            // SO_{RCV,SND}TIMEO use the kernel's legacy long/long ABI on
+            // 32-bit Linux. Zig 0.16's std.posix.timeval is time64 there and
+            // is rejected with EDOM (TimeoutTooBig), notably on MIPS/OpenWrt.
+            const tv = timeoutToLinuxSocketTimeval(timeout_ms);
+            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&tv));
+        },
         else => {
             const tv = timeoutToTimeval(timeout_ms);
             try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
             try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&tv));
         },
     }
+}
+
+fn timeoutToLinuxSocketTimeval(timeout_ms: u64) LinuxSocketTimeval {
+    const seconds = timeout_ms / 1000;
+    const microseconds = (timeout_ms % 1000) * 1000;
+    return .{
+        .sec = std.math.cast(c_long, seconds) orelse std.math.maxInt(c_long),
+        .usec = @intCast(microseconds),
+    };
+}
+
+pub fn socketTimeoutSmoke(timeout_ms: u64) !void {
+    if (builtin.os.tag != .linux) return;
+    const fd = try socketLinux(std.posix.AF.INET, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, std.posix.IPPROTO.TCP);
+    defer _ = std.os.linux.close(fd);
+    const stream: Stream = .{ .socket = .{ .handle = fd, .address = initIp4(.{ 127, 0, 0, 1 }, 0) } };
+    try setStreamTimeouts(stream, timeout_ms);
+}
+
+pub fn linuxSocketTimevalSize() usize {
+    return @sizeOf(LinuxSocketTimeval);
 }
 
 fn timeoutToTimeval(timeout_ms: u64) std.posix.timeval {

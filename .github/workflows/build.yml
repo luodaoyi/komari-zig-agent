@@ -351,9 +351,11 @@ jobs:
           chmod +x ./komari-agent
           if [ "${{ matrix.runner }}" = "direct" ]; then
             ./komari-agent --show-warning
+            ./komari-agent socket-timeout-smoke
           else
             command -v "${{ matrix.runner }}"
             "${{ matrix.runner }}" ./komari-agent --show-warning
+            "${{ matrix.runner }}" ./komari-agent socket-timeout-smoke
           fi
 
   build:
