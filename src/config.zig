@@ -6,6 +6,7 @@ pub const Command = enum {
     run,
     list_disk,
     check_mem,
+    socket_timeout_smoke,
 };
 
 pub const Config = struct {
@@ -146,6 +147,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.command = .list_disk;
         } else if (std.mem.eql(u8, arg, "check-mem")) {
             cfg.command = .check_mem;
+        } else if (std.mem.eql(u8, arg, "socket-timeout-smoke")) {
+            cfg.command = .socket_timeout_smoke;
         } else if (optionValue(arg, "--token")) |v| {
             cfg.token = try allocator.dupe(u8, v);
         } else if (optionValue(arg, "--endpoint")) |v| {
