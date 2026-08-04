@@ -1309,6 +1309,7 @@ pub fn isPhysicalMount(mountpoint_raw: []const u8, fstype_raw: []const u8, devic
         "/sys/fs/cgroup",
         "/etc/resolv.conf",
         "/etc/host",
+        "/usr/lib/os-release",
         "/nix/store",
     };
     for (&excluded_mounts) |prefix| {
