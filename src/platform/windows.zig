@@ -2,6 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const windows = std.os.windows;
 const common = @import("common.zig");
+const gpu = @import("gpu.zig");
 const compat = @import("compat");
 const report_netstatic = @import("report_netstatic");
 
@@ -315,7 +316,7 @@ pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
         .connections = connectionsInfo() catch .{},
         .uptime = uptime(),
         .process = processCount() catch 0,
-        .gpu_json = "",
+        .gpu_json = if (options.enable_gpu) detailedGpuJson(std.heap.page_allocator) catch "" else "",
         .message = "",
     };
 }
@@ -744,61 +745,18 @@ fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
         128 * 1024,
     );
     defer allocator.free(output);
-
-    var counts: std.ArrayList(GpuNameCount) = .empty;
-    defer deinitGpuNameCounts(allocator, &counts);
-
-    var lines = std.mem.splitScalar(u8, output, '\n');
-    while (lines.next()) |line_raw| {
-        try appendGpuNameCount(allocator, &counts, line_raw);
-    }
-
-    return allocFormattedGpuNameCounts(allocator, counts.items);
+    return gpu.allocOutputNames(allocator, .{ .output = output, .empty_name = "None" });
 }
 
-const GpuNameCount = struct {
-    name: []const u8,
-    count: u32,
-};
-
-fn deinitGpuNameCounts(allocator: std.mem.Allocator, counts: *std.ArrayList(GpuNameCount)) void {
-    for (counts.items) |item| allocator.free(item.name);
-    counts.deinit(allocator);
-}
-
-fn appendGpuNameCount(allocator: std.mem.Allocator, counts: *std.ArrayList(GpuNameCount), name_raw: []const u8) !void {
-    const name = std.mem.trim(u8, name_raw, " \t\r\n");
-    if (name.len == 0 or std.mem.eql(u8, name, "None")) return;
-
-    for (counts.items) |*item| {
-        if (std.mem.eql(u8, item.name, name)) {
-            item.count = item.count +| 1;
-            return;
-        }
-    }
-
-    try counts.append(allocator, .{
-        .name = try allocator.dupe(u8, name),
-        .count = 1,
-    });
-}
-
-fn allocFormattedGpuNameCounts(allocator: std.mem.Allocator, counts: []const GpuNameCount) ![]const u8 {
-    if (counts.len == 0) return allocator.dupe(u8, "None");
-
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-
-    for (counts, 0..) |item, idx| {
-        if (idx != 0) try out.appendSlice(allocator, ", ");
-        if (item.count > 1) {
-            try compat.appendPrint(allocator, &out, "{s} × {d}", .{ item.name, item.count });
-        } else {
-            try compat.appendPrint(allocator, &out, "{s}", .{item.name});
-        }
-    }
-
-    return out.toOwnedSlice(allocator);
+fn detailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
+    const output = try runPowerShell(
+        allocator,
+        "& nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu," ++
+            "temperature.gpu --format=csv,noheader,nounits 2>$null",
+        256 * 1024,
+    );
+    defer allocator.free(output);
+    return gpu.allocNvidiaDetailedJson(allocator, output);
 }
 
 fn virtualization(allocator: std.mem.Allocator) ![]const u8 {

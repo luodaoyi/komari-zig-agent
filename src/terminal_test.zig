@@ -42,3 +42,10 @@ test "terminal input parses input and resize messages" {
         else => false,
     });
 }
+
+test "terminal MOTD prelude always uses POSIX sh before the login shell" {
+    // MOTD scripts must not be interpreted by zsh or another user-selected shell.
+    try std.testing.expectEqualStrings("/bin/sh", terminal.posix_motd_shell);
+    try std.testing.expect(std.mem.indexOf(u8, terminal.posix_motd_command, "exec \"$1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, terminal.posix_motd_command, "unsetopt") == null);
+}

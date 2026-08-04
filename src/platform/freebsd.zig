@@ -1,4 +1,5 @@
 const common = @import("common.zig");
+const gpu = @import("gpu.zig");
 const std = @import("std");
 const netstatic = @import("report_netstatic");
 const compat = @import("compat");
@@ -374,14 +375,7 @@ fn sysctlInt(name: []const u8) !u64 {
 fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
     const out = commandOutput(allocator, &.{ "pciconf", "-lv" }) catch return allocator.dupe(u8, "Unknown");
     defer allocator.free(out);
-    var lines = std.mem.splitScalar(u8, out, '\n');
-    while (lines.next()) |line_raw| {
-        const line = std.mem.trim(u8, line_raw, " \t\r\n");
-        if (std.mem.indexOf(u8, line, "VGA") != null or std.mem.indexOf(u8, line, "Display") != null) {
-            return allocator.dupe(u8, line);
-        }
-    }
-    return allocator.dupe(u8, "Unknown");
+    return gpu.allocFreeBsdNames(allocator, out);
 }
 
 fn commandJoin(allocator: std.mem.Allocator, argv: []const []const u8, fallback: []const u8) ![]const u8 {
