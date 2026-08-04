@@ -1297,6 +1297,7 @@ pub fn diskDeviceKey(device: []const u8, fstype: []const u8) []const u8 {
 pub fn isPhysicalMount(mountpoint_raw: []const u8, fstype_raw: []const u8, device: []const u8) bool {
     if (std.mem.eql(u8, mountpoint_raw, "/")) return true;
     const mountpoint = mountpoint_raw;
+    if (std.mem.eql(u8, mountpoint, "/usr/lib/os-release")) return false;
     const excluded_mounts = [_][]const u8{
         "/tmp",
         "/var/tmp",
@@ -1309,7 +1310,6 @@ pub fn isPhysicalMount(mountpoint_raw: []const u8, fstype_raw: []const u8, devic
         "/sys/fs/cgroup",
         "/etc/resolv.conf",
         "/etc/host",
-        "/usr/lib/os-release",
         "/nix/store",
     };
     for (&excluded_mounts) |prefix| {
