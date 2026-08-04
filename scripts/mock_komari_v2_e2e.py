@@ -717,6 +717,9 @@ def run_agent(agent_path, endpoint, token, timeout, protocol_version, no_exec):
         "--disable-auto-update",
         "--protocol-version",
         str(protocol_version),
+        # Protocol E2E timing is explicit; config tests cover the product default.
+        "--interval",
+        "1",
         "--max-retries",
         "0",
         "--reconnect-interval",
