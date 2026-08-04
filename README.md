@@ -28,7 +28,8 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 
 ## 状态
 
-- 功能兼容：官方 Go agent `1.2.13` 的启动参数、配置来源、BasicInfo、Report WebSocket、任务执行、Ping、Web SSH、自动发现、Cloudflare Access、代理、自定义 DNS/IP、自更新、安装和替换脚本均已实现。
+- 功能兼容：官方 Go agent `1.2.60` 的启动参数、配置来源、BasicInfo、Report WebSocket、任务执行、Ping、Web SSH、自动发现、代理、自定义 DNS/IP、自更新、安装和替换脚本均已实现；继续保留可选 Cloudflare Access 凭据支持。
+- 上游增量：已吸收 `Snapshot-2607270914` 的非 root systemd user 安装和 Windows NVIDIA 详细 GPU 指标，并继续支持更早加入的 Linux `loong64` 构建与安装。
 - 支持系统：Linux、FreeBSD、macOS、Windows；Linux 覆盖 Debian/Ubuntu/Kali、Fedora/CentOS Stream/Rocky/Alma、OpenWrt、Raspberry Pi OS profile、Synology DSM profile。
 - Release 资产：自动构建 20 个二进制，其中 Linux 11 架构：`amd64`、`arm64`、`386`、`arm`、`mips`、`mipsel`、`mips64`、`mips64el`、`riscv64`、`s390x`、`loong64`。
 - 自动化测试：Ubuntu、macOS、Windows 原生单测；Debian/Ubuntu/Kali 和红帽系容器单测；FreeBSD VM 单测；OpenWrt、Raspberry Pi OS、Synology DSM profile 与主流 Linux 发行版 agent 启动烟测；Linux 多架构 QEMU agent 启动烟测。
@@ -170,6 +171,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iwr 'https://gh.llkk
 ```
 
 脚本会自动识别 Linux、OpenWrt/procd、OpenRC、systemd、FreeBSD rc.d、macOS launchd，并创建服务。
+
+Linux 非 root 用户可直接安装为 systemd user service，无需 `sudo`：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/main/install.sh | sh -s -- \
+  --endpoint https://panel.example \
+  --token TOKEN
+```
+
+默认安装到 `${XDG_DATA_HOME:-$HOME/.local/share}/komari`，unit 写入
+`${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`。该模式要求当前用户已有可用的 systemd user
+session；若希望退出登录后服务仍运行，需要管理员执行 `loginctl enable-linger <user>`。
 
 ## 一键替换原 Go agent
 

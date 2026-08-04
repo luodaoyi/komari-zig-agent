@@ -190,7 +190,7 @@ EOF
   cat > "$FAKEBIN/id" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
-  -u) printf '0\n' ;;
+  -u) printf '%s\n' "${SCRIPT_TEST_UID:-0}" ;;
   *) exec /usr/bin/id "$@" ;;
 esac
 EOF
@@ -222,6 +222,10 @@ run_env() {
     SCRIPT_TEST_SYSTEMD_RESTART_FAIL="${SCRIPT_TEST_SYSTEMD_RESTART_FAIL:-0}" \
     SCRIPT_TEST_HEALTH_FAIL="${SCRIPT_TEST_HEALTH_FAIL:-0}" \
     SCRIPT_TEST_SERVICE_START_FAIL="${SCRIPT_TEST_SERVICE_START_FAIL:-0}" \
+    SCRIPT_TEST_UID="${SCRIPT_TEST_UID:-0}" \
+    HOME="${SCRIPT_TEST_HOME:-${HOME:-/tmp}}" \
+    XDG_CONFIG_HOME="${SCRIPT_TEST_XDG_CONFIG_HOME:-}" \
+    XDG_DATA_HOME="${SCRIPT_TEST_XDG_DATA_HOME:-}" \
     PATH="$FAKEBIN:/usr/sbin:/usr/bin:/sbin:/bin" \
     "$@"
 }
@@ -233,6 +237,28 @@ test_install_direct_success() {
     assert_file_contains "/etc/systemd/system/${SERVICE}.service" "ExecStart=$INSTALL_DIR/agent -e http://server -t token" &&
     assert_file_contains "$LOG" "curl https://github.com/luodaoyi/komari-zig-agent/releases/latest/download/$ASSET" &&
     assert_file_not_contains "$LOG" "curl https://gh.llkk.cc/"
+}
+
+test_install_systemd_user_success() {
+  setup_case install_systemd_user
+  user_home="$CASE/home"
+  user_config="$CASE/config"
+  user_data="$CASE/data"
+  mkdir -p "$user_home" "$user_config" "$user_data"
+  SCRIPT_TEST_UID=1000 \
+    SCRIPT_TEST_HOME="$user_home" \
+    SCRIPT_TEST_XDG_CONFIG_HOME="$user_config" \
+    SCRIPT_TEST_XDG_DATA_HOME="$user_data" \
+    run_env sh "$ROOT/install.sh" --install-service-name "$SERVICE" \
+      -e http://server -t token >/dev/null
+  user_agent="$user_data/komari/agent"
+  user_unit="$user_config/systemd/user/${SERVICE}.service"
+  [ -x "$user_agent" ] &&
+    assert_file_contains "$user_unit" "ExecStart=$user_agent -e http://server -t token" &&
+    assert_file_contains "$user_unit" "WantedBy=default.target" &&
+    assert_file_not_contains "$user_unit" "User=root" &&
+    assert_file_contains "$LOG" "systemctl --user show-environment" &&
+    assert_file_contains "$LOG" "systemctl --user enable --now ${SERVICE}.service"
 }
 
 test_install_proxy_fallback_success() {
@@ -464,6 +490,7 @@ run_test() {
 mkdir -p "$BASE"
 
 run_test test_install_direct_success
+run_test test_install_systemd_user_success
 run_test test_install_proxy_fallback_success
 run_test test_install_slow_direct_switches_to_proxy_once
 run_test test_install_explicit_proxy_success

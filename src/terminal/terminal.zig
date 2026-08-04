@@ -6,6 +6,12 @@ const compat = @import("compat");
 const thread_stacks = @import("../thread_stacks.zig");
 const zigpty = if (builtin.os.tag == .linux or builtin.os.tag == .macos) @import("zigpty") else struct {};
 
+pub const posix_motd_shell = "/bin/sh";
+pub const posix_motd_command =
+    "for f in /etc/update-motd.d/*; do " ++
+    "[ -e \"$f\" ] && [ -x \"$f\" ] && \"$f\"; done; " ++
+    "[ -r /etc/motd ] && cat /etc/motd; exec \"$1\"";
+
 extern "c" fn openpty(amaster: *c_int, aslave: *c_int, name: ?[*]u8, termp: ?*const anyopaque, winp: ?*const std.posix.winsize) c_int;
 extern "c" fn ioctl(fd: std.posix.fd_t, request: c_ulong, ...) c_int;
 
@@ -187,22 +193,12 @@ const ShellSession = struct {
 };
 
 fn startZigPty(allocator: std.mem.Allocator) !ShellSession {
-    return startZigPtyWithPrelude(allocator, true) catch |err| switch (err) {
-        error.ShellExitedEarly => startZigPtyWithPrelude(allocator, false),
-        else => return err,
-    };
-}
-
-fn startZigPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !ShellSession {
     const shell_path = try shellPathAlloc(allocator);
     defer allocator.free(shell_path);
     const shell = try allocator.dupeZ(u8, shell_path);
     defer allocator.free(shell);
-    const shell_base_raw = std.fs.path.basename(shell_path);
-    const shell_base = try allocator.dupeZ(u8, shell_base_raw);
-    defer allocator.free(shell_base);
-    const prelude = if (use_prelude) try allocator.dupeZ(u8, buildShellPrelude(shell_base_raw)) else null;
-    defer if (prelude) |value| allocator.free(value);
+    const prelude = try allocator.dupeZ(u8, posix_motd_command);
+    defer allocator.free(prelude);
     const cwd = try terminalCwdAlloc(allocator);
     defer allocator.free(cwd);
     const cwd_z = try allocator.dupeZ(u8, cwd);
@@ -214,29 +210,22 @@ fn startZigPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !Shel
     try env_map.put("LANG", "C.UTF-8");
     try env_map.put("LC_ALL", "C.UTF-8");
     const envp = try env_map.createPosixBlock(env_arena.allocator(), .{});
-    const result = if (prelude) |value| blk: {
-        var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", value.ptr };
-        break :blk try zigpty.forkPty(.{
-            .file = shell.ptr,
-            .argv = &argv,
-            .envp = envp.slice.ptr,
-            .cwd = cwd_z.ptr,
-            .cols = 80,
-            .rows = 24,
-            .use_utf8 = true,
-        });
-    } else blk: {
-        var argv = [_:null]?[*:0]const u8{shell.ptr};
-        break :blk try zigpty.forkPty(.{
-            .file = shell.ptr,
-            .argv = &argv,
-            .envp = envp.slice.ptr,
-            .cwd = cwd_z.ptr,
-            .cols = 80,
-            .rows = 24,
-            .use_utf8 = true,
-        });
+    var argv = [_:null]?[*:0]const u8{
+        "sh",
+        "-c",
+        prelude.ptr,
+        "komari-motd",
+        shell.ptr,
     };
+    const result = try zigpty.forkPty(.{
+        .file = posix_motd_shell,
+        .argv = &argv,
+        .envp = envp.slice.ptr,
+        .cwd = cwd_z.ptr,
+        .cols = 80,
+        .rows = 24,
+        .use_utf8 = true,
+    });
     const pty_file = std.Io.File{ .handle = result.fd, .flags = .{ .nonblocking = false } };
     compat.sleep(50 * std.time.ns_per_ms);
     const wait_result = compat.waitPid(result.pid, childNoHangFlag()) catch return error.ShellExitedEarly;
@@ -248,22 +237,12 @@ fn startZigPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !Shel
 }
 
 fn startBsdPty(allocator: std.mem.Allocator) !ShellSession {
-    return startBsdPtyWithPrelude(allocator, true) catch |err| switch (err) {
-        error.ShellExitedEarly => startBsdPtyWithPrelude(allocator, false),
-        else => return err,
-    };
-}
-
-fn startBsdPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !ShellSession {
     const shell_path = try shellPathAlloc(allocator);
     defer allocator.free(shell_path);
     const shell = try allocator.dupeZ(u8, shell_path);
     defer allocator.free(shell);
-    const shell_base_raw = std.fs.path.basename(shell_path);
-    const shell_base = try allocator.dupeZ(u8, shell_base_raw);
-    defer allocator.free(shell_base);
-    const prelude = if (use_prelude) try allocator.dupeZ(u8, buildShellPrelude(shell_base_raw)) else null;
-    defer if (prelude) |value| allocator.free(value);
+    const prelude = try allocator.dupeZ(u8, posix_motd_command);
+    defer allocator.free(prelude);
     var env_arena = std.heap.ArenaAllocator.init(allocator);
     defer env_arena.deinit();
     var env_map = try compat.currentEnvMap(env_arena.allocator());
@@ -290,13 +269,14 @@ fn startBsdPtyWithPrelude(allocator: std.mem.Allocator, use_prelude: bool) !Shel
         compat.dup2(slave, std.posix.STDERR_FILENO) catch std.process.exit(127);
         if (slave > 2) compat.closeFd(slave);
         compat.closeFd(master);
-        if (prelude) |value| {
-            var argv = [_:null]?[*:0]const u8{ shell_base.ptr, "-c", value.ptr };
-            compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
-        } else {
-            var argv = [_:null]?[*:0]const u8{shell_base.ptr};
-            compat.execveZ(shell.ptr, &argv, env.slice.ptr) catch std.process.exit(127);
-        }
+        var argv = [_:null]?[*:0]const u8{
+            "sh",
+            "-c",
+            prelude.ptr,
+            "komari-motd",
+            shell.ptr,
+        };
+        compat.execveZ(posix_motd_shell, &argv, env.slice.ptr) catch std.process.exit(127);
     }
 
     compat.closeFd(slave);
@@ -414,12 +394,6 @@ fn isExecutable(path: []const u8) bool {
     const file = compat.openFile(path, .{}) catch return false;
     file.close(std.Options.debug_io);
     return true;
-}
-
-fn buildShellPrelude(shell_base: []const u8) []const u8 {
-    const motd = "for f in /etc/update-motd.d/*; do [ -e \"$f\" ] && [ -x \"$f\" ] && \"$f\"; done; [ -r /etc/motd ] && cat /etc/motd; exec \"$0\"";
-    if (std.mem.eql(u8, shell_base, "zsh")) return "unsetopt NOMATCH 2>/dev/null; " ++ motd;
-    return motd;
 }
 
 fn terminalEnv(allocator: std.mem.Allocator) !*std.process.Environ.Map {

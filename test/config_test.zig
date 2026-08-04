@@ -3,7 +3,7 @@ const config = @import("config");
 
 test "defaults match Go agent" {
     const cfg = config.Config.default();
-    try std.testing.expectEqual(@as(f64, 1.0), cfg.interval);
+    try std.testing.expectEqual(@as(f64, 3.0), cfg.interval);
     try std.testing.expectEqual(@as(i32, 3), cfg.max_retries);
     try std.testing.expectEqual(@as(i32, 5), cfg.reconnect_interval);
     try std.testing.expectEqual(@as(i32, 5), cfg.info_report_interval);

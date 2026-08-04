@@ -1,4 +1,5 @@
 const common = @import("common.zig");
+const gpu = @import("gpu.zig");
 const std = @import("std");
 const netstatic = @import("report_netstatic");
 const compat = @import("compat");
@@ -396,14 +397,7 @@ fn cpuUsage(allocator: std.mem.Allocator) !f64 {
 fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
     const out = commandOutput(allocator, &.{ "system_profiler", "SPDisplaysDataType" }) catch return allocator.dupe(u8, "Unknown");
     defer allocator.free(out);
-    var lines = std.mem.splitScalar(u8, out, '\n');
-    while (lines.next()) |line_raw| {
-        const line = std.mem.trim(u8, line_raw, " \t\r\n");
-        if (std.mem.startsWith(u8, line, "Chipset Model:")) {
-            return allocator.dupe(u8, std.mem.trim(u8, line["Chipset Model:".len..], " \t\r\n"));
-        }
-    }
-    return allocator.dupe(u8, "Unknown");
+    return gpu.allocDarwinNames(allocator, out);
 }
 
 fn virtualization(allocator: std.mem.Allocator) ![]const u8 {

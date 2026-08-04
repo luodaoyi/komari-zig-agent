@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common.zig");
+const gpu = @import("gpu.zig");
 const netstatic = @import("report_netstatic");
 const compat = @import("compat");
 const debug = @import("debug");
@@ -529,70 +530,18 @@ fn gpuName(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8, "None");
 }
 
-const GpuNameCount = struct {
-    name: []const u8,
-    count: u32,
-};
-
-fn deinitGpuNameCounts(allocator: std.mem.Allocator, counts: *std.ArrayList(GpuNameCount)) void {
-    for (counts.items) |item| allocator.free(item.name);
-    counts.deinit(allocator);
-}
-
-fn appendGpuNameCount(allocator: std.mem.Allocator, counts: *std.ArrayList(GpuNameCount), name_raw: []const u8) !void {
-    const name = std.mem.trim(u8, name_raw, " \t\r\n");
-    if (name.len == 0 or std.mem.eql(u8, name, "None")) return;
-
-    for (counts.items) |*item| {
-        if (std.mem.eql(u8, item.name, name)) {
-            item.count = item.count +| 1;
-            return;
-        }
-    }
-
-    try counts.append(allocator, .{
-        .name = try allocator.dupe(u8, name),
-        .count = 1,
-    });
-}
-
-fn allocFormattedGpuNameCounts(allocator: std.mem.Allocator, counts: []const GpuNameCount) ![]const u8 {
-    if (counts.len == 0) return allocator.dupe(u8, "None");
-
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
-
-    for (counts, 0..) |item, idx| {
-        if (idx != 0) try out.appendSlice(allocator, ", ");
-        if (item.count > 1) {
-            try compat.appendPrint(allocator, &out, "{s} × {d}", .{ item.name, item.count });
-        } else {
-            try compat.appendPrint(allocator, &out, "{s}", .{item.name});
-        }
-    }
-
-    return out.toOwnedSlice(allocator);
-}
-
 fn commandGpuNames(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     const output = try commandOutput(allocator, argv);
     defer allocator.free(output);
-
-    var counts: std.ArrayList(GpuNameCount) = .empty;
-    defer deinitGpuNameCounts(allocator, &counts);
-
-    var lines = std.mem.splitScalar(u8, output, '\n');
-    while (lines.next()) |line| try appendGpuNameCount(allocator, &counts, line);
-
-    return allocFormattedGpuNameCounts(allocator, counts.items);
+    return gpu.allocOutputNames(allocator, .{ .output = output, .empty_name = "None" });
 }
 
 fn gpuNameFromLspci(allocator: std.mem.Allocator) ![]const u8 {
     const out = commandOutput(allocator, &.{"lspci"}) catch return allocator.dupe(u8, "None");
     defer allocator.free(out);
     const priority = [_][]const u8{ "nvidia", "amd", "radeon", "intel", "arc", "snap", "qualcomm", "snapdragon" };
-    var priority_names: std.ArrayList(GpuNameCount) = .empty;
-    defer deinitGpuNameCounts(allocator, &priority_names);
+    var priority_names: gpu.NameList = .{};
+    defer priority_names.deinit(allocator);
     var lines = std.mem.splitScalar(u8, out, '\n');
     while (lines.next()) |line| {
         const lower = try std.ascii.allocLowerString(allocator, line);
@@ -602,16 +551,16 @@ fn gpuNameFromLspci(allocator: std.mem.Allocator) ![]const u8 {
             if (std.mem.indexOf(u8, lower, vendor) != null) {
                 if (extractPciGpuName(allocator, line)) |name| {
                     defer allocator.free(name);
-                    if (!isVirtualGpuName(name)) try appendGpuNameCount(allocator, &priority_names, name);
+                    if (!isVirtualGpuName(name)) try priority_names.append(allocator, name);
                 } else |_| {}
             }
         }
     }
 
-    if (priority_names.items.len != 0) return allocFormattedGpuNameCounts(allocator, priority_names.items);
+    if (priority_names.items.items.len != 0) return priority_names.format(allocator, "None");
 
-    var fallback_names: std.ArrayList(GpuNameCount) = .empty;
-    defer deinitGpuNameCounts(allocator, &fallback_names);
+    var fallback_names: gpu.NameList = .{};
+    defer fallback_names.deinit(allocator);
     lines = std.mem.splitScalar(u8, out, '\n');
     while (lines.next()) |line| {
         const lower = try std.ascii.allocLowerString(allocator, line);
@@ -619,10 +568,10 @@ fn gpuNameFromLspci(allocator: std.mem.Allocator) ![]const u8 {
         if (!isDisplayPciLine(lower)) continue;
         if (extractPciGpuName(allocator, line)) |name| {
             defer allocator.free(name);
-            if (!isVirtualGpuName(name)) try appendGpuNameCount(allocator, &fallback_names, name);
+            if (!isVirtualGpuName(name)) try fallback_names.append(allocator, name);
         } else |_| {}
     }
-    return allocFormattedGpuNameCounts(allocator, fallback_names.items);
+    return fallback_names.format(allocator, "None");
 }
 
 fn isDisplayPciLine(lower: []const u8) bool {
@@ -653,8 +602,8 @@ fn gpuNameFromSysfsDrm(allocator: std.mem.Allocator) ![]const u8 {
     var dir = compat.openDir("/sys/class/drm", .{ .iterate = true }) catch return allocator.dupe(u8, "None");
     defer dir.close(std.Options.debug_io);
     var it = dir.iterate();
-    var counts: std.ArrayList(GpuNameCount) = .empty;
-    defer deinitGpuNameCounts(allocator, &counts);
+    var counts: gpu.NameList = .{};
+    defer counts.deinit(allocator);
     while (try it.next(std.Options.debug_io)) |entry| {
         if (!std.mem.startsWith(u8, entry.name, "card")) continue;
         if (std.mem.indexOfScalar(u8, entry.name, '-') != null) continue;
@@ -663,57 +612,57 @@ fn gpuNameFromSysfsDrm(allocator: std.mem.Allocator) ![]const u8 {
         if (isExcludedDrmDriver(driver)) continue;
         if (socModelFromCompatible(allocator, entry.name, driver)) |model| {
             defer allocator.free(model);
-            try appendGpuNameCount(allocator, &counts, model);
+            try counts.append(allocator, model);
             continue;
         } else |_| {}
         if (std.mem.eql(u8, driver, "vc4") or std.mem.eql(u8, driver, "vc4-drm")) {
-            try appendGpuNameCount(allocator, &counts, "Broadcom VideoCore IV/VI (Raspberry Pi)");
+            try counts.append(allocator, "Broadcom VideoCore IV/VI (Raspberry Pi)");
             continue;
         }
         if (std.mem.eql(u8, driver, "v3d") or std.mem.eql(u8, driver, "v3d-drm")) {
-            try appendGpuNameCount(allocator, &counts, "Broadcom V3D (Raspberry Pi 4/5)");
+            try counts.append(allocator, "Broadcom V3D (Raspberry Pi 4/5)");
             continue;
         }
         if (std.mem.eql(u8, driver, "msm") or std.mem.eql(u8, driver, "msm_drm")) {
-            try appendGpuNameCount(allocator, &counts, "Qualcomm Adreno (Unknown Model)");
+            try counts.append(allocator, "Qualcomm Adreno (Unknown Model)");
             continue;
         }
         if (std.mem.eql(u8, driver, "panfrost")) {
-            try appendGpuNameCount(allocator, &counts, "ARM Mali (Panfrost)");
+            try counts.append(allocator, "ARM Mali (Panfrost)");
             continue;
         }
         if (std.mem.eql(u8, driver, "lima")) {
-            try appendGpuNameCount(allocator, &counts, "ARM Mali (Lima)");
+            try counts.append(allocator, "ARM Mali (Lima)");
             continue;
         }
         if (std.mem.eql(u8, driver, "sun4i-drm") or std.mem.eql(u8, driver, "sunxi-drm")) {
-            try appendGpuNameCount(allocator, &counts, "Allwinner Display Engine");
+            try counts.append(allocator, "Allwinner Display Engine");
             continue;
         }
         if (std.mem.eql(u8, driver, "tegra")) {
-            try appendGpuNameCount(allocator, &counts, "NVIDIA Tegra");
+            try counts.append(allocator, "NVIDIA Tegra");
             continue;
         }
         if (std.mem.eql(u8, driver, "ast")) {
-            try appendGpuNameCount(allocator, &counts, "ASPEED Technology, Inc. ASPEED Graphics Family");
+            try counts.append(allocator, "ASPEED Technology, Inc. ASPEED Graphics Family");
             continue;
         }
         if (std.mem.eql(u8, driver, "i915") or std.mem.eql(u8, driver, "i915-drm")) {
-            try appendGpuNameCount(allocator, &counts, "Intel Integrated Graphics");
+            try counts.append(allocator, "Intel Integrated Graphics");
             continue;
         }
         if (std.mem.eql(u8, driver, "mgag200")) {
-            try appendGpuNameCount(allocator, &counts, "Matrox G200 Series");
+            try counts.append(allocator, "Matrox G200 Series");
             continue;
         }
         if (driver.len != 0) {
             const name = try std.fmt.allocPrint(allocator, "Direct Render Manager {s}", .{driver});
             defer allocator.free(name);
-            try appendGpuNameCount(allocator, &counts, name);
+            try counts.append(allocator, name);
         }
     }
 
-    if (counts.items.len != 0) return allocFormattedGpuNameCounts(allocator, counts.items);
+    if (counts.items.items.len != 0) return counts.format(allocator, "None");
 
     const model = compat.readFileAlloc(allocator, "/sys/firmware/devicetree/base/model", 4096) catch return allocator.dupe(u8, "None");
     defer allocator.free(model);
@@ -847,29 +796,7 @@ fn amdGpuModels(allocator: std.mem.Allocator, models: *std.ArrayList(u8), count:
 fn nvidiaDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {
     const output = try commandOutput(allocator, &.{ "nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits" });
     defer allocator.free(output);
-    var detail: std.ArrayList(u8) = .empty;
-    defer detail.deinit(allocator);
-    var count: u64 = 0;
-    var usage_sum: f64 = 0;
-    try detail.append(allocator, '[');
-    var lines = std.mem.splitScalar(u8, output, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0) continue;
-        var fields = std.mem.splitScalar(u8, line, ',');
-        const name = std.mem.trim(u8, fields.next() orelse "", " \t");
-        const mem_total = (std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0) * 1024 * 1024;
-        const mem_used = (std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0) * 1024 * 1024;
-        const util = std.fmt.parseFloat(f64, std.mem.trim(u8, fields.next() orelse "0", " \t")) catch 0;
-        const temp = std.fmt.parseInt(u64, std.mem.trim(u8, fields.next() orelse "0", " \t"), 10) catch 0;
-        if (count != 0) try detail.append(allocator, ',');
-        try compat.appendPrint(allocator, &detail, "{{\"name\":{f},\"memory_total\":{d},\"memory_used\":{d},\"utilization\":{d},\"temperature\":{d}}}", .{ std.json.fmt(name, .{}), mem_total, mem_used, util, temp });
-        usage_sum += util;
-        count += 1;
-    }
-    try detail.append(allocator, ']');
-    if (count == 0) return error.NoGpuDetails;
-    return std.fmt.allocPrint(allocator, "{{\"count\":{d},\"average_usage\":{d},\"detailed_info\":{s}}}", .{ count, usage_sum / @as(f64, @floatFromInt(count)), detail.items });
+    return gpu.allocNvidiaDetailedJson(allocator, output);
 }
 
 fn amdDetailedGpuJson(allocator: std.mem.Allocator) ![]const u8 {

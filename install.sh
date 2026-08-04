@@ -20,6 +20,8 @@ target_dir="/opt/komari"
 github_proxy=""
 github_proxy_list="${KOMARI_GITHUB_PROXIES:-https://gh.llkk.cc https://gh-proxy.com https://ghproxy.net https://ghfast.top https://ghproxy.cc}"
 install_version=""
+install_dir_specified=false
+user_service=false
 komari_args=""
 download_connect_timeout="${KOMARI_DOWNLOAD_CONNECT_TIMEOUT:-8}"
 download_max_time="${KOMARI_DOWNLOAD_MAX_TIME:-20}"
@@ -42,7 +44,7 @@ esac
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --install-dir) target_dir="$2"; shift 2 ;;
+    --install-dir) target_dir="$2"; install_dir_specified=true; shift 2 ;;
     --install-service-name) service_name="$2"; shift 2 ;;
     --install-ghproxy) github_proxy="$2"; shift 2 ;;
     --install-version) install_version="$2"; shift 2 ;;
@@ -51,16 +53,31 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 komari_args="${komari_args# }"
-agent_path="${target_dir}/agent"
 
 require_root=true
 if [ "$os_name" = "darwin" ] && command -v brew >/dev/null 2>&1; then
   require_root=false
 fi
-if [ "${EUID:-$(id -u)}" -ne 0 ] && [ "$require_root" = true ]; then
+effective_uid="${EUID:-$(id -u)}"
+if [ "$effective_uid" -ne 0 ] && [ "$os_name" = "linux" ]; then
+  if [ -z "${HOME:-}" ]; then
+    log_error "HOME is required for a non-root installation"
+    exit 1
+  fi
+  if [ "$install_dir_specified" = false ]; then
+    target_dir="${XDG_DATA_HOME:-$HOME/.local/share}/komari"
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    user_service=true
+  else
+    log_error "A non-root Linux installation requires a running systemd user session"
+    exit 1
+  fi
+elif [ "$effective_uid" -ne 0 ] && [ "$require_root" = true ]; then
   log_error "Please run as root"
   exit 1
 fi
+agent_path="${target_dir}/agent"
 
 arch="$(uname -m)"
 case "$arch" in
@@ -107,6 +124,11 @@ log_config "Version: ${GREEN}${install_version:-Latest}${NC}"
 
 install_dependencies() {
   command -v curl >/dev/null 2>&1 && return
+  if [ "$effective_uid" -ne 0 ]; then
+    log_error "Missing required dependency: curl"
+    log_info "Install it with your system package manager, then run this script again."
+    exit 1
+  fi
   log_info "Installing dependency: curl"
   if command -v apt >/dev/null 2>&1; then
     apt update && apt install -y curl
@@ -128,7 +150,15 @@ install_dependencies() {
 
 uninstall_previous() {
   log_info "Checking for previous installation..."
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${service_name}.service"; then
+  if [ "$user_service" = true ]; then
+    user_service_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${service_name}.service"
+    if systemctl --user list-unit-files 2>/dev/null | grep -q "^${service_name}.service"; then
+      systemctl --user stop "${service_name}.service" 2>/dev/null || true
+      systemctl --user disable "${service_name}.service" 2>/dev/null || true
+    fi
+    rm -f "$user_service_file"
+    systemctl --user daemon-reload || true
+  elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${service_name}.service"; then
     systemctl stop "${service_name}.service" 2>/dev/null || true
     systemctl disable "${service_name}.service" 2>/dev/null || true
     rm -f "/etc/systemd/system/${service_name}.service"
@@ -163,6 +193,7 @@ uninstall_previous() {
 }
 
 detect_init_system() {
+  [ "$user_service" = true ] && { echo systemd-user; return; }
   [ -f /etc/NIXOS ] && { echo nixos; return; }
   [ "$os_name" = "freebsd" ] && { echo freebsd; return; }
   [ "$os_name" = "darwin" ] && command -v launchctl >/dev/null 2>&1 && { echo launchd; return; }
@@ -365,6 +396,27 @@ systemd.services.${service_name} = {
   };
 };
 EOF
+    ;;
+  systemd-user)
+    service_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    service_file="${service_dir}/${service_name}.service"
+    mkdir -p "$service_dir"
+    cat > "$service_file" <<EOF
+[Unit]
+Description=Komari Agent Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${agent_path} ${komari_args}
+WorkingDirectory=${target_dir}
+Restart=always
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable --now "${service_name}.service"
     ;;
   systemd)
     cat > "/etc/systemd/system/${service_name}.service" <<EOF
