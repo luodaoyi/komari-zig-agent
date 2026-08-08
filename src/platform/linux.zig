@@ -1225,6 +1225,7 @@ pub fn isPhysicalMount(mountpoint_raw: []const u8, fstype_raw: []const u8, devic
     if (std.mem.eql(u8, mountpoint_raw, "/")) return true;
     const mountpoint = mountpoint_raw;
     if (std.mem.eql(u8, mountpoint, "/usr/lib/os-release")) return false;
+    if (std.mem.eql(u8, mountpoint, "/app/auto-discovery.json")) return false;
     const excluded_mounts = [_][]const u8{
         "/tmp",
         "/var/tmp",
