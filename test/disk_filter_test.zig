@@ -9,6 +9,8 @@ test "physical disk filter keeps root and excludes pseudo filesystems" {
     try std.testing.expect(!linux.isPhysicalMount("/usr/lib/os-release", "ext4", "/dev/sda1"));
     try std.testing.expect(linux.isPhysicalMount("/usr/lib/os-release-backup", "ext4", "/dev/sdb1"));
     try std.testing.expect(linux.isPhysicalMount("/usr/lib/os-release2", "ext4", "/dev/sdc1"));
+    try std.testing.expect(!linux.isPhysicalMount("/app/auto-discovery.json", "ext4", "/dev/sda1"));
+    try std.testing.expect(linux.isPhysicalMount("/app/auto-discovery.json.backup", "ext4", "/dev/sdb1"));
     try std.testing.expect(!linux.isPhysicalMount("/mnt/share", "nfs", "server:/share"));
     try std.testing.expect(!linux.isPhysicalMount("/snap/core", "squashfs", "/dev/loop0"));
     try std.testing.expect(linux.isPhysicalMount("/data", "ext4", "/dev/sdb1"));
