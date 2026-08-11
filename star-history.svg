@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520" role="img" aria-labelledby="title description">
+  <title id="title">luodaoyi/komari-zig-agent Star History</title>
+  <desc id="description">GitHub stars by date, last updated 2026-08-11</desc>
+  <style>
+    .background { fill: #ffffff; } .grid { fill: none; stroke: #d8dee4; stroke-width: 1; }
+    .label, .subtitle { fill: #57606a; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .heading, .value { fill: #24292f; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .heading { font-size: 20px; font-weight: 600; } .value { font-size: 24px; font-weight: 600; }
+    .area { fill: #0969da; opacity: .12; } .line { fill: none; stroke: #0969da; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }
+    .point { fill: #0969da; stroke: #ffffff; stroke-width: 2; }
+    @media (prefers-color-scheme: dark) {
+      .background { fill: #0d1117; } .grid { stroke: #30363d; } .label, .subtitle { fill: #8b949e; }
+      .heading, .value { fill: #f0f6fc; } .area { fill: #58a6ff; } .line { stroke: #58a6ff; } .point { fill: #58a6ff; stroke: #0d1117; }
+    }
+  </style>
+  <rect class="background" width="960" height="520" rx="8"/>
+  <text class="heading" x="76" y="38">luodaoyi/komari-zig-agent Star History</text>
+  <text class="subtitle" x="76" y="62">GitHub stars by date · updated 2026-08-11</text>
+  <text class="value" x="928" y="40" text-anchor="end">★ 56</text>
+  <path class="grid" d="M 76 456.0 H 928"/><text class="label" x="64" y="460.0" text-anchor="end">0</text><path class="grid" d="M 76 383.2 H 928"/><text class="label" x="64" y="387.2" text-anchor="end">20</text><path class="grid" d="M 76 310.4 H 928"/><text class="label" x="64" y="314.4" text-anchor="end">40</text><path class="grid" d="M 76 237.6 H 928"/><text class="label" x="64" y="241.6" text-anchor="end">60</text><path class="grid" d="M 76 164.8 H 928"/><text class="label" x="64" y="168.8" text-anchor="end">80</text><path class="grid" d="M 76 92.0 H 928"/><text class="label" x="64" y="96.0" text-anchor="end">100</text><path class="grid" d="M 76.0 92 V 456"/><text class="label" x="76.0" y="484" text-anchor="start">May 2, 2026</text><path class="grid" d="M 289.0 92 V 456"/><text class="label" x="289.0" y="484" text-anchor="middle">May 27, 2026</text><path class="grid" d="M 502.0 92 V 456"/><text class="label" x="502.0" y="484" text-anchor="middle">Jun 21, 2026</text><path class="grid" d="M 715.0 92 V 456"/><text class="label" x="715.0" y="484" text-anchor="middle">Jul 16, 2026</text><path class="grid" d="M 928.0 92 V 456"/><text class="label" x="928.0" y="484" text-anchor="end">Aug 11, 2026</text><path class="area" d="M 76.0 445.1 H 84.4 V 423.2 H 101.3 V 419.6 H 109.7 V 416.0 H 126.6 V 412.3 H 168.8 V 405.0 H 194.1 V 401.4 H 202.5 V 397.8 H 211.0 V 394.1 H 219.4 V 390.5 H 286.9 V 386.8 H 295.3 V 383.2 H 303.8 V 375.9 H 312.2 V 372.3 H 329.1 V 368.6 H 354.4 V 365.0 H 396.6 V 357.7 H 405.0 V 350.4 H 447.2 V 346.8 H 464.0 V 339.5 H 472.5 V 335.9 H 480.9 V 332.2 H 489.3 V 325.0 H 506.2 V 317.7 H 514.7 V 314.0 H 548.4 V 310.4 H 607.4 V 303.1 H 624.3 V 299.5 H 666.5 V 292.2 H 674.9 V 288.6 H 725.5 V 284.9 H 742.4 V 277.6 H 793.0 V 274.0 H 801.5 V 270.4 H 835.2 V 266.7 H 843.6 V 263.1 H 860.5 V 259.4 H 869.0 V 255.8 H 902.7 V 252.2 H 928.0 V 252.2 V 456 H 76.0 Z"/><path class="line" d="M 76.0 445.1 H 84.4 V 423.2 H 101.3 V 419.6 H 109.7 V 416.0 H 126.6 V 412.3 H 168.8 V 405.0 H 194.1 V 401.4 H 202.5 V 397.8 H 211.0 V 394.1 H 219.4 V 390.5 H 286.9 V 386.8 H 295.3 V 383.2 H 303.8 V 375.9 H 312.2 V 372.3 H 329.1 V 368.6 H 354.4 V 365.0 H 396.6 V 357.7 H 405.0 V 350.4 H 447.2 V 346.8 H 464.0 V 339.5 H 472.5 V 335.9 H 480.9 V 332.2 H 489.3 V 325.0 H 506.2 V 317.7 H 514.7 V 314.0 H 548.4 V 310.4 H 607.4 V 303.1 H 624.3 V 299.5 H 666.5 V 292.2 H 674.9 V 288.6 H 725.5 V 284.9 H 742.4 V 277.6 H 793.0 V 274.0 H 801.5 V 270.4 H 835.2 V 266.7 H 843.6 V 263.1 H 860.5 V 259.4 H 869.0 V 255.8 H 902.7 V 252.2 H 928.0 V 252.2"/>
+  <circle class="point" cx="928.0" cy="252.2" r="5"/>
+</svg>
