@@ -207,13 +207,11 @@ Action 会自动：
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=luodaoyi%2Fkomari-zig-agent&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=luodaoyi/komari-zig-agent&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=luodaoyi/komari-zig-agent&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=luodaoyi/komari-zig-agent&type=date&legend=top-left" />
- </picture>
+<a href="https://github.com/luodaoyi/komari-zig-agent/tree/star-history">
+  <img alt="Star History Chart" src="https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/star-history/star-history.svg" />
 </a>
+
+图表由仓库自身的 GitHub Actions 每日更新；历史数据和 SVG 保存在独立的 `star-history` 分支，不依赖第三方图表服务。
 
 ## 验证
 
