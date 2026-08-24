@@ -1,0 +1,34 @@
+language: zh-CN
+early_access: false
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: true
+    base_branches:
+      - main
+  path_filters:
+    - "!zig-cache/**"
+    - "!**/zig-cache/**"
+    - "!zig-out/**"
+    - "!**/zig-out/**"
+  path_instructions:
+    - path: "src/**/*.zig"
+      instructions: |
+        Zig 0.16 Komari agent，协议与字段必须对齐官方 Go agent 1.2.60。不要发明、重命名或省略上报/控制字段。
+        自更新必须校验 SHA256；不要建议跳过哈希或改用未约定的摘要算法。
+        Linux 目标包含 11 个架构（含 loong64），改动构建或条件编译时不要丢掉任一架构。
+        不要把 Issue #16 的 Windows WebShell 当成已完成；相关路径若仍缺能力，应标为未完成而不是宣称已实现。
+    - path: ".github/workflows/**"
+      instructions: |
+        核对 Linux 11 架构（含 loong64）构建/发布矩阵、Release 资产与 SHA256 校验。不要缩小架构列表或跳过校验步骤。
+    - path: "README*.md"
+      instructions: |
+        与官方 Go agent 的兼容说明必须准确。不要把 Issue #16 Windows WebShell 写成已完成，也不要编造未实现的协议字段。
+chat:
+  auto_reply: true
