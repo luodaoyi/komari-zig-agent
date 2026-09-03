@@ -36,3 +36,16 @@ test "register response requires success status" {
         \\{"status":"error","data":{"uuid":"u1","token":"tok1"}}
     ));
 }
+
+test "stored auto discovery config owns duplicated strings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const owned = blk: {
+        const bytes = try std.testing.allocator.dupe(u8, "{\"uuid\":\"u2\",\"token\":\"tok2\"}");
+        defer std.testing.allocator.free(bytes);
+        break :blk (try autodiscovery.parseStoredConfig(arena.allocator(), bytes)).?;
+    };
+    try std.testing.expectEqualStrings("u2", owned.uuid);
+    try std.testing.expectEqualStrings("tok2", owned.token);
+}

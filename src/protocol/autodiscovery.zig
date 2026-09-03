@@ -4,6 +4,7 @@ const types = @import("types.zig");
 const config = @import("../config.zig");
 const http = @import("http.zig");
 const compat = @import("compat");
+const debug = @import("debug");
 
 /// Auto-discovery registration and cached token handling.
 pub const AutoDiscoveryConfig = struct {
@@ -29,6 +30,23 @@ pub fn load(allocator: std.mem.Allocator) !?AutoDiscoveryConfig {
     return parseStoredConfig(allocator, bytes);
 }
 
+pub fn clearCache(allocator: std.mem.Allocator) !void {
+    const path = try configPath(allocator);
+    defer allocator.free(path);
+    compat.deleteFileAbsolute(path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+}
+
+/// Drop the cached token and register again with the auto-discovery key.
+pub fn invalidateAndRegister(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    if (cfg.auto_discovery_key.len == 0) return;
+    try clearCache(allocator);
+    debug.log("auto-discovery: cached token rejected, re-registering", .{});
+    try register(allocator, cfg);
+}
+
 pub fn save(allocator: std.mem.Allocator, value: AutoDiscoveryConfig) !void {
     const path = try configPath(allocator);
     defer allocator.free(path);
@@ -43,16 +61,23 @@ pub fn save(allocator: std.mem.Allocator, value: AutoDiscoveryConfig) !void {
 pub fn applyExistingToken(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     if (cfg.auto_discovery_key.len == 0) return;
     if (load(allocator) catch null) |stored| {
+        debug.log("auto-discovery: using cached token uuid={s}", .{stored.uuid});
         cfg.token = stored.token;
         return;
     }
+    debug.log("auto-discovery: cache miss, registering", .{});
     try register(allocator, cfg);
+    debug.log("auto-discovery: registered successfully", .{});
 }
 
 pub fn parseStoredConfig(allocator: std.mem.Allocator, bytes: []const u8) !?AutoDiscoveryConfig {
-    const parsed = std.json.parseFromSliceLeaky(AutoDiscoveryConfig, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return null;
-    if (parsed.token.len == 0) return null;
-    return parsed;
+    var parsed = std.json.parseFromSlice(AutoDiscoveryConfig, allocator, bytes, .{ .ignore_unknown_fields = true }) catch return null;
+    defer parsed.deinit();
+    if (parsed.value.token.len == 0) return null;
+    return .{
+        .uuid = try allocator.dupe(u8, parsed.value.uuid),
+        .token = try allocator.dupe(u8, parsed.value.token),
+    };
 }
 
 pub fn allocRegisterRequest(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {

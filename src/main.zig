@@ -126,7 +126,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     printMonitoringLists(allocator, cfg) catch {};
 
     if (shutdown_requested.load(.acquire)) return;
-    const startup_outcome = try runForegroundBasicInfoUpload(allocator, cfg, false, .startup);
+    var startup_outcome = try runForegroundBasicInfoUpload(allocator, cfg, false, .startup);
+    startup_outcome = try refreshAutoDiscoveryAfterUnauthorized(config_allocator, &cfg, allocator, startup_outcome);
     if (shutdown_requested.load(.acquire)) return;
     startBasicInfoLoop(allocator, cfg, basic_info_flow.shouldStartBackgroundLoopImmediately(startup_outcome));
 
@@ -140,6 +141,24 @@ pub fn main(init: std.process.Init.Minimal) !void {
         _ = try runForegroundBasicInfoUpload(allocator, cfg, false, .websocket_reconnect);
     }
     try stdout.writeAll("shutting down gracefully...\n");
+}
+
+
+fn refreshAutoDiscoveryAfterUnauthorized(
+    config_allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    allocator: std.mem.Allocator,
+    outcome: basic_info_flow.ForegroundUploadOutcome,
+) !basic_info_flow.ForegroundUploadOutcome {
+    const err = switch (outcome) {
+        .failure => |e| e,
+        else => return outcome,
+    };
+    if (err != error.HttpUnauthorized) return outcome;
+    if (cfg.auto_discovery_key.len == 0) return outcome;
+    debug.log("basic info unauthorized with auto-discovery; invalidating cached token", .{});
+    try autodiscovery.invalidateAndRegister(config_allocator, cfg);
+    return try runForegroundBasicInfoUpload(allocator, cfg.*, false, .startup);
 }
 
 fn runPingDiagnostic(allocator: std.mem.Allocator, args: []const []const u8) !bool {

@@ -4,6 +4,7 @@ const idna = @import("idna");
 const raw_conn = @import("raw_conn.zig");
 const net = @import("net");
 const compat = @import("compat");
+const debug = @import("debug");
 
 /// HTTP and proxy helpers shared by agent protocol clients.
 pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
@@ -235,6 +236,19 @@ pub fn getToFileSha256Cfg(allocator: std.mem.Allocator, url: []const u8, cfg: an
 pub fn trimEndpoint(endpoint: []const u8) []const u8 {
     return std.mem.trimEnd(u8, endpoint, "/");
 }
+
+/// Format an HTTP Host header value (hostname or [ipv6], plus non-default port).
+pub fn formatHostHeader(allocator: std.mem.Allocator, host: []const u8, port: u16, use_tls: bool) ![]const u8 {
+    const default_port: u16 = if (use_tls) 443 else 80;
+    const is_ipv6 = std.mem.indexOfScalar(u8, host, ':') != null;
+    if (port == default_port) {
+        if (is_ipv6) return std.fmt.allocPrint(allocator, "[{s}]", .{host});
+        return allocator.dupe(u8, host);
+    }
+    if (is_ipv6) return std.fmt.allocPrint(allocator, "[{s}]:{d}", .{ host, port });
+    return std.fmt.allocPrint(allocator, "{s}:{d}", .{ host, port });
+}
+
 
 pub fn basicInfoUrl(allocator: std.mem.Allocator, endpoint: []const u8, token: []const u8) ![]const u8 {
     const raw = try std.fmt.allocPrint(allocator, "{s}/api/clients/uploadBasicInfo?token={s}", .{ trimEndpoint(endpoint), token });
@@ -472,7 +486,10 @@ fn requestReadWithFamilyHeaders(
             redirects += 1;
             continue;
         }
+        debug.log("http request failed status={d}", .{response.status});
+        const failed_status = response.status;
         response.deinit(allocator);
+        if (failed_status == 401 or failed_status == 403) return error.HttpUnauthorized;
         return error.HttpStatusNotOk;
     }
 }
@@ -512,7 +529,9 @@ fn requestReadWithFamilyHeadersOnce(
         var req = std.Io.Writer.Allocating.init(allocator);
         defer req.deinit();
         const request_target = if (raw.proxied_plain) url else path;
-        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, request_target, host, user_agent });
+        const host_header = try formatHostHeader(allocator, host, port, use_tls);
+        defer allocator.free(host_header);
+        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, request_target, host_header, user_agent });
         if (raw.proxy_authorization) |authorization_value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization_value});
         if (payload.len != 0) {
             try req.writer.print("Content-Type: {s}\r\nContent-Length: {d}\r\n", .{ content_type, payload.len });
@@ -536,11 +555,14 @@ fn requestReadWithFamilyHeadersOnce(
         };
         errdefer allocator.free(response.body);
         if (response.status == 200 or isRedirectStatus(response.status)) return response;
+        debug.log("http attempt failed status={d}", .{response.status});
+        const failed_status = response.status;
         response.deinit(allocator);
         if (attempt < max_retries) {
             compat.sleep(2 * std.time.ns_per_s);
             continue;
         }
+        if (failed_status == 401 or failed_status == 403) return error.HttpUnauthorized;
         return error.HttpStatusNotOk;
     }
 }
@@ -593,7 +615,9 @@ fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: a
         var req = std.Io.Writer.Allocating.init(allocator);
         defer req.deinit();
         const request_target = if (raw.proxied_plain) url else path;
-        try req.writer.print("GET {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n", .{ request_target, host });
+        const host_header = try formatHostHeader(allocator, host, port, use_tls);
+        defer allocator.free(host_header);
+        try req.writer.print("GET {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n", .{ request_target, host_header });
         if (raw.proxy_authorization) |authorization_value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization_value});
         try req.writer.writeAll("\r\n");
         const request = try req.toOwnedSlice();

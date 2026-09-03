@@ -274,3 +274,36 @@ test "proxy environment wildcard bypasses all proxy use" {
         .no_proxy_lower = "*",
     }));
 }
+
+test "formatHostHeader includes non-default port and brackets ipv6" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqualStrings("panel.example", try http.formatHostHeader(allocator, "panel.example", 443, true));
+    try std.testing.expectEqualStrings("panel.example", try http.formatHostHeader(allocator, "panel.example", 80, false));
+    try std.testing.expectEqualStrings("panel.example:25774", try http.formatHostHeader(allocator, "panel.example", 25774, false));
+    try std.testing.expectEqualStrings("panel.example:8443", try http.formatHostHeader(allocator, "panel.example", 8443, true));
+    try std.testing.expectEqualStrings("[2001:db8::1]", try http.formatHostHeader(allocator, "2001:db8::1", 443, true));
+    try std.testing.expectEqualStrings("[2001:db8::1]:25774", try http.formatHostHeader(allocator, "2001:db8::1", 25774, false));
+}
+
+test "http client sends Host with non-default port" {
+    const responses = [_][]const u8{
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    };
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    const url = try server.url(std.testing.allocator, "/ping");
+    defer std.testing.allocator.free(url);
+    const body = try http.getReadCfg(std.testing.allocator, url, config.Config{});
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("ok", body);
+
+    var finished = try server.finish();
+    defer finished.deinit();
+    try std.testing.expectEqual(@as(usize, 1), finished.requests.len);
+    const host = finished.requests[0].header("Host") orelse return error.TestUnexpectedResult;
+    // Ephemeral listen port is never 80, so Host must include :port (matches Go net/http).
+    try std.testing.expect(std.mem.startsWith(u8, host, "127.0.0.1:"));
+    try std.testing.expect(!std.mem.eql(u8, host, "127.0.0.1"));
+}
