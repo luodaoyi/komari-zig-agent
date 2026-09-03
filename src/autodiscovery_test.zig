@@ -42,9 +42,7 @@ test "stored auto discovery config owns duplicated strings" {
     defer arena.deinit();
 
     const owned = blk: {
-        const bytes = try std.testing.allocator.dupe(u8,
-            \{"uuid":"u2","token":"tok2"}
-        );
+        const bytes = try std.testing.allocator.dupe(u8, "{\"uuid\":\"u2\",\"token\":\"tok2\"}");
         defer std.testing.allocator.free(bytes);
         break :blk (try autodiscovery.parseStoredConfig(arena.allocator(), bytes)).?;
     };
