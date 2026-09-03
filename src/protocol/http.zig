@@ -486,7 +486,7 @@ fn requestReadWithFamilyHeaders(
             redirects += 1;
             continue;
         }
-        debug.log("http request failed status={d} url={s}", .{ response.status, current_url });
+        debug.log("http request failed status={d}", .{response.status});
         const failed_status = response.status;
         response.deinit(allocator);
         if (failed_status == 401 or failed_status == 403) return error.HttpUnauthorized;
@@ -555,7 +555,7 @@ fn requestReadWithFamilyHeadersOnce(
         };
         errdefer allocator.free(response.body);
         if (response.status == 200 or isRedirectStatus(response.status)) return response;
-        debug.log("http attempt failed status={d} url={s}", .{ response.status, url });
+        debug.log("http attempt failed status={d}", .{response.status});
         const failed_status = response.status;
         response.deinit(allocator);
         if (attempt < max_retries) {
