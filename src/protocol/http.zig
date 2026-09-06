@@ -5,6 +5,7 @@ const raw_conn = @import("raw_conn.zig");
 const net = @import("net");
 const compat = @import("compat");
 const debug = @import("debug");
+const dns = @import("dns");
 
 /// HTTP and proxy helpers shared by agent protocol clients.
 pub const max_response_body_bytes: usize = 64 * 1024 * 1024;
@@ -157,6 +158,77 @@ pub fn writeResponseToFileSha256ForTest(allocator: std.mem.Allocator, response: 
 
 pub fn resolveRedirectUrlForTest(allocator: std.mem.Allocator, base_url: []const u8, location: []const u8) ![]const u8 {
     return resolveRedirectUrl(allocator, base_url, location);
+}
+
+pub const AddressStatusDecision = enum {
+    accept,
+    unauthorized,
+    try_next,
+};
+
+/// Decide whether an HTTP status should accept the address, fail auth, or rotate.
+pub fn httpStatusAddressDecision(status: u16) AddressStatusDecision {
+    if (status == 200 or isRedirectStatus(status)) return .accept;
+    if (status == 401 or status == 403) return .unauthorized;
+    return .try_next;
+}
+
+pub fn httpStatusAddressDecisionForTest(status: u16) AddressStatusDecision {
+    return httpStatusAddressDecision(status);
+}
+
+/// Expose process proxy lookup for websocket address failover.
+pub fn processProxyUrl(allocator: std.mem.Allocator, scheme: []const u8, host: []const u8, port: u16) !?[]const u8 {
+    return proxyFromProcess(allocator, scheme, host, port);
+}
+
+/// Test helper: try each address for a plain HTTP GET until 200.
+pub fn requestReadViaAddressesForTest(
+    allocator: std.mem.Allocator,
+    addrs: []const net.Address,
+    path: []const u8,
+    host: []const u8,
+    timeout_ms: u64,
+) ![]u8 {
+    const response = try requestReadOverAddresses(
+        allocator,
+        addrs,
+        .any,
+        "GET",
+        path,
+        "",
+        "",
+        "komari-zig-agent",
+        .{},
+        false,
+        host,
+        struct {
+            ignore_unsafe_cert: bool = false,
+            custom_dns: []const u8 = "",
+            max_retries: i32 = 0,
+            cf_access_client_id: []const u8 = "",
+            cf_access_client_secret: []const u8 = "",
+        }{},
+        timeout_ms,
+    );
+    errdefer response.deinit(allocator);
+    switch (httpStatusAddressDecision(response.status)) {
+        .accept => {
+            if (response.status != 200) {
+                response.deinit(allocator);
+                return error.HttpStatusNotOk;
+            }
+            return response.body;
+        },
+        .unauthorized => {
+            response.deinit(allocator);
+            return error.HttpUnauthorized;
+        },
+        .try_next => {
+            response.deinit(allocator);
+            return error.HttpStatusNotOk;
+        },
+    }
 }
 
 pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
@@ -517,54 +589,206 @@ fn requestReadWithFamilyHeadersOnce(
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family, timeout_ms) catch |err| {
+        const response = requestReadAttemptWithAddressFailover(
+            allocator,
+            uri.scheme,
+            host,
+            port,
+            use_tls,
+            path,
+            url,
+            method,
+            payload,
+            content_type,
+            cfg,
+            family,
+            user_agent,
+            headers,
+            timeout_ms,
+        ) catch |err| {
+            if (err == error.HttpUnauthorized) return err;
             if (attempt < max_retries) {
                 compat.sleep(2 * std.time.ns_per_s);
                 continue;
             }
             return err;
         };
-        var conn = raw.conn;
-        defer raw.close(allocator);
-        var req = std.Io.Writer.Allocating.init(allocator);
-        defer req.deinit();
-        const request_target = if (raw.proxied_plain) url else path;
-        const host_header = try formatHostHeader(allocator, host, port, use_tls);
-        defer allocator.free(host_header);
-        try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, request_target, host_header, user_agent });
-        if (raw.proxy_authorization) |authorization_value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization_value});
-        if (payload.len != 0) {
-            try req.writer.print("Content-Type: {s}\r\nContent-Length: {d}\r\n", .{ content_type, payload.len });
-        }
-        var cf: [2]std.http.Header = undefined;
-        for (cloudflareHeaders(cfg, &cf)) |header| try req.writer.print("{s}: {s}\r\n", .{ header.name, header.value });
-        if (headers.authorization) |authorization| try req.writer.print("Authorization: {s}\r\n", .{authorization});
-        if (headers.content_encoding) |content_encoding| try req.writer.print("Content-Encoding: {s}\r\n", .{content_encoding});
-        try req.writer.writeAll("\r\n");
-        if (payload.len != 0) try req.writer.writeAll(payload);
-        const request = try req.toOwnedSlice();
-        defer allocator.free(request);
-        try conn.writer().writeAll(request);
-        try conn.flush();
-        const response = readHttpResponse(allocator, conn.reader()) catch |err| {
-            if (attempt < max_retries) {
-                compat.sleep(2 * std.time.ns_per_s);
-                continue;
-            }
-            return err;
-        };
-        errdefer allocator.free(response.body);
-        if (response.status == 200 or isRedirectStatus(response.status)) return response;
-        debug.log("http attempt failed status={d}", .{response.status});
-        const failed_status = response.status;
-        response.deinit(allocator);
-        if (attempt < max_retries) {
-            compat.sleep(2 * std.time.ns_per_s);
-            continue;
-        }
-        if (failed_status == 401 or failed_status == 403) return error.HttpUnauthorized;
-        return error.HttpStatusNotOk;
+        return response;
     }
+}
+
+fn requestReadAttemptWithAddressFailover(
+    allocator: std.mem.Allocator,
+    scheme: []const u8,
+    host: []const u8,
+    port: u16,
+    use_tls: bool,
+    path: []const u8,
+    full_url: []const u8,
+    method: []const u8,
+    payload: []const u8,
+    content_type: []const u8,
+    cfg: anytype,
+    family: raw_conn.AddressFamily,
+    user_agent: []const u8,
+    headers: Headers,
+    timeout_ms: u64,
+) !HttpResponse {
+    const proxy_url = try proxyFromProcess(allocator, scheme, host, port);
+    defer if (proxy_url) |value| allocator.free(value);
+    if (proxy_url != null) {
+        const response = try requestReadViaRawConnection(
+            allocator,
+            try connectRawHttp(allocator, scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family, timeout_ms),
+            method,
+            path,
+            full_url,
+            host,
+            port,
+            use_tls,
+            payload,
+            content_type,
+            cfg,
+            user_agent,
+            headers,
+        );
+        switch (httpStatusAddressDecision(response.status)) {
+            .accept => return response,
+            .unauthorized => {
+                response.deinit(allocator);
+                return error.HttpUnauthorized;
+            },
+            .try_next => {
+                debug.log("http attempt failed status={d}", .{response.status});
+                response.deinit(allocator);
+                return error.HttpStatusNotOk;
+            },
+        }
+    }
+
+    const addrs = try dns.resolveHost(allocator, host, port, cfg.custom_dns);
+    defer allocator.free(addrs);
+    return requestReadOverAddresses(
+        allocator,
+        addrs,
+        family,
+        method,
+        path,
+        payload,
+        content_type,
+        user_agent,
+        headers,
+        use_tls,
+        host,
+        cfg,
+        timeout_ms,
+    );
+}
+
+fn requestReadOverAddresses(
+    allocator: std.mem.Allocator,
+    addrs: []const net.Address,
+    family: raw_conn.AddressFamily,
+    method: []const u8,
+    path: []const u8,
+    payload: []const u8,
+    content_type: []const u8,
+    user_agent: []const u8,
+    headers: Headers,
+    use_tls: bool,
+    host: []const u8,
+    cfg: anytype,
+    timeout_ms: u64,
+) !HttpResponse {
+    var last_err: ?anyerror = null;
+    var saw_status_not_ok = false;
+    for (addrs) |addr| {
+        if (!raw_conn.familyMatches(addr, family)) continue;
+        var addr_buf: [96]u8 = undefined;
+        const addr_text = raw_conn.formatAddress(&addr_buf, addr);
+        const conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, cfg.ignore_unsafe_cert, timeout_ms) catch |err| {
+            last_err = err;
+            debug.log("tcp connect failed via {s}: {s}", .{ addr_text, @errorName(err) });
+            continue;
+        };
+        const raw = RawConnection{ .conn = conn };
+        const response = requestReadViaRawConnection(
+            allocator,
+            raw,
+            method,
+            path,
+            path,
+            host,
+            net.getPort(addr),
+            use_tls,
+            payload,
+            content_type,
+            cfg,
+            user_agent,
+            headers,
+        ) catch |err| {
+            last_err = err;
+            debug.log("http request failed via {s}: {s}", .{ addr_text, @errorName(err) });
+            continue;
+        };
+        switch (httpStatusAddressDecision(response.status)) {
+            .accept => return response,
+            .unauthorized => {
+                debug.log("http unauthorized via {s} status={d}", .{ addr_text, response.status });
+                response.deinit(allocator);
+                return error.HttpUnauthorized;
+            },
+            .try_next => {
+                saw_status_not_ok = true;
+                last_err = error.HttpStatusNotOk;
+                debug.log("http skipping address {s} due to status={d}", .{ addr_text, response.status });
+                response.deinit(allocator);
+                continue;
+            },
+        }
+    }
+    if (saw_status_not_ok) return error.HttpStatusNotOk;
+    return last_err orelse error.ConnectFailed;
+}
+
+fn requestReadViaRawConnection(
+    allocator: std.mem.Allocator,
+    raw: RawConnection,
+    method: []const u8,
+    path: []const u8,
+    full_url: []const u8,
+    host: []const u8,
+    port: u16,
+    use_tls: bool,
+    payload: []const u8,
+    content_type: []const u8,
+    cfg: anytype,
+    user_agent: []const u8,
+    headers: Headers,
+) !HttpResponse {
+    var conn = raw.conn;
+    defer raw.close(allocator);
+    var req = std.Io.Writer.Allocating.init(allocator);
+    defer req.deinit();
+    const request_target = if (raw.proxied_plain) full_url else path;
+    const host_header = try formatHostHeader(allocator, host, port, use_tls);
+    defer allocator.free(host_header);
+    try req.writer.print("{s} {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: {s}\r\nConnection: close\r\n", .{ method, request_target, host_header, user_agent });
+    if (raw.proxy_authorization) |authorization_value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization_value});
+    if (payload.len != 0) {
+        try req.writer.print("Content-Type: {s}\r\nContent-Length: {d}\r\n", .{ content_type, payload.len });
+    }
+    var cf: [2]std.http.Header = undefined;
+    for (cloudflareHeaders(cfg, &cf)) |header| try req.writer.print("{s}: {s}\r\n", .{ header.name, header.value });
+    if (headers.authorization) |authorization| try req.writer.print("Authorization: {s}\r\n", .{authorization});
+    if (headers.content_encoding) |content_encoding| try req.writer.print("Content-Encoding: {s}\r\n", .{content_encoding});
+    try req.writer.writeAll("\r\n");
+    if (payload.len != 0) try req.writer.writeAll(payload);
+    const request = try req.toOwnedSlice();
+    defer allocator.free(request);
+    try conn.writer().writeAll(request);
+    try conn.flush();
+    return try readHttpResponse(allocator, conn.reader());
 }
 
 fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) ![32]u8 {

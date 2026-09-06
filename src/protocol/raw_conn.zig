@@ -186,7 +186,16 @@ pub fn rescanCaBundleForTest() !void {
     defer bundle.deinit(std.heap.page_allocator);
 }
 
-fn familyMatches(addr: net.Address, family: AddressFamily) bool {
+pub fn resolveAddresses(
+    allocator: std.mem.Allocator,
+    host: []const u8,
+    port: u16,
+    custom_dns: []const u8,
+) ![]net.Address {
+    return dns.resolveHost(allocator, host, port, custom_dns);
+}
+
+pub fn familyMatches(addr: net.Address, family: AddressFamily) bool {
     return switch (family) {
         .any => true,
         .ipv4 => net.isIpv4(addr),
@@ -199,7 +208,7 @@ fn connectStreamAddress(addr: net.Address, timeout_ms: u64) !net.Stream {
     return net.connectWithTimeout(addr, timeout_ms);
 }
 
-fn formatAddress(buf: *[96]u8, addr: net.Address) []const u8 {
+pub fn formatAddress(buf: *[96]u8, addr: net.Address) []const u8 {
     var writer: std.Io.Writer = .fixed(buf);
     addr.format(&writer) catch return "<invalid-address>";
     return writer.buffered();

@@ -163,3 +163,19 @@ fn expectArrayValue(object: std.json.ObjectMap, key: []const u8) !std.json.Array
     if (value != .array) return error.TestUnexpectedResult;
     return value.array;
 }
+
+
+test "sticky v1 is set only after successful v1 fallback connect" {
+    report_ws.initRequestedProtocolVersionForTest(2);
+    report_ws.resetConnectionProtocolVersionForTest();
+    defer report_ws.resetConnectionProtocolVersionForTest();
+
+    report_ws.applyV1FallbackConnectResultForTest(false);
+    try std.testing.expectEqual(@as(i32, 2), report_ws.uploadProtocolVersionForTest());
+
+    report_ws.applyV1FallbackConnectResultForTest(true);
+    try std.testing.expectEqual(@as(i32, 1), report_ws.uploadProtocolVersionForTest());
+
+    report_ws.prepareReconnectCycleForTest();
+    try std.testing.expectEqual(@as(i32, 2), report_ws.uploadProtocolVersionForTest());
+}

@@ -83,6 +83,28 @@ pub fn resetConnectionProtocolVersionForTest() void {
     v2_state.resetConnectionProtocolVersion();
 }
 
+pub fn uploadProtocolVersionForTest() i32 {
+    return v2_state.uploadProtocolVersion();
+}
+
+fn applyV1FallbackConnectResult(connect_ok: bool) void {
+    if (connect_ok) {
+        v2_state.setConnectionProtocolVersion(1);
+        v2_state.resetV2ProtocolFailures(1);
+    } else {
+        v2_state.resetConnectionProtocolVersion();
+    }
+}
+
+/// Test wrapper around sticky-v1 rules without network I/O.
+pub fn applyV1FallbackConnectResultForTest(connect_ok: bool) void {
+    applyV1FallbackConnectResult(connect_ok);
+}
+
+pub fn prepareReconnectCycleForTest() void {
+    v2_state.resetConnectionProtocolVersion();
+}
+
 fn writeReportOnce(allocator: std.mem.Allocator, ws: *ws_client.Client, cfg: config.Config) !void {
     const snap = try provider.snapshotWithOptions(snapshotOptions(cfg));
     var owns_gpu_json = true;
@@ -212,12 +234,14 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client
     const ws = ws_client.connect(allocator, url, cfg) catch |err| {
         const attempt = v2_state.noteV2AttemptResult(protocol_version, err);
         if (attempt.fallback) {
-            v2_state.setConnectionProtocolVersion(1);
             const fallback_url = try http.reportWsUrlForProtocol(allocator, cfg.endpoint, cfg.token, 1);
             defer allocator.free(fallback_url);
-            const fallback_ws = try ws_client.connect(allocator, fallback_url, cfg);
-            v2_state.setConnectionProtocolVersion(1);
-            v2_state.resetV2ProtocolFailures(1);
+            const fallback_ws = ws_client.connect(allocator, fallback_url, cfg) catch |fallback_err| {
+                // Failed v1 fallback must not stick; next reconnect cycle prefers requested v2 again.
+                applyV1FallbackConnectResult(false);
+                return fallback_err;
+            };
+            applyV1FallbackConnectResult(true);
             return fallback_ws;
         }
         return err;
@@ -266,6 +290,8 @@ fn runPostFallback(allocator: std.mem.Allocator, cfg: config.Config, stop_reques
 }
 
 fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*const std.atomic.Value(bool)) !*ws_client.Client {
+    // Prefer requested protocol on each reconnect cycle (clears sticky v1 after a dropped session).
+    v2_state.resetConnectionProtocolVersion();
     var retry: i32 = 0;
     while (retry <= cfg.max_retries) : (retry += 1) {
         if (isStopRequested(stop_requested)) return error.ShutdownRequested;

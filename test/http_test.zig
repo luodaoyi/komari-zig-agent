@@ -1,6 +1,7 @@
 const std = @import("std");
 const config = @import("config");
 const http = @import("protocol_http");
+const net = @import("net");
 const local_http = @import("local_http.zig");
 
 test "endpoint helpers trim slash and place token query" {
@@ -306,4 +307,38 @@ test "http client sends Host with non-default port" {
     // Ephemeral listen port is never 80, so Host must include :port (matches Go net/http).
     try std.testing.expect(std.mem.startsWith(u8, host, "127.0.0.1:"));
     try std.testing.expect(!std.mem.eql(u8, host, "127.0.0.1"));
+}
+
+
+test "http status address decision accepts redirects and rejects unauthorized" {
+    try std.testing.expectEqual(http.AddressStatusDecision.accept, http.httpStatusAddressDecisionForTest(200));
+    try std.testing.expectEqual(http.AddressStatusDecision.accept, http.httpStatusAddressDecisionForTest(302));
+    try std.testing.expectEqual(http.AddressStatusDecision.unauthorized, http.httpStatusAddressDecisionForTest(401));
+    try std.testing.expectEqual(http.AddressStatusDecision.unauthorized, http.httpStatusAddressDecisionForTest(403));
+    try std.testing.expectEqual(http.AddressStatusDecision.try_next, http.httpStatusAddressDecisionForTest(404));
+    try std.testing.expectEqual(http.AddressStatusDecision.try_next, http.httpStatusAddressDecisionForTest(502));
+}
+
+test "http client rotates to next address after non-200 status" {
+    const bad_responses = [_][]const u8{
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    };
+    const good_responses = [_][]const u8{
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    };
+    var bad = try local_http.Server.start(std.testing.allocator, &bad_responses);
+    defer bad.join() catch {};
+    var good = try local_http.Server.start(std.testing.allocator, &good_responses);
+    defer good.join() catch {};
+
+    const bad_port = bad.ctx.listener.socket.address.getPort();
+    const good_port = good.ctx.listener.socket.address.getPort();
+    const addrs = [_]net.Address{
+        try net.parseIp("127.0.0.1", bad_port),
+        try net.parseIp("127.0.0.1", good_port),
+    };
+
+    const body = try http.requestReadViaAddressesForTest(std.testing.allocator, &addrs, "/", "127.0.0.1", 5_000);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("ok", body);
 }
