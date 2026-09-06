@@ -202,7 +202,13 @@ pub fn requestReadViaAddressesForTest(
         .{},
         false,
         host,
-        false,
+        struct {
+            ignore_unsafe_cert: bool = false,
+            custom_dns: []const u8 = "",
+            max_retries: i32 = 0,
+            cf_access_client_id: []const u8 = "",
+            cf_access_client_secret: []const u8 = "",
+        }{},
         timeout_ms,
     );
     errdefer response.deinit(allocator);
@@ -662,7 +668,7 @@ fn requestReadAttemptWithAddressFailover(
         headers,
         use_tls,
         host,
-        cfg.ignore_unsafe_cert,
+        cfg,
         timeout_ms,
     );
 }
@@ -679,7 +685,7 @@ fn requestReadOverAddresses(
     headers: Headers,
     use_tls: bool,
     host: []const u8,
-    ignore_unsafe_cert: bool,
+    cfg: anytype,
     timeout_ms: u64,
 ) !HttpResponse {
     var last_err: ?anyerror = null;
@@ -688,7 +694,7 @@ fn requestReadOverAddresses(
         if (!raw_conn.familyMatches(addr, family)) continue;
         var addr_buf: [96]u8 = undefined;
         const addr_text = raw_conn.formatAddress(&addr_buf, addr);
-        const conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, ignore_unsafe_cert, timeout_ms) catch |err| {
+        const conn = raw_conn.RawConn.connectResolved(allocator, addr, host, use_tls, cfg.ignore_unsafe_cert, timeout_ms) catch |err| {
             last_err = err;
             debug.log("tcp connect failed via {s}: {s}", .{ addr_text, @errorName(err) });
             continue;
@@ -705,7 +711,7 @@ fn requestReadOverAddresses(
             use_tls,
             payload,
             content_type,
-            EmptyCfg{},
+            cfg,
             user_agent,
             headers,
         ) catch |err| {
@@ -732,14 +738,6 @@ fn requestReadOverAddresses(
     if (saw_status_not_ok) return error.HttpStatusNotOk;
     return last_err orelse error.ConnectFailed;
 }
-
-const EmptyCfg = struct {
-    ignore_unsafe_cert: bool = false,
-    custom_dns: []const u8 = "",
-    max_retries: i32 = 0,
-    cf_access_client_id: []const u8 = "",
-    cf_access_client_secret: []const u8 = "",
-};
 
 fn requestReadViaRawConnection(
     allocator: std.mem.Allocator,
