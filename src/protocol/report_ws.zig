@@ -87,14 +87,18 @@ pub fn uploadProtocolVersionForTest() i32 {
     return v2_state.uploadProtocolVersion();
 }
 
-/// Mirrors connectReportWs sticky-v1 rules without network I/O.
-pub fn applyV1FallbackConnectResultForTest(connect_ok: bool) void {
+fn applyV1FallbackConnectResult(connect_ok: bool) void {
     if (connect_ok) {
         v2_state.setConnectionProtocolVersion(1);
         v2_state.resetV2ProtocolFailures(1);
     } else {
         v2_state.resetConnectionProtocolVersion();
     }
+}
+
+/// Test wrapper around sticky-v1 rules without network I/O.
+pub fn applyV1FallbackConnectResultForTest(connect_ok: bool) void {
+    applyV1FallbackConnectResult(connect_ok);
 }
 
 pub fn prepareReconnectCycleForTest() void {
@@ -234,11 +238,10 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client
             defer allocator.free(fallback_url);
             const fallback_ws = ws_client.connect(allocator, fallback_url, cfg) catch |fallback_err| {
                 // Failed v1 fallback must not stick; next reconnect cycle prefers requested v2 again.
-                v2_state.resetConnectionProtocolVersion();
+                applyV1FallbackConnectResult(false);
                 return fallback_err;
             };
-            v2_state.setConnectionProtocolVersion(1);
-            v2_state.resetV2ProtocolFailures(1);
+            applyV1FallbackConnectResult(true);
             return fallback_ws;
         }
         return err;
