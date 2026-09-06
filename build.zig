@@ -328,6 +328,7 @@ fn addTest(
     addCompatImports(protocol_ws_client, compat_module, net_module);
     protocol_ws_client.addImport("debug", debug_module);
     protocol_ws_client.addImport("idna", idna_module);
+    protocol_ws_client.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_ws_client", protocol_ws_client);
     tests.root_module.addImport("protocol_report_timing", b.createModule(.{
         .root_source_file = b.path("src/protocol/report_timing.zig"),

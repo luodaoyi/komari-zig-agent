@@ -57,3 +57,29 @@ test "successful v2 attempt resets failure count" {
     try std.testing.expectEqual(@as(u32, 1), next.failures);
     try std.testing.expect(!next.fallback);
 }
+
+
+test "sticky connection version clears back to requested v2" {
+    v2_state.initRequestedProtocolVersion(2);
+    v2_state.resetConnectionProtocolVersion();
+    try std.testing.expectEqual(@as(i32, 2), v2_state.uploadProtocolVersion());
+
+    v2_state.setConnectionProtocolVersion(1);
+    try std.testing.expectEqual(@as(i32, 1), v2_state.uploadProtocolVersion());
+
+    v2_state.resetConnectionProtocolVersion();
+    try std.testing.expectEqual(@as(i32, 2), v2_state.uploadProtocolVersion());
+}
+
+test "v2 protocol handshake failures count toward fallback" {
+    v2_state.initRequestedProtocolVersion(2);
+    v2_state.resetConnectionProtocolVersion();
+
+    try std.testing.expect(v2_state.isV2ProtocolFailure(error.HttpStatusNotOk));
+    try std.testing.expect(v2_state.isV2ProtocolFailure(error.WebSocketHandshakeFailed));
+    try std.testing.expect(!v2_state.isV2ProtocolFailure(error.ConnectFailed));
+
+    const first = v2_state.noteV2AttemptResult(2, error.WebSocketHandshakeFailed);
+    try std.testing.expectEqual(@as(u32, 1), first.failures);
+    try std.testing.expect(!first.fallback);
+}
