@@ -637,7 +637,7 @@ fn requestReadAttemptWithAddressFailover(
     const proxy_url = try proxyFromProcess(allocator, scheme, host, port);
     defer if (proxy_url) |value| allocator.free(value);
     if (proxy_url != null) {
-        return requestReadViaRawConnection(
+        const response = try requestReadViaRawConnection(
             allocator,
             try connectRawHttp(allocator, scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family, timeout_ms),
             method,
@@ -652,6 +652,18 @@ fn requestReadAttemptWithAddressFailover(
             user_agent,
             headers,
         );
+        switch (httpStatusAddressDecision(response.status)) {
+            .accept => return response,
+            .unauthorized => {
+                response.deinit(allocator);
+                return error.HttpUnauthorized;
+            },
+            .try_next => {
+                debug.log("http attempt failed status={d}", .{response.status});
+                response.deinit(allocator);
+                return error.HttpStatusNotOk;
+            },
+        }
     }
 
     const addrs = try dns.resolveHost(allocator, host, port, cfg.custom_dns);
