@@ -3,6 +3,7 @@ const gpu = @import("gpu.zig");
 const std = @import("std");
 const netstatic = @import("report_netstatic");
 const compat = @import("compat");
+const debug = @import("debug");
 
 const safe_command_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -21,7 +22,7 @@ const NetworkSample = struct {
 /// FreeBSD collectors for system info, disks, and interfaces.
 pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
     const mem = sysctlInt("hw.physmem") catch 0;
-    return .{
+    var info = common.BasicInfo{
         .cpu = .{
             .name = try commandFirstLine(allocator, &.{ "sysctl", "-n", "hw.model" }, "Unknown"),
             .architecture = normalizeArch(@tagName(@import("builtin").cpu.arch)),
@@ -37,6 +38,10 @@ pub fn basicInfo(allocator: std.mem.Allocator) !common.BasicInfo {
         .gpu_name = try gpuName(allocator),
         .virtualization = try commandFirstLine(allocator, &.{ "kenv", "smbios.system.product" }, ""),
     };
+    fillLocalIp(allocator, &info) catch |err| {
+        debug.log("freebsd local IP collection failed: {s}", .{@errorName(err)});
+    };
+    return info;
 }
 
 pub fn snapshot(options: common.SnapshotOptions) !common.Snapshot {
@@ -245,7 +250,7 @@ fn parseNetstatFiltered(out: []const u8, include_nics: []const u8, exclude_nics:
     _ = lines.next();
     while (lines.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t");
-        const name = fields.next() orelse continue;
+        const name = normalizeNetstatIfaceName(fields.next() orelse continue);
         if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
         var vals: [12][]const u8 = undefined;
         var n: usize = 0;
@@ -262,23 +267,53 @@ fn parseNetstatFiltered(out: []const u8, include_nics: []const u8, exclude_nics:
 pub fn interfaceList(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) ![]const []const u8 {
     const out_bytes = commandOutput(allocator, &.{ "netstat", "-ibn" }) catch return allocator.alloc([]const u8, 0);
     defer allocator.free(out_bytes);
+    return parseNetstatInterfaceNames(allocator, out_bytes, include_nics, exclude_nics);
+}
+
+pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
+    return localIpFromIfconfig(allocator, include_nics, exclude_nics);
+}
+
+fn fillLocalIp(allocator: std.mem.Allocator, info: *common.BasicInfo) !void {
+    const local = try localIpFromInterfaces(allocator, "", "");
+    info.ipv4 = local.ipv4;
+    info.ipv6 = local.ipv6;
+}
+
+/// FreeBSD netstat appends '*' when an interface is down (e.g. ixl1*).
+pub fn normalizeNetstatIfaceName(name: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, name, "*")) return name[0 .. name.len - 1];
+    return name;
+}
+
+pub fn parseNetstatInterfaceNames(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    include_nics: []const u8,
+    exclude_nics: []const u8,
+) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (out.items) |item| allocator.free(item);
+        out.deinit(allocator);
+    }
     var seen = std.StringHashMap(void).init(allocator);
-    var lines = std.mem.splitScalar(u8, out_bytes, '\n');
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
     _ = lines.next();
     while (lines.next()) |line| {
         var fields = std.mem.tokenizeAny(u8, line, " \t");
-        const name = fields.next() orelse continue;
+        const name = normalizeNetstatIfaceName(fields.next() orelse continue);
         if (!shouldIncludeNetworkInterface(name, include_nics, exclude_nics)) continue;
         if (seen.contains(name)) continue;
         try seen.put(try allocator.dupe(u8, name), {});
         try out.append(allocator, try allocator.dupe(u8, name));
     }
     return out.toOwnedSlice(allocator);
-}
-
-pub fn localIpFromInterfaces(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
-    return localIpFromIfconfig(allocator, include_nics, exclude_nics);
 }
 
 fn shouldIncludeNetworkInterface(name: []const u8, include_nics: []const u8, exclude_nics: []const u8) bool {
@@ -302,17 +337,25 @@ fn csvMatches(csv: []const u8, needle: []const u8) bool {
 fn localIpFromIfconfig(allocator: std.mem.Allocator, include_nics: []const u8, exclude_nics: []const u8) !common.LocalIpInfo {
     const out = commandOutput(allocator, &.{"ifconfig"}) catch return .{};
     defer allocator.free(out);
+    const parsed = parseIfconfigLocalIp(out, include_nics, exclude_nics);
+    return .{
+        .ipv4 = if (parsed.ipv4.len != 0) try allocator.dupe(u8, parsed.ipv4) else "",
+        .ipv6 = if (parsed.ipv6.len != 0) try allocator.dupe(u8, parsed.ipv6) else "",
+    };
+}
+
+/// Pure ifconfig parser for unit tests on non-FreeBSD CI hosts.
+pub fn parseIfconfigLocalIp(bytes: []const u8, include_nics: []const u8, exclude_nics: []const u8) common.LocalIpInfo {
     var ipv4: []const u8 = "";
     var ipv6: []const u8 = "";
-    var current: []const u8 = "";
     var allowed = false;
-    var lines = std.mem.splitScalar(u8, out, '\n');
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line_raw| {
         const line = std.mem.trimEnd(u8, line_raw, " \t\r");
         if (line.len == 0) continue;
         if (line[0] != ' ' and line[0] != '\t') {
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-            current = line[0..colon];
+            const current = line[0..colon];
             allowed = shouldIncludeNetworkInterface(current, include_nics, exclude_nics);
             continue;
         }
@@ -321,10 +364,10 @@ fn localIpFromIfconfig(allocator: std.mem.Allocator, include_nics: []const u8, e
         const kind = fields.next() orelse continue;
         if (std.mem.eql(u8, kind, "inet")) {
             const addr = fields.next() orelse continue;
-            if (ipv4.len == 0) ipv4 = try allocator.dupe(u8, addr);
+            if (ipv4.len == 0) ipv4 = addr;
         } else if (std.mem.eql(u8, kind, "inet6")) {
             const addr = fields.next() orelse continue;
-            if (ipv6.len == 0 and !std.mem.startsWith(u8, addr, "fe80:")) ipv6 = try allocator.dupe(u8, addr);
+            if (ipv6.len == 0 and !std.mem.startsWith(u8, addr, "fe80:")) ipv6 = addr;
         }
         if (ipv4.len != 0 and ipv6.len != 0) break;
     }
