@@ -131,6 +131,7 @@ pub fn build(b: *std.Build) void {
         "test/dns_idna_test.zig",
         "test/basic_info_flow_test.zig",
         "test/linux_basic_info_test.zig",
+        "test/freebsd_basic_info_test.zig",
         "src/platform/gpu.zig",
         "test/windows_provider_test.zig",
         "test/disk_filter_test.zig",
@@ -281,6 +282,15 @@ fn addTest(
     platform_linux.addImport("debug", debug_module);
     platform_linux.addImport("report_netstatic", report_netstatic);
     tests.root_module.addImport("platform_linux", platform_linux);
+    const platform_freebsd = b.createModule(.{
+        .root_source_file = b.path("src/platform/freebsd.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addCompatImports(platform_freebsd, compat_module, net_module);
+    platform_freebsd.addImport("debug", debug_module);
+    platform_freebsd.addImport("report_netstatic", report_netstatic);
+    tests.root_module.addImport("platform_freebsd", platform_freebsd);
     const protocol_task = b.createModule(.{
         .root_source_file = b.path("src/protocol/task.zig"),
         .target = target,
