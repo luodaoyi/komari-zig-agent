@@ -219,7 +219,8 @@ fn loadCaBundleFreeBsd(bundle: *std.crypto.Certificate.Bundle) !void {
     );
 }
 
-/// Load CA certs by trying file paths then directories (Go/Linux-style).
+/// Load CA certs by trying file paths then directories (Go root_bsd-style).
+/// Files: stop after the first successful load. Directories: always scan all.
 /// Continues on FileNotFound/AccessDenied for individual candidates so a
 /// locked `/etc/ssl/cert.pem` does not block ca_root_nss under `/usr/local`.
 pub fn loadCaBundleFromCandidatePaths(
@@ -234,35 +235,39 @@ pub fn loadCaBundleFromCandidatePaths(
     bundle.map.clearRetainingCapacity();
 
     var last_err: ?anyerror = null;
-    scan_files: {
-        for (file_paths) |cert_file_path| {
-            if (bundle.addCertsFromFilePathAbsolute(gpa, io, now, cert_file_path)) |_| {
-                debug.log("tls ca bundle loaded from file {s}", .{cert_file_path});
-                break :scan_files;
-            } else |err| switch (err) {
-                error.FileNotFound, error.AccessDenied => {
-                    last_err = err;
-                    continue;
-                },
-                else => |e| return e,
-            }
-        }
+    var loaded_file = false;
+    var loaded_dir = false;
 
-        var loaded_dir = false;
-        for (dir_paths) |cert_dir_path| {
-            if (bundle.addCertsFromDirPathAbsolute(gpa, io, now, cert_dir_path)) |_| {
-                loaded_dir = true;
-                debug.log("tls ca bundle loaded from dir {s}", .{cert_dir_path});
-            } else |err| switch (err) {
-                error.FileNotFound, error.AccessDenied => {
-                    last_err = err;
-                    continue;
-                },
-                else => |e| return e,
-            }
+    // Files: stop after the first successful load (Go crypto/x509 root_bsd.go).
+    for (file_paths) |cert_file_path| {
+        if (bundle.addCertsFromFilePathAbsolute(gpa, io, now, cert_file_path)) |_| {
+            loaded_file = true;
+            debug.log("tls ca bundle loaded from file {s}", .{cert_file_path});
+            break;
+        } else |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => {
+                last_err = err;
+                continue;
+            },
+            else => |e| return e,
         }
-        if (!loaded_dir) return last_err orelse error.FileNotFound;
     }
+
+    // Directories: always scan all candidates, even after a successful file load.
+    for (dir_paths) |cert_dir_path| {
+        if (bundle.addCertsFromDirPathAbsolute(gpa, io, now, cert_dir_path)) |_| {
+            loaded_dir = true;
+            debug.log("tls ca bundle loaded from dir {s}", .{cert_dir_path});
+        } else |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => {
+                last_err = err;
+                continue;
+            },
+            else => |e| return e,
+        }
+    }
+
+    if (!loaded_file and !loaded_dir) return last_err orelse error.FileNotFound;
 
     bundle.bytes.shrinkAndFree(gpa, bundle.bytes.items.len);
 }
