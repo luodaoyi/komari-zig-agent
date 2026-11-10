@@ -1,6 +1,6 @@
 {
   "repository": "luodaoyi/komari-zig-agent",
-  "updated": "2026-11-09",
+  "updated": "2026-11-10",
   "points": [
     {
       "date": "2026-05-02",
@@ -520,6 +520,10 @@
     },
     {
       "date": "2026-11-09",
+      "stars": 84
+    },
+    {
+      "date": "2026-11-10",
       "stars": 84
     }
   ]
