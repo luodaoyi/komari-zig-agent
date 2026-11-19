@@ -89,13 +89,10 @@ jobs:
 
   linux-distro-test:
     name: Linux Distro Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: native-test
     container:
       image: ${{ matrix.image }}
-      volumes:
-        # Minimal Ubuntu images lack a CA bundle before apt installs it.
-        - /etc/ssl/certs/ca-certificates.crt:/ci-host-ca-certificates.crt:ro
     strategy:
       fail-fast: false
       matrix:
@@ -115,15 +112,6 @@ jobs:
           set -eu
           if command -v apt-get >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
-            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-              # Bootstrap verified HTTPS with the hosted runner's trusted CA bundle.
-              test -s /ci-host-ca-certificates.crt
-              mkdir -p /etc/ssl/certs
-              cp /ci-host-ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-              sed -i -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-                -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
-                /etc/apt/sources.list.d/ubuntu.sources
-            fi
             apt-get update
             apt-get install -y --no-install-recommends bash ca-certificates curl findutils git gzip tar xz-utils
           elif command -v dnf >/dev/null 2>&1; then
