@@ -232,6 +232,7 @@ run_env() {
 
 test_install_direct_success() {
   setup_case install_direct
+  printf 'old-agent\n' > "$INSTALL_DIR/agent"
   run_env sh "$ROOT/install.sh" --install-dir "$INSTALL_DIR" --install-service-name "$SERVICE" -e http://server -t token >/dev/null
   [ -x "$INSTALL_DIR/agent" ] &&
     assert_file_contains "/etc/systemd/system/${SERVICE}.service" "ExecStart=$INSTALL_DIR/agent -e http://server -t token" &&
@@ -311,7 +312,7 @@ test_replace_direct_success() {
   chmod 0755 "$target"
   run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >/dev/null
   assert_file_contains "$target" "komari test agent" &&
-    [ -f "$INSTALL_DIR/agent.go-backup.20260502010101" ]
+    assert_no_backup_files "$INSTALL_DIR"
 }
 
 test_replace_proxy_fallback_success() {
@@ -374,14 +375,48 @@ test_replace_preflight_failure_keeps_old() {
     assert_file_not_contains "$target" "komari test agent"
 }
 
-test_replace_start_failure_rolls_back() {
-  setup_case replace_rollback
+test_replace_start_failure_leaves_new_no_backup() {
+  setup_case replace_start_fail
   target="$INSTALL_DIR/agent"
   printf 'old-agent\n' > "$target"
   chmod 0755 "$target"
-  SCRIPT_TEST_SERVICE_START_FAIL=1 run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >/dev/null 2>&1 || true
-  assert_file_contains "$target" "old-agent" &&
-    assert_file_not_contains "$target" "komari test agent"
+  if SCRIPT_TEST_SERVICE_START_FAIL=1 run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >"$CASE/output" 2>&1; then
+    return 1
+  fi
+  assert_file_contains "$target" "komari test agent" &&
+    assert_file_contains "$CASE/output" "new binary retained" &&
+    assert_no_backup_files "$INSTALL_DIR"
+}
+
+test_replace_systemd_failures_leave_new_no_backup() {
+  for failure in restart health; do
+    setup_case "replace_systemd_$failure"
+    target="$INSTALL_DIR/agent"
+    printf 'old-agent\n' > "$target"
+    if SCRIPT_TEST_TARGET="$target" SCRIPT_TEST_SYSTEMD_CAT=1 \
+      SCRIPT_TEST_SYSTEMD_RESTART_FAIL="$([ "$failure" = restart ] && echo 1 || echo 0)" \
+      SCRIPT_TEST_HEALTH_FAIL="$([ "$failure" = health ] && echo 1 || echo 0)" \
+      run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >"$CASE/output" 2>&1; then
+      return 1
+    fi
+    assert_file_contains "$target" "komari test agent" || return 1
+    assert_file_contains "$CASE/output" "new binary retained" || return 1
+    assert_no_backup_files "$INSTALL_DIR" || return 1
+    [ "$(grep -c "systemctl restart " "$LOG")" = 1 ] || return 1
+  done
+}
+
+test_replace_preserves_existing_backups() {
+  setup_case replace_existing_backup
+  target="$INSTALL_DIR/agent"
+  printf 'old-agent\n' > "$target"
+  printf 'historical-backup\n' > "$target.go-backup.previous"
+  printf 'historical-bak\n' > "$target.bak"
+  run_env sh "$ROOT/replace.sh" --binary "$target" --service "$SERVICE" >/dev/null || return 1
+  assert_file_contains "$target" "komari test agent" &&
+    assert_file_contains "$target.go-backup.previous" "historical-backup" &&
+    assert_file_contains "$target.bak" "historical-bak" &&
+    [ "$(find "$INSTALL_DIR" -type f | wc -l)" -eq 3 ]
 }
 
 test_replace_systemd_discovery() {
@@ -396,7 +431,7 @@ test_replace_systemd_discovery() {
 
 assert_no_backup_files() {
   dir="$1"
-  ! find "$dir" -name '*.go-backup.*' -o -name '*.bak' | grep . >/dev/null 2>&1
+  ! find "$dir" \( -name '*.go-backup.*' -o -name '*.bak' -o -name '*.zig-new.*' \) | grep . >/dev/null 2>&1
 }
 
 test_update_binary_direct_success_no_backup() {
@@ -480,7 +515,13 @@ test_update_binary_restart_failure_leaves_new_no_backup() {
 
 run_test() {
   name="$1"
-  if "$name"; then
+  if "$name" && {
+    case "$name" in
+      test_replace_preserves_existing_backups) true ;;
+      test_replace_*|test_install_*) assert_no_backup_files "$INSTALL_DIR" ;;
+      *) true ;;
+    esac
+  }; then
     ok "$name"
   else
     not_ok "$name"
@@ -502,7 +543,9 @@ run_test test_replace_slow_direct_switches_to_proxy_once
 run_test test_replace_proxy_checksum_fallback_success
 run_test test_replace_checksum_failure_keeps_old
 run_test test_replace_preflight_failure_keeps_old
-run_test test_replace_start_failure_rolls_back
+run_test test_replace_start_failure_leaves_new_no_backup
+run_test test_replace_systemd_failures_leave_new_no_backup
+run_test test_replace_preserves_existing_backups
 run_test test_replace_systemd_discovery
 run_test test_update_binary_direct_success_no_backup
 run_test test_update_binary_slow_direct_switches_to_proxy_once
