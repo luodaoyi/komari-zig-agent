@@ -9,7 +9,6 @@ github_proxy_list="${KOMARI_GITHUB_PROXIES:-https://gh.llkk.cc https://gh-proxy.
 binary_path=""
 install_dir="/opt/komari"
 tmp=""
-backup=""
 download_connect_timeout="${KOMARI_DOWNLOAD_CONNECT_TIMEOUT:-8}"
 download_max_time="${KOMARI_DOWNLOAD_MAX_TIME:-20}"
 download_low_speed_limit="${KOMARI_DOWNLOAD_LOW_SPEED_LIMIT:-1024}"
@@ -320,18 +319,6 @@ service_healthy() {
   return 0
 }
 
-rollback() {
-  reason="$1"
-  err "$reason"
-  if [ -n "$backup" ] && [ -f "$backup" ]; then
-    log "restoring backup: ${backup}"
-    cp "$backup" "$target"
-    chmod 0755 "$target"
-    start_service >/dev/null 2>&1 || true
-  fi
-  exit 1
-}
-
 asset="komari-agent-${os_name}-${arch}"
 if [ -n "$install_version" ]; then
   release_path="download/${install_version}"
@@ -344,7 +331,6 @@ checksums_url="https://github.com/${repo}/releases/${release_path}/SHA256SUMS"
 target="$(find_binary)"
 target_dir="$(dirname "$target")"
 tmp="${target}.zig-new.$$"
-backup="${target}.go-backup.$(date +%Y%m%d%H%M%S)"
 
 log "repo: ${repo}"
 log "asset: ${asset}"
@@ -354,18 +340,14 @@ mkdir -p "$target_dir"
 download_binary_with_fallback "$url" "$checksums_url" "$tmp" || die "failed to download release asset"
 
 stop_service
-if [ -f "$target" ]; then
-  cp "$target" "$backup"
-  log "backup: ${backup}"
-fi
 mv "$tmp" "$target"
 chmod 0755 "$target"
 if ! start_service; then
-  rollback "service failed to start after replacement"
+  die "service failed to start after replacement; new binary retained (no backup or automatic rollback)"
 fi
 sleep 2
 if ! service_healthy; then
-  rollback "service is not healthy after replacement"
+  die "service is not healthy after replacement; new binary retained (no backup or automatic rollback)"
 fi
 
 log "replacement completed"

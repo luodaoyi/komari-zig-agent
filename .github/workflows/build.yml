@@ -296,7 +296,7 @@ jobs:
 
   linux-arch-agent-smoke:
     name: Linux Arch Agent Smoke (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     strategy:
       fail-fast: false
