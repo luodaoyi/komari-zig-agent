@@ -89,7 +89,7 @@ jobs:
 
   linux-distro-test:
     name: Linux Distro Test (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: native-test
     container:
       image: ${{ matrix.image }}
