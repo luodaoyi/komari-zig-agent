@@ -30,6 +30,8 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Test
         run: zig build test
+      - name: GPU temperature old/new Go decoder compatibility
+        run: go test -v test/gpu_temperature_compat_test.go
       - name: Build native agent
         run: zig build -Doptimize=ReleaseSmall -Dversion=dev
       - name: Native ICMP ping smoke

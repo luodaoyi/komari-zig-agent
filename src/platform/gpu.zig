@@ -199,10 +199,10 @@ fn parseFloat(value: []const u8) f64 {
 }
 
 // nvidia-smi CSV uses nounits; retain fractional Celsius values while keeping
-// unavailable, malformed and non-finite readings at the existing zero fallback.
+// unavailable, negative, malformed and non-finite readings at the zero fallback.
 fn parseTemperature(value: []const u8) f64 {
     const temperature = parseFloat(value);
-    return if (std.math.isFinite(temperature)) temperature else 0;
+    return if (std.math.isFinite(temperature) and temperature >= 0) temperature else 0;
 }
 
 fn parseInteger(value: []const u8) u64 {
@@ -273,7 +273,11 @@ test "NVIDIA temperatures retain finite Celsius values as JSON numbers" {
         .{ .input = "60", .expected = 60 },
         .{ .input = "  42.125 \t\r", .expected = 42.125 },
         .{ .input = "0", .expected = 0 },
-        .{ .input = "-2.5", .expected = -2.5 },
+        .{ .input = "-2.5", .expected = 0 },
+        .{ .input = "-0.25", .expected = 0 },
+        .{ .input = "-0", .expected = 0 },
+        .{ .input = "60.0", .expected = 60 },
+        .{ .input = "6e1", .expected = 60 },
         .{ .input = "N/A", .expected = 0 },
         .{ .input = "[Not Supported]", .expected = 0 },
         .{ .input = "", .expected = 0 },
@@ -301,6 +305,25 @@ test "NVIDIA temperatures retain finite Celsius values as JSON numbers" {
         try std.testing.expect(temperature == .float or temperature == .integer);
         if (case.expected >= 0 and @trunc(case.expected) == case.expected) {
             try std.testing.expect(temperature == .integer);
+            // Verify lexical integer tokens too: Go int rejects 60.0 and 6e1.
+            const token = try std.fmt.allocPrint(std.testing.allocator, "\"temperature\":{d}}}", .{@as(u64, @intFromFloat(case.expected))});
+            defer std.testing.allocator.free(token);
+            try std.testing.expect(std.mem.indexOf(u8, json, token) != null);
         }
+    }
+}
+
+test "NVIDIA Linux and Windows CSV fixtures preserve fractional temperatures" {
+    // Both collectors share this parser; exercise LF and Windows CRLF output.
+    for ([_][]const u8{ "\n", "\r\n" }) |newline| {
+        const csv = try std.fmt.allocPrint(std.testing.allocator, "GPU 0, 1024, 256, 25, 76.30{s}GPU 1, 2048, 512, 75, 86.65{s}", .{ newline, newline });
+        defer std.testing.allocator.free(csv);
+        const json = try allocNvidiaDetailedJson(std.testing.allocator, csv);
+        defer std.testing.allocator.free(json);
+        const report = try std.json.parseFromSlice(DetailedGpuReport, std.testing.allocator, json, .{});
+        defer report.deinit();
+        try std.testing.expectEqual(@as(u64, 2), report.value.count);
+        try std.testing.expectApproxEqAbs(@as(f64, 76.3), report.value.detailed_info[0].temperature, 0.000001);
+        try std.testing.expectApproxEqAbs(@as(f64, 86.65), report.value.detailed_info[1].temperature, 0.000001);
     }
 }

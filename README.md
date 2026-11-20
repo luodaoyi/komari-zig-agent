@@ -30,7 +30,7 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 
 - 功能兼容：官方 Go agent `1.2.60` 的启动参数、配置来源、BasicInfo、Report WebSocket、任务执行、Ping、Web SSH、自动发现、代理、自定义 DNS/IP、自更新、安装和替换脚本均已实现；继续保留可选 Cloudflare Access 凭据支持。
 - 上游增量：已吸收 `Snapshot-2607270914` 的非 root systemd user 安装和 Windows NVIDIA 详细 GPU 指标，并继续支持更早加入的 Linux `loong64` 构建与安装。
-- NVIDIA 温度保留小数：启用 GPU 上报前，服务端需支持浮点温度（上游 `komari-monitor/komari#710`）。旧版整数解码器无法接收小数温度，可能拒绝整份报告；请先升级服务端，暂不能升级时保持 GPU 上报关闭。整数温度仍输出整数 JSON，暂不支持自动协商服务端能力。
+- NVIDIA 温度保留小数：启用 GPU 上报前，服务端需先升级至 `1.6.2` 或其他已包含浮点温度支持的版本（上游 `komari-monitor/komari#710`）。旧版整数解码器无法接收小数温度，可能拒绝整份报告；请先升级服务端，暂不能升级时保持 GPU 上报关闭。整数温度仍输出整数 JSON；负数、不可用或非有限温度按 `0` 回退。暂不支持自动协商服务端能力，升级本 agent 不会升级服务端。
 - 支持系统：Linux、FreeBSD、macOS、Windows；Linux 覆盖 Debian/Ubuntu/Kali、Fedora/CentOS Stream/Rocky/Alma、OpenWrt、Raspberry Pi OS profile、Synology DSM profile。
 - Release 资产：自动构建 20 个二进制，其中 Linux 11 架构：`amd64`、`arm64`、`386`、`arm`、`mips`、`mipsel`、`mips64`、`mips64el`、`riscv64`、`s390x`、`loong64`。
 - 自动化测试：Ubuntu、macOS、Windows 原生单测；Debian/Ubuntu/Kali 和红帽系容器单测；FreeBSD VM 单测；OpenWrt、Raspberry Pi OS、Synology DSM profile 与主流 Linux 发行版 agent 启动烟测；Linux 多架构 QEMU agent 启动烟测。
