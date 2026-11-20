@@ -20,7 +20,7 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
   <img alt="Linux Architectures" src="https://img.shields.io/badge/Linux%20arch-11%20targets-0969da" />
   <img alt="Release Assets" src="https://img.shields.io/badge/release%20assets-20%20binaries-8250df" />
   <img alt="Distro Matrix" src="https://img.shields.io/badge/distro%20matrix-Debian%2FUbuntu%2FKali%2FRedHat%2FOpenWrt%2FRPiOS%2FSynology-1f883d" />
-  <img alt="Security" src="https://img.shields.io/badge/security-SHA256SUMS%20%2B%20rollback-a371f7" />
+  <img alt="Security" src="https://img.shields.io/badge/security-SHA256SUMS%20%2B%20preflight-a371f7" />
   <img alt="Zig" src="https://img.shields.io/badge/Zig-0.16.0-f7a41d?logo=zig&logoColor=white" />
 </p>
 
@@ -28,33 +28,46 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 
 ## 状态
 
-- 功能兼容：官方 Go agent `1.2.60` 的启动参数、配置来源、BasicInfo、Report WebSocket、任务执行、Ping、Web SSH、自动发现、代理、自定义 DNS/IP、自更新、安装和替换脚本均已实现；继续保留可选 Cloudflare Access 凭据支持。
-- 上游增量：已吸收 `Snapshot-2607270914` 的非 root systemd user 安装和 Windows NVIDIA 详细 GPU 指标，并继续支持更早加入的 Linux `loong64` 构建与安装。
+- 历史兼容基线：官方 Go agent `1.2.60` 的启动参数、配置来源、BasicInfo、Report WebSocket、任务执行、Ping、Web SSH、自动发现、代理、自定义 DNS/IP、自更新、安装和替换脚本均已实现；继续保留可选 Cloudflare Access 凭据支持。
+- 既有上游增量：已吸收 `Snapshot-2607270914` 的非 root systemd user 安装和 Windows NVIDIA 详细 GPU 指标，并继续支持更早加入的 Linux `loong64` 构建与安装。
 - NVIDIA 温度保留小数：启用 GPU 上报前，服务端需先升级至 `1.6.2` 或其他已包含浮点温度支持的版本（上游 `komari-monitor/komari#710`）。旧版整数解码器无法接收小数温度，可能拒绝整份报告；请先升级服务端，暂不能升级时保持 GPU 上报关闭。整数温度仍输出整数 JSON；负数、不可用或非有限温度按 `0` 回退。暂不支持自动协商服务端能力，升级本 agent 不会升级服务端。
 - 支持系统：Linux、FreeBSD、macOS、Windows；Linux 覆盖 Debian/Ubuntu/Kali、Fedora/CentOS Stream/Rocky/Alma、OpenWrt、Raspberry Pi OS profile、Synology DSM profile。
 - Release 资产：自动构建 20 个二进制，其中 Linux 11 架构：`amd64`、`arm64`、`386`、`arm`、`mips`、`mipsel`、`mips64`、`mips64el`、`riscv64`、`s390x`、`loong64`。
 - 自动化测试：Ubuntu、macOS、Windows 原生单测；Debian/Ubuntu/Kali 和红帽系容器单测；FreeBSD VM 单测；OpenWrt、Raspberry Pi OS、Synology DSM profile 与主流 Linux 发行版 agent 启动烟测；Linux 多架构 QEMU agent 启动烟测。
 - 测试覆盖率：GitHub Actions 使用 kcov 强制 `100.00%` 行覆盖率门槛。
 - 安全情况：Release 产物生成 `SHA256SUMS`；安装、替换、纯二进制更新、自更新均校验下载内容；下载、校验或预检失败不会覆盖原二进制；CI 使用固定版本 Zig 与固定哈希下载，主要 GitHub actions 固定到提交 SHA。
-- 功能兼容：100% 全部实现；旧 checklist 已移除，后续以 CI 与 Release 验收为准。
+- 兼容范围：按下方版本对应和已实现功能说明，不承诺与最新上游全部功能等价；CI 通过也不等于全部真实部署场景已验证。
 - Zig：0.16.0。
 - 服务端原项目：`komari-monitor/komari`，仓库地址 <https://github.com/komari-monitor/komari>。
 - Agent 兼容目标：`komari-monitor/komari-agent` 协议，原 Agent 仓库 <https://github.com/komari-monitor/komari-agent>。
 - 发布仓库：`luodaoyi/komari-zig-agent`。
 - 自更新：检查本仓库 GitHub Release，不再下载原 Go 仓库版本。
 
-## 相较官方 Go Agent 的优势
+## 版本对应与升级顺序
 
-- 更省资源：linux-amd64 二进制约小 12 倍；常驻 RSS 实测约 1.2 MB，适合小内存 VPS、OpenWrt、ARM/MIPS 设备。
+| 本仓库版本 | 对应上游 | 本次对齐范围 |
+| --- | --- | --- |
+| [Zig agent v0.1.55](https://github.com/luodaoyi/komari-zig-agent/releases/tag/v0.1.55) | [Go Agent 1.6.20](https://github.com/komari-monitor/komari-agent/releases/tag/1.6.20) 中的 [#139](https://github.com/komari-monitor/komari-agent/pull/139) | 仅 NVIDIA 小数温度采集与 JSON 上报行为，不代表移植 1.6.20 的全部更新。 |
+| GPU 小数温度的服务端前提 | [Komari Server 1.6.2](https://github.com/komari-monitor/komari/releases/tag/1.6.2) 中的 [#710](https://github.com/komari-monitor/komari/pull/710) | 首个包含该修复的稳定版本；温度解码、存储及历史接口保留小数。 |
+
+先升级服务端，再升级/启用 GPU 上报。旧版服务端可能拒绝包含小数温度的整份报告；不能升级服务端时保持 GPU 上报关闭。整数温度和异常值回退 `0` 保留整数 JSON token，但这不代表小数报告兼容旧服务端。当前未自动协商服务端 GPU 能力。
+
+远程文件功能尚未支持，属于后续计划，不包含在 v0.1.55 中。本页的 `1.2.60` 是历史功能基线，下方 `1.2.13` 是历史性能测试版本，均不是当前上游最新版本声明。
+
+## 相较官方 Go Agent 的特点
+
+- 资源占用：下方保留与 Go Agent 1.2.13 的历史测量供参考；未据此宣称 v0.1.55 相比 Go Agent 1.6.20 的体积或性能优势。
 - 更快上报：Linux 热路径主要读 `/proc` 与原生 syscall；FreeBSD/macOS 已去除采样中的固定 1 秒阻塞；上报间隔不再被采样等待拖长。
 - 更稳运行：WebSocket 写入加锁并分块 mask；服务端任务设并发上限，避免 ping、exec、terminal 任务过多压垮 agent。
-- 更安全更新：安装、替换、纯二进制更新、自更新均校验 SHA256；自更新流式落盘后校验，失败不覆盖原二进制；替换失败可回滚。
+- 更安全更新：安装、替换、纯二进制更新、自更新均校验 SHA256；自更新流式落盘后校验，下载或校验失败不覆盖原二进制。安装/替换/update-binary 脚本不保留原二进制备份，也不自动回滚；替换后启动失败需要人工处理。
 - 更适合国内网络：安装、替换、纯二进制更新、自更新支持 GitHub 代理池，可显式指定代理，减少国内机器拉取失败。
 - 更广兼容：保持官方 Go agent 参数和 Komari 协议兼容，同时发布 Linux 11 架构及 Windows、FreeBSD、macOS 资产。
 - 更严测试：CI 覆盖多发行版、多架构、FreeBSD、OpenWrt/RPiOS/Synology profile，单测覆盖率门禁为 `100.00%`。
 - 更低运维风险：Release 产物有 `SHA256SUMS`，CI 固定 Zig 版本与下载哈希，脚本先预检二进制再替换服务。
 
-## 性能对比
+## 性能对比（历史参考）
+
+以下为早期版本的留存测量，未重新测量 v0.1.55 与 Go Agent 1.6.20；表中体积、内存和结论不能作为当前版本的性能承诺。
 
 测试环境：
 
@@ -84,20 +97,32 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 已经装了默认服务名为 `komari-agent` 的官方 Go Agent？直接执行下面一条命令即可替换为 Zig 版。原有的面板地址、Token 和上报间隔都会保留，无需重新配置。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/e00fbf6f60ad62ddefa0c43a6694a44a6881f49b/replace.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/cf513089e2ad32ee5b9a7efae0ea07b68f0e38a1/replace.sh | sudo sh -s -- --version v0.1.55
 ```
 
 国内网络无法访问 GitHub 时，使用 jsDelivr CDN：
 
 ```sh
-curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@e00fbf6f60ad62ddefa0c43a6694a44a6881f49b/replace.sh | sudo sh
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@cf513089e2ad32ee5b9a7efae0ea07b68f0e38a1/replace.sh | sudo sh -s -- --version v0.1.55
 ```
+
+上述命令将脚本固定到 v0.1.55 对应的不可变提交，并通过 `--version v0.1.55` 固定二进制版本；不是下载 latest。启用 GPU 上报前请先满足上述服务端版本要求。
 
 脚本会自动识别 CPU 架构，下载匹配的 Release，校验 `SHA256SUMS` 并执行二进制预检，替换后重启原服务。不备份原 Agent，也不自动回滚：下载、校验或预检失败时原 Agent 保持不变；替换后启动或健康检查失败则报错退出，保留新二进制。
 
 安装脚本（`install.sh` / `install.ps1`）和 `update-binary.sh` 同样不保留原 Agent 备份。脚本不会清理以往版本遗留的备份文件。
 
 > 适用于 Linux 和 OpenWrt 的已有 Go Agent 安装。自定义服务名、Windows、首次安装、指定版本或自定义路径等高级场景，请查看脚本参数或 GitHub Release。
+
+## 更新已有 Zig Agent（固定 v0.1.55）
+
+适用于 Linux 上默认服务名 `komari-agent` 的既有安装；保留原面板地址、Token 和启动配置，更新二进制后重启服务。自定义服务名/路径时可传 `--service` / `--binary`。
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/cf513089e2ad32ee5b9a7efae0ea07b68f0e38a1/update-binary.sh | sudo sh -s -- --version v0.1.55
+```
+
+脚本源码和目标二进制均固定在 v0.1.55；会校验 `SHA256SUMS`，但不备份、不自动回滚。此命令不升级服务端，启用 GPU 上报前仍需先升级至支持小数温度的服务端。
 
 ## 自更新
 
@@ -157,7 +182,7 @@ zig build -Doptimize=ReleaseSmall -Dversion=dev
 构建指定平台：
 
 ```sh
-zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dversion=v0.1.6
+zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall -Dversion=dev
 ```
 
 全平台构建：
@@ -186,17 +211,18 @@ python3 scripts/check_comment_coverage.py src 80
 
 自动发布有两种方式：
 
-1. 推送 tag：
+1. 推送 tag：先设置 `VERSION` 为尚未使用的新版本号（`vX.Y.Z` 格式），不要复用或移动已发布标签。
 
 ```sh
-git tag -a v0.1.6 -m "Release v0.1.6"
-git push origin v0.1.6
+: "${VERSION:?请先设置新的未使用版本号}"
+git tag -a "$VERSION" -m "Release $VERSION"
+git push origin "refs/tags/$VERSION"
 ```
 
 2. GitHub Actions 手动发布：
 
 ```text
-Actions -> Release -> Run workflow -> 输入 v0.1.6 或 0.1.6
+Actions -> Release -> Run workflow -> 输入新的未使用版本号（vX.Y.Z 或 X.Y.Z）
 ```
 
 Action 会自动：
