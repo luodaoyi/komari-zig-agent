@@ -84,16 +84,18 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 已经装了默认服务名为 `komari-agent` 的官方 Go Agent？直接执行下面一条命令即可替换为 Zig 版。原有的面板地址、Token 和上报间隔都会保留，无需重新配置。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/bd2e0b8de76a11601d57b1663e9002912e1a82f2/replace.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/e00fbf6f60ad62ddefa0c43a6694a44a6881f49b/replace.sh | sudo sh
 ```
 
 国内网络无法访问 GitHub 时，使用 jsDelivr CDN：
 
 ```sh
-curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@bd2e0b8de76a11601d57b1663e9002912e1a82f2/replace.sh | sudo sh
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@e00fbf6f60ad62ddefa0c43a6694a44a6881f49b/replace.sh | sudo sh
 ```
 
-脚本会自动识别 CPU 架构，下载匹配的 Release，校验 `SHA256SUMS`，备份原 Go Agent，替换后重启原服务。下载、校验或启动失败时不会覆盖正在使用的 Agent；systemd 启动失败会自动回滚。
+脚本会自动识别 CPU 架构，下载匹配的 Release，校验 `SHA256SUMS` 并执行二进制预检，替换后重启原服务。不备份原 Agent，也不自动回滚：下载、校验或预检失败时原 Agent 保持不变；替换后启动或健康检查失败则报错退出，保留新二进制。
+
+安装脚本（`install.sh` / `install.ps1`）和 `update-binary.sh` 同样不保留原 Agent 备份。脚本不会清理以往版本遗留的备份文件。
 
 > 适用于 Linux 和 OpenWrt 的已有 Go Agent 安装。自定义服务名、Windows、首次安装、指定版本或自定义路径等高级场景，请查看脚本参数或 GitHub Release。
 
