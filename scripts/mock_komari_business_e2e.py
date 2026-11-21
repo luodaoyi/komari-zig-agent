@@ -22,6 +22,7 @@ TOKEN = "business-token"
 DISCOVERY_KEY = "business-discovery-key"
 CF_ID = "business-cf-id"
 CF_SECRET = "business-cf-secret"
+TERMINAL_RECONNECT_IDS = ("term-recover", "term-reject", "term-stall", "term-backpressure")
 
 
 class State:
@@ -34,6 +35,7 @@ class State:
         self.terminal_attempts = {}
         self.terminal_done_at = {}
         self.terminal_shell_pids = {}
+        self.terminal_stall_closed_at = None
         self.ping_tasks = ping_tasks if ping_tasks is not None else [{
             "task_id": 77,
             "ping_type": "tcp",
@@ -195,7 +197,7 @@ def make_handler(state):
                             "command": "printf e2e-exec-ok",
                         }).encode())
                     if state.terminal_enabled:
-                        ids = ("term-recover", "term-reject") if state.terminal_reconnect else ("term-business",)
+                        ids = TERMINAL_RECONNECT_IDS if state.terminal_reconnect else ("term-business",)
                         for request_id in ids:
                             write_ws_frame(self.connection, 0x1, json.dumps({
                                 "message": "terminal",
@@ -293,18 +295,48 @@ def make_handler(state):
             set_error(state, f"terminal output missing: {seen[-200:]!r}")
 
         def handle_reconnect_terminal(self, request_id):
-            if request_id not in ("term-recover", "term-reject"):
+            if request_id not in TERMINAL_RECONNECT_IDS:
                 set_error(state, f"unexpected terminal request ID: {request_id!r}")
                 self.send_plain(403, b"bad terminal id")
                 return
             with state.lock:
                 attempt = state.terminal_attempts.get(request_id, 0) + 1
                 state.terminal_attempts[request_id] = attempt
-            if attempt > 2:
-                set_error(state, f"{request_id} opened terminal WS {attempt} times; expected exactly two")
+            allowed_attempts = 1 if request_id == "term-backpressure" else 2
+            if attempt > allowed_attempts:
+                set_error(state, f"{request_id} opened terminal WS {attempt} times; expected {allowed_attempts}")
                 self.send_plain(403, b"unexpected retry")
                 return
             try:
+                if attempt == 1 and request_id == "term-stall":
+                    self.close_connection = True
+                    self.connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\nX-Stalled: ")
+                    started = time.monotonic()
+                    self.connection.settimeout(1)
+                    while time.monotonic() - started < 12:
+                        try:
+                            # Keep each individual read live without finishing the headers.
+                            self.connection.sendall(b"x")
+                            if not self.connection.recv(1):
+                                break
+                            raise AssertionError("unexpected client data before WebSocket upgrade")
+                        except (BrokenPipeError, ConnectionResetError):
+                            break
+                        except socket.timeout:
+                            continue
+                    else:
+                        raise AssertionError("incomplete WebSocket upgrade outlived setup deadline")
+                    elapsed = time.monotonic() - started
+                    if not 7 <= elapsed <= 12:
+                        raise AssertionError(f"stalled upgrade closed at unexpected {elapsed:.2f}s")
+                    with state.lock:
+                        state.terminal_stall_closed_at = time.monotonic()
+                    return
+                if request_id == "term-stall":
+                    with state.lock:
+                        closed = state.terminal_stall_closed_at
+                    if closed is None or time.monotonic() - closed < 13:
+                        raise AssertionError("WebSocket upgrade retried before failed-dial backoff")
                 if attempt == 2 and request_id == "term-reject":
                     self.send_plain(403, b"terminal authorization revoked")
                     with state.lock:
@@ -334,7 +366,7 @@ def make_handler(state):
                             return matched
                     raise AssertionError(f"{label} missing; PTY tail={output[-200:]!r}")
 
-                if attempt == 1:
+                def wait_for_shell():
                     control("resize", cols=100, rows=30)
                     # An interactive shell may change the line discipline and flush
                     # its initial stdin. Prove readiness before making a state change.
@@ -347,6 +379,40 @@ def make_handler(state):
                         except AssertionError:
                             if probe == 7:
                                 raise
+
+                def wait_for_close(label, timeout=6):
+                    try:
+                        wait_for(label, lambda op, payload, output: op == 0x8, timeout)
+                    except EOFError:
+                        pass  # Clean TCP EOF is also an acceptable close.
+
+                if request_id == "term-stall":
+                    wait_for_shell()
+                    control("terminate")
+                    wait_for_close("socket close after successful retry")
+                    with state.lock:
+                        state.terminal_done_at[request_id] = time.monotonic()
+                    return
+
+                if request_id == "term-backpressure":
+                    wait_for_shell()
+                    control("input", input="stty raw -echo; printf 'BLOCK_%s_%s\\n' ready \"$$\"; exec sleep 20\r")
+                    blocked = wait_for("non-reading terminal program", lambda op, payload, output: re.search(rb"BLOCK_ready_(\d+)\r?\n", output))
+                    pid = int(blocked.group(1))
+                    started = time.monotonic()
+                    write_ws_frame(self.connection, 0x2, b"x" * (256 * 1024))
+                    wait_for_close("socket close after terminal backpressure", timeout=8)
+                    while os.path.exists(f"/proc/{pid}/stat"):
+                        if time.monotonic() - started > 10:
+                            raise AssertionError(f"terminal program {pid} survived backpressure")
+                        time.sleep(0.05)
+                    with state.lock:
+                        state.terminal_shell_pids[request_id] = pid
+                        state.terminal_done_at[request_id] = time.monotonic()
+                    return
+
+                if attempt == 1:
+                    wait_for_shell()
                     # Markers are constructed by the shell, so terminal echo cannot satisfy them.
                     control("input", input="export KOMARI_E2E_RESUME=retained; printf 'FIRST_%s_%s\\n' \"$KOMARI_E2E_RESUME\" \"$$\"\r")
                     shell = wait_for("original shell state", lambda op, payload, output: re.search(rb"FIRST_retained_(\d+)\r?\n", output))
@@ -374,10 +440,7 @@ def make_handler(state):
                     raise AssertionError(f"PTY did not resume original shell; before={original_pid}, "
                                          f"after={resumed_pid}, value={resumed.group(1)!r}")
                 control("terminate")
-                try:
-                    wait_for("WebSocket close after terminate", lambda op, payload, output: op == 0x8)
-                except EOFError:
-                    pass  # Clean TCP EOF is also an acceptable close.
+                wait_for_close("WebSocket close after terminate")
                 with state.lock:
                     state.terminal_done_at[request_id] = time.monotonic()
             except Exception as exc:
@@ -542,6 +605,7 @@ def wait_for_output_contains(proc, output, needle, deadline):
 
 def run_panel_e2e(args):
     exec_enabled = not args.no_exec
+    timeout = args.timeout if args.timeout is not None else (45 if args.terminal_reconnect else 35)
     state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal, ping_tasks=[],
                   terminal_reconnect=args.terminal_reconnect)
     tcp = TcpAcceptServer(("127.0.0.1", 0), TcpAcceptHandler)
@@ -621,7 +685,7 @@ def run_panel_e2e(args):
         env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
     proc = None
     try:
-        proc, deadline = run_agent(cmd, env, args.timeout, output)
+        proc, deadline = run_agent(cmd, env, timeout, output)
         while time.monotonic() < deadline:
             needed = [state.upload_seen, state.report_seen, state.ping_seen]
             if args.autodiscovery:
@@ -633,7 +697,9 @@ def run_panel_e2e(args):
             if args.terminal_reconnect:
                 # Observe longer than upstream's 15-second failed-dial retry.
                 with state.lock:
-                    if len(state.terminal_done_at) == 2 and time.monotonic() - max(state.terminal_done_at.values()) >= 17:
+                    done = state.terminal_done_at
+                    observed = ("term-recover", "term-reject", "term-backpressure")
+                    if len(done) == len(TERMINAL_RECONNECT_IDS) and time.monotonic() - max(done[key] for key in observed) >= 17:
                         if sys.platform.startswith("linux"):
                             for request_id, pid in state.terminal_shell_pids.items():
                                 if os.path.exists(f"/proc/{pid}/stat"):
@@ -811,7 +877,7 @@ def main():
     panel = sub.add_parser("panel")
     panel.add_argument("agent")
     panel.add_argument("--protocol-version", type=int, default=1)
-    panel.add_argument("--timeout", type=float, default=35)
+    panel.add_argument("--timeout", type=float)
     panel.add_argument("--no-exec", action="store_true")
     terminal = panel.add_mutually_exclusive_group()
     terminal.add_argument("--terminal", action="store_true")
