@@ -179,7 +179,9 @@ def make_handler(state):
             if not self.upgrade_ws():
                 return
             state.ws_seen.set()
-            deadline = time.monotonic() + 25
+            # Keep the report session alive throughout the slow-upgrade/backoff case.
+            deadline = time.monotonic() + (45 if state.terminal_reconnect else 25)
+            pending_frames = bytearray()
             sent = False
             while time.monotonic() < deadline:
                 if not sent:
@@ -206,7 +208,7 @@ def make_handler(state):
                     state.task_sent = True
                     sent = True
                 try:
-                    opcode, payload = read_ws_frame(self.connection, 1.0)
+                    opcode, payload = read_ws_frame(self.connection, 1.0, pending_frames)
                 except TimeoutError:
                     if self.done():
                         return
@@ -275,10 +277,11 @@ def make_handler(state):
             time.sleep(2.0)
             write_ws_frame(self.connection, 0x1, json.dumps({"type": "input", "input": "printf terminal-e2e-ok\r\nexit\r\n"}).encode())
             deadline = time.monotonic() + 15
+            pending_frames = bytearray()
             seen = bytearray()
             while time.monotonic() < deadline:
                 try:
-                    opcode, payload = read_ws_frame(self.connection, 1.0)
+                    opcode, payload = read_ws_frame(self.connection, 1.0, pending_frames)
                 except TimeoutError:
                     continue
                 except Exception as exc:
@@ -338,6 +341,7 @@ def make_handler(state):
                     if closed is None or time.monotonic() - closed < 13:
                         raise AssertionError("WebSocket upgrade retried before failed-dial backoff")
                 if attempt == 2 and request_id == "term-reject":
+                    self.close_connection = True
                     self.send_plain(403, b"terminal authorization revoked")
                     with state.lock:
                         state.terminal_done_at[request_id] = time.monotonic()
@@ -531,10 +535,10 @@ def websocket_accept(key):
     return base64.b64encode(hashlib.sha1((key + magic).encode("ascii")).digest()).decode("ascii")
 
 
-def read_ws_frame(sock, timeout, pending=None):
+def read_ws_frame(sock, timeout, pending):
     old = sock.gettimeout()
     deadline = time.monotonic() + timeout
-    buffered = bytearray() if pending is None else pending
+    buffered = pending
     offset = 0
 
     def take(n):
