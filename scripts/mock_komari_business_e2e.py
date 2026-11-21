@@ -348,12 +348,15 @@ def make_handler(state):
                 def control(kind, **kwargs):
                     write_ws_frame(self.connection, 0x1, json.dumps({"type": kind, **kwargs}).encode())
 
-                def wait_for(label, predicate, timeout=6):
+                pending_frames = bytearray()
+
+                def wait_for(label, predicate, timeout=6, output=None):
                     deadline = time.monotonic() + timeout
-                    output = bytearray()
+                    if output is None:
+                        output = bytearray()
                     while time.monotonic() < deadline:
                         try:
-                            opcode, payload = read_ws_frame(self.connection, max(0.001, deadline - time.monotonic()))
+                            opcode, payload = read_ws_frame(self.connection, max(0.001, deadline - time.monotonic()), pending_frames)
                         except TimeoutError:
                             break
                         if opcode == 0x9:
@@ -370,11 +373,12 @@ def make_handler(state):
                     control("resize", cols=100, rows=30)
                     # An interactive shell may change the line discipline and flush
                     # its initial stdin. Prove readiness before making a state change.
+                    output = bytearray()
                     for probe in range(8):
                         control("input", input="\rprintf 'SHELL_%s\\n' ready\r")
                         try:
                             wait_for("shell startup marker",
-                                     lambda op, payload, output: b"SHELL_ready" in output, timeout=0.75)
+                                     lambda op, payload, output: b"SHELL_ready" in output, timeout=0.75, output=output)
                             break
                         except AssertionError:
                             if probe == 7:
@@ -527,33 +531,45 @@ def websocket_accept(key):
     return base64.b64encode(hashlib.sha1((key + magic).encode("ascii")).digest()).decode("ascii")
 
 
-def read_exact(sock, n):
-    out = bytearray()
-    while len(out) < n:
-        chunk = sock.recv(n - len(out))
-        if not chunk:
-            raise EOFError("socket closed")
-        out.extend(chunk)
-    return bytes(out)
-
-
-def read_ws_frame(sock, timeout):
+def read_ws_frame(sock, timeout, pending=None):
     old = sock.gettimeout()
-    sock.settimeout(timeout)
+    deadline = time.monotonic() + timeout
+    buffered = bytearray() if pending is None else pending
+    offset = 0
+
+    def take(n):
+        nonlocal offset
+        end = offset + n
+        while len(buffered) < end:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            sock.settimeout(remaining)
+            chunk = sock.recv(end - len(buffered))
+            if not chunk:
+                raise EOFError()
+            buffered.extend(chunk)
+        result = bytes(buffered[offset:end])
+        offset = end
+        return result
+
     try:
-        first = read_exact(sock, 2)
+        first = take(2)
         opcode = first[0] & 0x0F
         masked = bool(first[1] & 0x80)
         length = first[1] & 0x7F
         if length == 126:
-            length = int.from_bytes(read_exact(sock, 2), "big")
+            length = int.from_bytes(take(2), "big")
         elif length == 127:
-            length = int.from_bytes(read_exact(sock, 8), "big")
-        mask = read_exact(sock, 4) if masked else b""
-        payload = bytearray(read_exact(sock, length))
+            length = int.from_bytes(take(8), "big")
+        mask = take(4) if masked else b""
+        payload = bytearray(take(length))
         if masked:
             for i in range(len(payload)):
                 payload[i] ^= mask[i % 4]
+        # Probe timeouts may leave a partial frame; commit consumption only
+        # once the entire frame is available.
+        del buffered[:offset]
         return opcode, bytes(payload)
     except socket.timeout as exc:
         raise TimeoutError() from exc
