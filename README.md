@@ -47,6 +47,7 @@ Zig 版 `komari-agent`，目标是直接替换原 Go agent，并保持 Komari �
 
 | 本仓库版本 | 对应上游 | 本次对齐范围 |
 | --- | --- | --- |
+| [Zig agent v0.1.56](https://github.com/luodaoyi/komari-zig-agent/releases/tag/v0.1.56) | [Go Agent Snapshot-2611210459](https://github.com/komari-monitor/komari-agent/releases/tag/Snapshot-2611210459) | 仅移植 Linux Web SSH 断线恢复，需 [Komari Server 1.6.2](https://github.com/komari-monitor/komari/releases/tag/1.6.2) 或更新版本；不包含远程文件功能。 |
 | [Zig agent v0.1.55](https://github.com/luodaoyi/komari-zig-agent/releases/tag/v0.1.55) | [Go Agent 1.6.20](https://github.com/komari-monitor/komari-agent/releases/tag/1.6.20) 中的 [#139](https://github.com/komari-monitor/komari-agent/pull/139) | 仅 NVIDIA 小数温度采集与 JSON 上报行为，不代表移植 1.6.20 的全部更新。 |
 | GPU 小数温度的服务端前提 | [Komari Server 1.6.2](https://github.com/komari-monitor/komari/releases/tag/1.6.2) 中的 [#710](https://github.com/komari-monitor/komari/pull/710) | 首个包含该修复的稳定版本；温度解码、存储及历史接口保留小数。 |
 
@@ -94,21 +95,40 @@ Linux Agent 连接支持终端恢复协议的 Komari 服务端（正式版 1.6.2
 - 上报 JSON、月流量采样、`/proc` 热路径已尽量改为栈缓冲，减少重复堆申请。
 - 二进制体积明显小，适合 OpenWrt、小内存 VPS、低端 ARM/MIPS 设备。
 
+## 首次安装（固定 v0.1.56）
+
+将示例中的面板地址和 Token 替换为自己的值。已装 Go Agent 或 Zig Agent 时，请使用下面的替换或更新命令。
+
+Linux（系统服务）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/1a390cf507cc6924993b8faadfa49df3809a15a4/install.sh | sudo sh -s -- --install-version v0.1.56 -e 'https://komari.example.com' -t 'YOUR_AGENT_TOKEN'
+```
+
+Windows（管理员 PowerShell）：
+
+先用 `Get-ExecutionPolicy -List` 查看各作用域的策略。即使以管理员身份运行，生效的策略为 `Restricted` 时也不能执行 `.ps1`。仅在本机及组织策略允许时继续；若脚本被阻止，请停止并联系组织 IT 获取批准的安装方式，不要降低或绕过策略。
+
+```powershell
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/1a390cf507cc6924993b8faadfa49df3809a15a4/install.ps1' -OutFile '.\install.ps1'
+.\install.ps1 --install-version v0.1.56 -e 'https://komari.example.com' -t 'YOUR_AGENT_TOKEN'
+```
+
 ## 一键替换原 Go Agent
 
 已经装了默认服务名为 `komari-agent` 的官方 Go Agent？直接执行下面一条命令即可替换为 Zig 版。原有的面板地址、Token 和上报间隔都会保留，无需重新配置。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/cf513089e2ad32ee5b9a7efae0ea07b68f0e38a1/replace.sh | sudo sh -s -- --version v0.1.55
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/1a390cf507cc6924993b8faadfa49df3809a15a4/replace.sh | sudo sh -s -- --version v0.1.56
 ```
 
 国内网络无法访问 GitHub 时，使用 jsDelivr CDN：
 
 ```sh
-curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@cf513089e2ad32ee5b9a7efae0ea07b68f0e38a1/replace.sh | sudo sh -s -- --version v0.1.55
+curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@1a390cf507cc6924993b8faadfa49df3809a15a4/replace.sh | sudo sh -s -- --version v0.1.56
 ```
 
-上述命令将脚本固定到 v0.1.55 对应的不可变提交，并通过 `--version v0.1.55` 固定二进制版本；不是下载 latest。启用 GPU 上报前请先满足上述服务端版本要求。
+上述命令将脚本固定到 v0.1.56 对应的不可变提交，并通过 `--version v0.1.56` 固定二进制版本；不是下载 latest。启用 GPU 上报前请先满足上述服务端版本要求。
 
 脚本会自动识别 CPU 架构，下载匹配的 Release，校验 `SHA256SUMS` 并执行二进制预检，替换后重启原服务。不备份原 Agent，也不自动回滚：下载、校验或预检失败时原 Agent 保持不变；替换后启动或健康检查失败则报错退出，保留新二进制。
 
@@ -116,15 +136,15 @@ curl -fsSL https://cdn.jsdelivr.net/gh/luodaoyi/komari-zig-agent@cf513089e2ad32e
 
 > 适用于 Linux 和 OpenWrt 的已有 Go Agent 安装。自定义服务名、Windows、首次安装、指定版本或自定义路径等高级场景，请查看脚本参数或 GitHub Release。
 
-## 更新已有 Zig Agent（固定 v0.1.55）
+## 更新已有 Zig Agent（固定 v0.1.56）
 
 适用于 Linux 上默认服务名 `komari-agent` 的既有安装；保留原面板地址、Token 和启动配置，更新二进制后重启服务。自定义服务名/路径时可传 `--service` / `--binary`。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/cf513089e2ad32ee5b9a7efae0ea07b68f0e38a1/update-binary.sh | sudo sh -s -- --version v0.1.55
+curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/1a390cf507cc6924993b8faadfa49df3809a15a4/update-binary.sh | sudo sh -s -- --version v0.1.56
 ```
 
-脚本源码和目标二进制均固定在 v0.1.55；会校验 `SHA256SUMS`，但不备份、不自动回滚。此命令不升级服务端，启用 GPU 上报前仍需先升级至支持小数温度的服务端。
+脚本源码和目标二进制均固定在 v0.1.56；会校验 `SHA256SUMS`，但不备份、不自动回滚。此命令不升级服务端，启用 GPU 上报前仍需先升级至支持小数温度的服务端。
 
 ## 自更新
 
