@@ -107,6 +107,8 @@ curl -fsSL https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/1a390cf50
 
 Windows（管理员 PowerShell）：
 
+先用 `Get-ExecutionPolicy -List` 查看各作用域的策略。即使以管理员身份运行，生效的策略为 `Restricted` 时也不能执行 `.ps1`。仅在本机及组织策略允许时继续；若脚本被阻止，请停止并联系组织 IT 获取批准的安装方式，不要降低或绕过策略。
+
 ```powershell
 Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/luodaoyi/komari-zig-agent/1a390cf507cc6924993b8faadfa49df3809a15a4/install.ps1' -OutFile '.\install.ps1'
 .\install.ps1 --install-version v0.1.56 -e 'https://komari.example.com' -t 'YOUR_AGENT_TOKEN'
