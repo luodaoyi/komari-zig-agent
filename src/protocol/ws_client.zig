@@ -177,10 +177,17 @@ const FrameBufferPool = struct {
 pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
     const ascii_url = try idna.convertUrlToAscii(allocator, url);
     defer allocator.free(ascii_url);
-    return connectRaw(allocator, ascii_url, cfg);
+    return connectRaw(allocator, ascii_url, cfg, false);
 }
 
-fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
+/// Terminal retries need definitive HTTP refusals and bounded upgrade I/O.
+pub fn connectTerminal(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
+    const ascii_url = try idna.convertUrlToAscii(allocator, url);
+    defer allocator.free(ascii_url);
+    return connectRaw(allocator, ascii_url, cfg, true);
+}
+
+fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, terminal: bool) !*Client {
     const target = try parseUrl(url);
     const scheme = if (target.tls) "wss" else "ws";
     const family = http.dashboardAddressFamily(cfg);
@@ -191,7 +198,7 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     defer if (proxy_url) |value| allocator.free(value);
     if (proxy_url != null) {
         const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family, timeout_ms);
-        return finishConnectHandshake(allocator, url, target, cfg, raw_http);
+        return finishConnectHandshake(allocator, url, target, cfg, raw_http, terminal);
     }
 
     const addrs = try raw_conn.resolveAddresses(allocator, target.host, target.port, cfg.custom_dns);
@@ -207,7 +214,8 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
             continue;
         };
         const raw_http = http.RawConnection{ .conn = conn };
-        const client = finishConnectHandshake(allocator, url, target, cfg, raw_http) catch |err| {
+        const client = finishConnectHandshake(allocator, url, target, cfg, raw_http, terminal) catch |err| {
+            if (err == error.TerminalUpgradeRejected) return err;
             last_err = err;
             debug.log("websocket skipping address {s} due to {s}", .{ addr_text, @errorName(err) });
             continue;
@@ -218,9 +226,10 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     return last_err orelse error.ConnectFailed;
 }
 
-fn finishConnectHandshake(allocator: std.mem.Allocator, url: []const u8, target: Target, cfg: anytype, raw_http: http.RawConnection) !*Client {
+fn finishConnectHandshake(allocator: std.mem.Allocator, url: []const u8, target: Target, cfg: anytype, raw_http: http.RawConnection, terminal: bool) !*Client {
     errdefer raw_http.close(allocator);
     const raw = raw_http.conn;
+    if (terminal) try raw.setIoTimeouts(10_000, 10_000);
     debug.log("websocket transport connected host={s} port={d}", .{ target.host, target.port });
     const nonce_bytes = try randomBytes(allocator, 16);
     defer allocator.free(nonce_bytes);
@@ -243,9 +252,10 @@ fn finishConnectHandshake(allocator: std.mem.Allocator, url: []const u8, target:
     defer allocator.free(request);
     try raw.writer().writeAll(request);
     try raw.flush();
-    debug.log("websocket upgrade request sent path={s}", .{request_target});
-    try readHandshake(raw.reader(), nonce, allocator);
-    debug.log("websocket handshake accepted path={s}", .{request_target});
+    if (!terminal) debug.log("websocket upgrade request sent path={s}", .{request_target});
+    try readHandshake(raw.reader(), nonce, allocator, terminal);
+    if (terminal) try raw.setIoTimeouts(75_000, 10_000);
+    if (!terminal) debug.log("websocket handshake accepted path={s}", .{request_target});
     const client = try allocator.create(Client);
     client.* = .{ .raw = raw };
     if (raw_http.proxy_authorization) |authorization| allocator.free(authorization);
@@ -307,23 +317,25 @@ fn readFrameFromReader(client: *Client, allocator: std.mem.Allocator, reader: an
     return .{ .opcode = opcode, .payload = payload, .pooled = pooled != null };
 }
 
-fn readHandshake(reader: *std.Io.Reader, nonce: []const u8, allocator: std.mem.Allocator) !void {
+fn readHandshake(reader: *std.Io.Reader, nonce: []const u8, allocator: std.mem.Allocator, terminal: bool) !void {
     var line: [1024]u8 = undefined;
     const n = try readLine(reader, &line);
     const first = line[0..n];
     if (first.len < 12 or !std.mem.startsWith(u8, first, "HTTP/1.")) return error.WebSocketHandshakeFailed;
     const code = try std.fmt.parseInt(u16, first[9..12], 10);
+    if (terminal and (code == 401 or code == 403 or code == 404 or code == 410)) return error.TerminalUpgradeRejected;
+    if (code != 101) return error.WebSocketHandshakeFailed;
     var accept: ?[]const u8 = null;
+    defer if (accept) |value| allocator.free(value);
     while (true) {
         const len = try readLine(reader, &line);
         if (len == 0) break;
         const header = line[0..len];
         if (header.len >= "Sec-WebSocket-Accept:".len and std.ascii.startsWithIgnoreCase(header, "Sec-WebSocket-Accept:")) {
+            if (accept != null) return error.WebSocketHandshakeFailed;
             accept = try allocator.dupe(u8, std.mem.trim(u8, header["Sec-WebSocket-Accept:".len..], " \t"));
         }
     }
-    defer if (accept) |value| allocator.free(value);
-    if (code != 101) return error.WebSocketHandshakeFailed;
     const expected = try expectedAccept(allocator, nonce);
     defer allocator.free(expected);
     if (accept == null or !std.mem.eql(u8, accept.?, expected)) return error.WebSocketHandshakeFailed;

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import socketserver
@@ -24,11 +25,15 @@ CF_SECRET = "business-cf-secret"
 
 
 class State:
-    def __init__(self, token=TOKEN, expect_cf=False, exec_enabled=True, terminal=False, ping_tasks=None):
+    def __init__(self, token=TOKEN, expect_cf=False, exec_enabled=True, terminal=False, ping_tasks=None, terminal_reconnect=False):
         self.token = token
         self.expect_cf = expect_cf
         self.exec_enabled = exec_enabled
-        self.terminal_enabled = terminal
+        self.terminal_enabled = terminal or terminal_reconnect
+        self.terminal_reconnect = terminal_reconnect
+        self.terminal_attempts = {}
+        self.terminal_done_at = {}
+        self.terminal_shell_pids = {}
         self.ping_tasks = ping_tasks if ping_tasks is not None else [{
             "task_id": 77,
             "ping_type": "tcp",
@@ -190,10 +195,12 @@ def make_handler(state):
                             "command": "printf e2e-exec-ok",
                         }).encode())
                     if state.terminal_enabled:
-                        write_ws_frame(self.connection, 0x1, json.dumps({
-                            "message": "terminal",
-                            "request_id": "term-business",
-                        }).encode())
+                        ids = ("term-recover", "term-reject") if state.terminal_reconnect else ("term-business",)
+                        for request_id in ids:
+                            write_ws_frame(self.connection, 0x1, json.dumps({
+                                "message": "terminal",
+                                "request_id": request_id,
+                            }).encode())
                     state.task_sent = True
                     sent = True
                 try:
@@ -252,7 +259,11 @@ def make_handler(state):
                 set_error(state, "bad terminal token")
                 self.send_plain(403, b"bad token")
                 return
-            if parse_qs(parsed.query).get("id", [""])[0] != "term-business":
+            request_id = parse_qs(parsed.query).get("id", [""])[0]
+            if state.terminal_reconnect:
+                self.handle_reconnect_terminal(request_id)
+                return
+            if request_id != "term-business":
                 set_error(state, "bad terminal id")
                 self.send_plain(403, b"bad terminal id")
                 return
@@ -280,6 +291,97 @@ def make_handler(state):
                         write_ws_frame(self.connection, 0x8, b"")
                         return
             set_error(state, f"terminal output missing: {seen[-200:]!r}")
+
+        def handle_reconnect_terminal(self, request_id):
+            if request_id not in ("term-recover", "term-reject"):
+                set_error(state, f"unexpected terminal request ID: {request_id!r}")
+                self.send_plain(403, b"bad terminal id")
+                return
+            with state.lock:
+                attempt = state.terminal_attempts.get(request_id, 0) + 1
+                state.terminal_attempts[request_id] = attempt
+            if attempt > 2:
+                set_error(state, f"{request_id} opened terminal WS {attempt} times; expected exactly two")
+                self.send_plain(403, b"unexpected retry")
+                return
+            try:
+                if attempt == 2 and request_id == "term-reject":
+                    self.send_plain(403, b"terminal authorization revoked")
+                    with state.lock:
+                        state.terminal_done_at[request_id] = time.monotonic()
+                    return
+                if not self.upgrade_ws():
+                    raise AssertionError("missing WebSocket key")
+
+                def control(kind, **kwargs):
+                    write_ws_frame(self.connection, 0x1, json.dumps({"type": kind, **kwargs}).encode())
+
+                def wait_for(label, predicate, timeout=6):
+                    deadline = time.monotonic() + timeout
+                    output = bytearray()
+                    while time.monotonic() < deadline:
+                        try:
+                            opcode, payload = read_ws_frame(self.connection, max(0.001, deadline - time.monotonic()))
+                        except TimeoutError:
+                            break
+                        if opcode == 0x9:
+                            write_ws_frame(self.connection, 0xA, payload)
+                            continue
+                        if opcode == 0x2:
+                            output.extend(payload)
+                        matched = predicate(opcode, payload, output)
+                        if matched:
+                            return matched
+                    raise AssertionError(f"{label} missing; PTY tail={output[-200:]!r}")
+
+                if attempt == 1:
+                    control("resize", cols=100, rows=30)
+                    # An interactive shell may change the line discipline and flush
+                    # its initial stdin. Prove readiness before making a state change.
+                    for probe in range(8):
+                        control("input", input="\rprintf 'SHELL_%s\\n' ready\r")
+                        try:
+                            wait_for("shell startup marker",
+                                     lambda op, payload, output: b"SHELL_ready" in output, timeout=0.75)
+                            break
+                        except AssertionError:
+                            if probe == 7:
+                                raise
+                    # Markers are constructed by the shell, so terminal echo cannot satisfy them.
+                    control("input", input="export KOMARI_E2E_RESUME=retained; printf 'FIRST_%s_%s\\n' \"$KOMARI_E2E_RESUME\" \"$$\"\r")
+                    shell = wait_for("original shell state", lambda op, payload, output: re.search(rb"FIRST_retained_(\d+)\r?\n", output))
+                    with state.lock:
+                        state.terminal_shell_pids[request_id] = int(shell.group(1))
+                    if request_id == "term-recover":
+                        control("abort")
+                        # A WebSocket ping after abort proves the same connection is still live.
+                        write_ws_frame(self.connection, 0x9, b"after-abort")
+                        wait_for("pong after abort", lambda op, payload, output: op == 0xA and payload == b"after-abort")
+                        control("heartbeat", id="terminal-rtt")
+                        wait_for("heartbeat echo", lambda op, payload, output: op == 0x1 and
+                                 json.loads(payload) == {"type": "heartbeat", "id": "terminal-rtt"})
+                    # Drop the TCP connection, deliberately without a WebSocket close frame.
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    return
+
+                control("ready")
+                write_ws_frame(self.connection, 0x2, b"printf 'SECOND_%s_%s\\n' \"$KOMARI_E2E_RESUME\" \"$$\"\r")
+                resumed = wait_for("resumed shell state", lambda op, payload, output: re.search(rb"SECOND_([^_\r\n]*)_(\d+)\r?\n", output))
+                with state.lock:
+                    original_pid = state.terminal_shell_pids[request_id]
+                resumed_pid = int(resumed.group(2))
+                if resumed.group(1) != b"retained" or resumed_pid != original_pid:
+                    raise AssertionError(f"PTY did not resume original shell; before={original_pid}, "
+                                         f"after={resumed_pid}, value={resumed.group(1)!r}")
+                control("terminate")
+                try:
+                    wait_for("WebSocket close after terminate", lambda op, payload, output: op == 0x8)
+                except EOFError:
+                    pass  # Clean TCP EOF is also an acceptable close.
+                with state.lock:
+                    state.terminal_done_at[request_id] = time.monotonic()
+            except Exception as exc:
+                set_error(state, f"{request_id} attempt {attempt}: {exc}")
 
         def upgrade_ws(self):
             key = self.headers.get("Sec-WebSocket-Key")
@@ -440,7 +542,8 @@ def wait_for_output_contains(proc, output, needle, deadline):
 
 def run_panel_e2e(args):
     exec_enabled = not args.no_exec
-    state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal, ping_tasks=[])
+    state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal, ping_tasks=[],
+                  terminal_reconnect=args.terminal_reconnect)
     tcp = TcpAcceptServer(("127.0.0.1", 0), TcpAcceptHandler)
     threading.Thread(target=tcp.serve_forever, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
@@ -512,34 +615,53 @@ def run_panel_e2e(args):
         cmd += ["--cf-access-client-id", CF_ID, "--cf-access-client-secret", CF_SECRET]
 
     output = []
-    proc, deadline = run_agent(cmd, env, args.timeout, output)
+    terminal_home = tempfile.TemporaryDirectory(prefix="komari-terminal-e2e-") if args.terminal_reconnect else None
+    if terminal_home is not None:
+        env["HOME"] = terminal_home.name
+        env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
+    proc = None
     try:
+        proc, deadline = run_agent(cmd, env, args.timeout, output)
         while time.monotonic() < deadline:
             needed = [state.upload_seen, state.report_seen, state.ping_seen]
             if args.autodiscovery:
                 needed.append(state.register_seen)
             if exec_enabled:
                 needed.append(state.exec_seen)
-            if args.terminal:
+            if state.terminal_enabled:
                 needed.append(state.terminal_seen)
+            if args.terminal_reconnect:
+                # Observe longer than upstream's 15-second failed-dial retry.
+                with state.lock:
+                    if len(state.terminal_done_at) == 2 and time.monotonic() - max(state.terminal_done_at.values()) >= 17:
+                        if sys.platform.startswith("linux"):
+                            for request_id, pid in state.terminal_shell_pids.items():
+                                if os.path.exists(f"/proc/{pid}/stat"):
+                                    raise AssertionError(f"{request_id} shell {pid} survived terminal teardown")
+                        state.terminal_seen.set()
+            if state.error:
+                raise RuntimeError(f"{state.error}\n{''.join(output[-120:])}")
             if all(e.is_set() for e in needed):
                 print("mock komari business e2e ok")
                 return 0
             if proc.poll() is not None:
                 raise RuntimeError(f"agent exited early: {proc.returncode}\n{''.join(output[-120:])}")
-            if state.error:
-                raise RuntimeError(f"{state.error}\n{''.join(output[-120:])}")
             time.sleep(0.05)
         missing = sorted(set(state.expected_ping) - set(state.ping_results))
         raise RuntimeError(
             f"timeout; uploads={state.uploads} reports={state.reports} task_sent={state.task_sent} "
-            f"ping_seen={len(state.ping_results)}/{len(state.expected_ping)} missing={missing}\n{''.join(output[-120:])}"
+            f"ping_seen={len(state.ping_results)}/{len(state.expected_ping)} missing={missing} "
+            f"terminal_attempts={state.terminal_attempts} terminal_done={list(state.terminal_done_at)}\n"
+            f"{''.join(output[-120:])}"
         )
     except Exception as exc:
         print(f"business e2e failed: {exc}", file=sys.stderr)
         return 1
     finally:
-        terminate(proc)
+        if proc is not None:
+            terminate(proc)
+        if terminal_home is not None:
+            terminal_home.cleanup()
         server.shutdown()
         server.server_close()
         tcp.shutdown()
@@ -691,7 +813,9 @@ def main():
     panel.add_argument("--protocol-version", type=int, default=1)
     panel.add_argument("--timeout", type=float, default=35)
     panel.add_argument("--no-exec", action="store_true")
-    panel.add_argument("--terminal", action="store_true")
+    terminal = panel.add_mutually_exclusive_group()
+    terminal.add_argument("--terminal", action="store_true")
+    terminal.add_argument("--terminal-reconnect", action="store_true")
     panel.add_argument("--autodiscovery", action="store_true")
     panel.add_argument("--proxy", action="store_true")
     panel.add_argument("--cf", action="store_true")

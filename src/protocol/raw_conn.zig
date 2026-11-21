@@ -172,12 +172,18 @@ pub const RawConn = struct {
 
     pub fn shutdown(self: *RawConn) void {
         if (self.closed.swap(true, .acq_rel)) return;
-        net.close(self.stream);
+        // Wake blocked reads/writes without reusing their fd until the final release.
+        self.stream.shutdown(std.Options.debug_io, .both) catch {};
     }
 
     pub fn close(self: *RawConn) void {
         self.shutdown();
+        net.close(self.stream);
         self.allocator.destroy(self);
+    }
+
+    pub fn setIoTimeouts(self: *RawConn, read_ms: u64, write_ms: u64) !void {
+        try net.setStreamIoTimeouts(self.stream, read_ms, write_ms);
     }
 
     pub fn reader(self: *RawConn) *std.Io.Reader {

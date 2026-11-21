@@ -183,20 +183,36 @@ fn connectWithTimeoutLinux(addr: Address, timeout_ms: u64) !Stream {
 }
 
 fn setStreamTimeouts(stream: Stream, timeout_ms: u64) !void {
+    if (builtin.os.tag == .windows) return;
+    try setStreamIoTimeouts(stream, timeout_ms, timeout_ms);
+}
+
+extern "ws2_32" fn setsockopt(socket: usize, level: c_int, option: c_int, value: [*]const u8, len: c_int) callconv(.winapi) c_int;
+
+/// Independent socket liveness bounds for the terminal's read and write paths.
+pub fn setStreamIoTimeouts(stream: Stream, read_ms: u64, write_ms: u64) !void {
     switch (builtin.os.tag) {
-        .windows => return,
+        .windows => {
+            const read: u32 = @intCast(read_ms);
+            const write: u32 = @intCast(write_ms);
+            const ws = std.os.windows.ws2_32;
+            const handle: usize = @intFromPtr(stream.socket.handle);
+            if (setsockopt(handle, ws.SOL.SOCKET, ws.SO.RCVTIMEO, std.mem.asBytes(&read), @sizeOf(u32)) != 0 or
+                setsockopt(handle, ws.SOL.SOCKET, ws.SO.SNDTIMEO, std.mem.asBytes(&write), @sizeOf(u32)) != 0)
+                return error.SocketTimeoutConfigurationFailed;
+        },
         .linux => {
-            // SO_{RCV,SND}TIMEO use the kernel's legacy long/long ABI on
-            // 32-bit Linux. Zig 0.16's std.posix.timeval is time64 there and
-            // is rejected with EDOM (TimeoutTooBig), notably on MIPS/OpenWrt.
-            const tv = timeoutToLinuxSocketTimeval(timeout_ms);
-            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
-            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&tv));
+            // The legacy socket timeval on 32-bit Linux uses kernel long/long.
+            const read = timeoutToLinuxSocketTimeval(read_ms);
+            const write = timeoutToLinuxSocketTimeval(write_ms);
+            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&read));
+            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&write));
         },
         else => {
-            const tv = timeoutToTimeval(timeout_ms);
-            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
-            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&tv));
+            const read = timeoutToTimeval(read_ms);
+            const write = timeoutToTimeval(write_ms);
+            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&read));
+            try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&write));
         },
     }
 }
