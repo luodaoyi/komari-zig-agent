@@ -33,6 +33,13 @@ pub fn normalizeDnsServer(allocator: std.mem.Allocator, input: []const u8) ![]co
 }
 
 pub fn resolveHost(allocator: std.mem.Allocator, host: []const u8, port: u16, custom_dns: []const u8) ![]net.Address {
+    return resolveHostUntil(allocator, host, port, custom_dns, null);
+}
+
+/// The terminal caller owns cancellation for std DNS; raw custom DNS polls
+/// also cap each wait by the same absolute monotonic attempt deadline.
+pub fn resolveHostUntil(allocator: std.mem.Allocator, host: []const u8, port: u16, custom_dns: []const u8, deadline_ms: ?i64) ![]net.Address {
+    try checkDeadline(deadline_ms);
     const trimmed = std.mem.trim(u8, host, "[]");
     if (net.parseIp(trimmed, port)) |addr| {
         const out = try allocator.alloc(net.Address, 1);
@@ -42,33 +49,51 @@ pub fn resolveHost(allocator: std.mem.Allocator, host: []const u8, port: u16, cu
 
     if (custom_dns.len == 0 or builtin.os.tag == .windows) {
         const out = try net.resolveAll(allocator, trimmed, port);
+        errdefer allocator.free(out);
+        try checkDeadline(deadline_ms);
         sortAddresses(out);
         return out;
     }
 
     const normalized = try normalizeDnsServer(allocator, custom_dns);
     defer allocator.free(normalized);
-    return resolveWithServers(allocator, trimmed, port, &.{normalized}) catch
-        resolveWithServers(allocator, trimmed, port, &fallback_servers);
+    return resolveWithServers(allocator, trimmed, port, &.{normalized}, deadline_ms) catch |err| switch (err) {
+        error.Canceled, error.DeadlineExpired => return err,
+        else => resolveWithServers(allocator, trimmed, port, &fallback_servers, deadline_ms),
+    };
 }
 
-fn resolveWithServers(allocator: std.mem.Allocator, host: []const u8, port: u16, servers: []const []const u8) ![]net.Address {
+fn checkDeadline(deadline_ms: ?i64) !void {
+    if (deadline_ms) |deadline| {
+        try std.Options.debug_io.checkCancel();
+        if (std.Io.Timestamp.now(std.Options.debug_io, .awake).toMilliseconds() >= deadline) return error.DeadlineExpired;
+    }
+}
+
+fn resolveWithServers(allocator: std.mem.Allocator, host: []const u8, port: u16, servers: []const []const u8, deadline_ms: ?i64) ![]net.Address {
     for (servers) |server| {
-        if (queryServer(allocator, server, host, port)) |addrs| {
+        try checkDeadline(deadline_ms);
+        if (queryServer(allocator, server, host, port, deadline_ms)) |addrs| {
             if (addrs.len != 0) {
                 sortAddresses(addrs);
                 return addrs;
             }
             allocator.free(addrs);
-        } else |_| {}
+        } else |err| switch (err) {
+            error.Canceled, error.DeadlineExpired => return err,
+            else => {},
+        }
     }
     return error.DnsResolveFailed;
 }
 
-fn queryServer(allocator: std.mem.Allocator, server: []const u8, host: []const u8, port: u16) ![]net.Address {
+fn queryServer(allocator: std.mem.Allocator, server: []const u8, host: []const u8, port: u16, deadline_ms: ?i64) ![]net.Address {
     var server_addr = net.parseIpAndPort(server) catch blk: {
         const parsed = parseHostPort(server);
-        break :blk net.resolveOne(parsed.host, parsed.port) catch return error.DnsServerResolveFailed;
+        break :blk net.resolveOne(parsed.host, parsed.port) catch |err| switch (err) {
+            error.Canceled => return err,
+            else => return error.DnsServerResolveFailed,
+        };
     };
     const addr_family = net.family(server_addr);
     const sock = try udpSocket(addr_family);
@@ -77,8 +102,8 @@ fn queryServer(allocator: std.mem.Allocator, server: []const u8, host: []const u
     var fds = [_]std.posix.pollfd{.{ .fd = sock, .events = std.posix.POLL.IN, .revents = 0 }};
     var out: std.ArrayList(net.Address) = .empty;
     defer out.deinit(allocator);
-    try queryType(allocator, sock, &server_addr, &fds, host, port, 0x4b5a, 1, &out);
-    try queryType(allocator, sock, &server_addr, &fds, host, port, 0x4b5b, 28, &out);
+    try queryType(allocator, sock, &server_addr, &fds, host, port, 0x4b5a, 1, &out, deadline_ms);
+    try queryType(allocator, sock, &server_addr, &fds, host, port, 0x4b5b, 28, &out, deadline_ms);
     return out.toOwnedSlice(allocator);
 }
 
@@ -108,13 +133,20 @@ fn queryType(
     id: u16,
     qtype: u16,
     out: *std.ArrayList(net.Address),
+    deadline_ms: ?i64,
 ) !void {
+    try checkDeadline(deadline_ms);
     const request = try buildQuery(allocator, host, id, qtype);
     defer allocator.free(request);
     const sa = net.sockAddr(server_addr.*);
     _ = try sendTo(sock, request, sa.ptr(), sa.len);
     if (fds.len != 0) fds[0].revents = 0;
-    const ready = try std.posix.poll(fds, 3000);
+    const wait: i32 = if (deadline_ms) |deadline|
+        @intCast(@max(0, @min(3000, deadline - std.Io.Timestamp.now(std.Options.debug_io, .awake).toMilliseconds())))
+    else
+        3000;
+    const ready = try std.posix.poll(fds, wait);
+    try checkDeadline(deadline_ms);
     if (ready == 0) return;
     var buf: [1500]u8 = undefined;
     const n = try recvFrom(sock, &buf);

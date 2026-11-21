@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import socketserver
@@ -21,14 +22,20 @@ TOKEN = "business-token"
 DISCOVERY_KEY = "business-discovery-key"
 CF_ID = "business-cf-id"
 CF_SECRET = "business-cf-secret"
+TERMINAL_RECONNECT_IDS = ("term-recover", "term-reject", "term-stall", "term-backpressure")
 
 
 class State:
-    def __init__(self, token=TOKEN, expect_cf=False, exec_enabled=True, terminal=False, ping_tasks=None):
+    def __init__(self, token=TOKEN, expect_cf=False, exec_enabled=True, terminal=False, ping_tasks=None, terminal_reconnect=False):
         self.token = token
         self.expect_cf = expect_cf
         self.exec_enabled = exec_enabled
-        self.terminal_enabled = terminal
+        self.terminal_enabled = terminal or terminal_reconnect
+        self.terminal_reconnect = terminal_reconnect
+        self.terminal_attempts = {}
+        self.terminal_done_at = {}
+        self.terminal_shell_pids = {}
+        self.terminal_stall_closed_at = None
         self.ping_tasks = ping_tasks if ping_tasks is not None else [{
             "task_id": 77,
             "ping_type": "tcp",
@@ -172,7 +179,9 @@ def make_handler(state):
             if not self.upgrade_ws():
                 return
             state.ws_seen.set()
-            deadline = time.monotonic() + 25
+            # Keep the report session alive throughout the slow-upgrade/backoff case.
+            deadline = time.monotonic() + (45 if state.terminal_reconnect else 25)
+            pending_frames = bytearray()
             sent = False
             while time.monotonic() < deadline:
                 if not sent:
@@ -190,14 +199,16 @@ def make_handler(state):
                             "command": "printf e2e-exec-ok",
                         }).encode())
                     if state.terminal_enabled:
-                        write_ws_frame(self.connection, 0x1, json.dumps({
-                            "message": "terminal",
-                            "request_id": "term-business",
-                        }).encode())
+                        ids = TERMINAL_RECONNECT_IDS if state.terminal_reconnect else ("term-business",)
+                        for request_id in ids:
+                            write_ws_frame(self.connection, 0x1, json.dumps({
+                                "message": "terminal",
+                                "request_id": request_id,
+                            }).encode())
                     state.task_sent = True
                     sent = True
                 try:
-                    opcode, payload = read_ws_frame(self.connection, 1.0)
+                    opcode, payload = read_ws_frame(self.connection, 1.0, pending_frames)
                 except TimeoutError:
                     if self.done():
                         return
@@ -252,7 +263,11 @@ def make_handler(state):
                 set_error(state, "bad terminal token")
                 self.send_plain(403, b"bad token")
                 return
-            if parse_qs(parsed.query).get("id", [""])[0] != "term-business":
+            request_id = parse_qs(parsed.query).get("id", [""])[0]
+            if state.terminal_reconnect:
+                self.handle_reconnect_terminal(request_id)
+                return
+            if request_id != "term-business":
                 set_error(state, "bad terminal id")
                 self.send_plain(403, b"bad terminal id")
                 return
@@ -262,10 +277,11 @@ def make_handler(state):
             time.sleep(2.0)
             write_ws_frame(self.connection, 0x1, json.dumps({"type": "input", "input": "printf terminal-e2e-ok\r\nexit\r\n"}).encode())
             deadline = time.monotonic() + 15
+            pending_frames = bytearray()
             seen = bytearray()
             while time.monotonic() < deadline:
                 try:
-                    opcode, payload = read_ws_frame(self.connection, 1.0)
+                    opcode, payload = read_ws_frame(self.connection, 1.0, pending_frames)
                 except TimeoutError:
                     continue
                 except Exception as exc:
@@ -280,6 +296,163 @@ def make_handler(state):
                         write_ws_frame(self.connection, 0x8, b"")
                         return
             set_error(state, f"terminal output missing: {seen[-200:]!r}")
+
+        def handle_reconnect_terminal(self, request_id):
+            if request_id not in TERMINAL_RECONNECT_IDS:
+                set_error(state, f"unexpected terminal request ID: {request_id!r}")
+                self.send_plain(403, b"bad terminal id")
+                return
+            with state.lock:
+                attempt = state.terminal_attempts.get(request_id, 0) + 1
+                state.terminal_attempts[request_id] = attempt
+            allowed_attempts = 1 if request_id == "term-backpressure" else 2
+            if attempt > allowed_attempts:
+                set_error(state, f"{request_id} opened terminal WS {attempt} times; expected {allowed_attempts}")
+                self.send_plain(403, b"unexpected retry")
+                return
+            try:
+                if attempt == 1 and request_id == "term-stall":
+                    self.close_connection = True
+                    self.connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\nX-Stalled: ")
+                    started = time.monotonic()
+                    self.connection.settimeout(1)
+                    while time.monotonic() - started < 12:
+                        try:
+                            # Keep each individual read live without finishing the headers.
+                            self.connection.sendall(b"x")
+                            if not self.connection.recv(1):
+                                break
+                            raise AssertionError("unexpected client data before WebSocket upgrade")
+                        except (BrokenPipeError, ConnectionResetError):
+                            break
+                        except socket.timeout:
+                            continue
+                    else:
+                        raise AssertionError("incomplete WebSocket upgrade outlived setup deadline")
+                    elapsed = time.monotonic() - started
+                    if not 7 <= elapsed <= 12:
+                        raise AssertionError(f"stalled upgrade closed at unexpected {elapsed:.2f}s")
+                    with state.lock:
+                        state.terminal_stall_closed_at = time.monotonic()
+                    return
+                if request_id == "term-stall":
+                    with state.lock:
+                        closed = state.terminal_stall_closed_at
+                    if closed is None or time.monotonic() - closed < 13:
+                        raise AssertionError("WebSocket upgrade retried before failed-dial backoff")
+                if attempt == 2 and request_id == "term-reject":
+                    self.close_connection = True
+                    self.send_plain(403, b"terminal authorization revoked")
+                    with state.lock:
+                        state.terminal_done_at[request_id] = time.monotonic()
+                    return
+                if not self.upgrade_ws():
+                    raise AssertionError("missing WebSocket key")
+
+                def control(kind, **kwargs):
+                    write_ws_frame(self.connection, 0x1, json.dumps({"type": kind, **kwargs}).encode())
+
+                pending_frames = bytearray()
+
+                def wait_for(label, predicate, timeout=6, output=None):
+                    deadline = time.monotonic() + timeout
+                    if output is None:
+                        output = bytearray()
+                    while time.monotonic() < deadline:
+                        try:
+                            opcode, payload = read_ws_frame(self.connection, max(0.001, deadline - time.monotonic()), pending_frames)
+                        except TimeoutError:
+                            break
+                        if opcode == 0x9:
+                            write_ws_frame(self.connection, 0xA, payload)
+                            continue
+                        if opcode == 0x2:
+                            output.extend(payload)
+                        matched = predicate(opcode, payload, output)
+                        if matched:
+                            return matched
+                    raise AssertionError(f"{label} missing; PTY tail={output[-200:]!r}")
+
+                def wait_for_shell():
+                    control("resize", cols=100, rows=30)
+                    # An interactive shell may change the line discipline and flush
+                    # its initial stdin. Prove readiness before making a state change.
+                    output = bytearray()
+                    for probe in range(8):
+                        control("input", input="\rprintf 'SHELL_%s\\n' ready\r")
+                        try:
+                            wait_for("shell startup marker",
+                                     lambda op, payload, output: b"SHELL_ready" in output, timeout=0.75, output=output)
+                            break
+                        except AssertionError:
+                            if probe == 7:
+                                raise
+
+                def wait_for_close(label, timeout=6):
+                    try:
+                        wait_for(label, lambda op, payload, output: op == 0x8, timeout)
+                    except EOFError:
+                        pass  # Clean TCP EOF is also an acceptable close.
+
+                if request_id == "term-stall":
+                    wait_for_shell()
+                    control("terminate")
+                    wait_for_close("socket close after successful retry")
+                    with state.lock:
+                        state.terminal_done_at[request_id] = time.monotonic()
+                    return
+
+                if request_id == "term-backpressure":
+                    wait_for_shell()
+                    control("input", input="stty raw -echo; printf 'BLOCK_%s_%s\\n' ready \"$$\"; exec sleep 20\r")
+                    blocked = wait_for("non-reading terminal program", lambda op, payload, output: re.search(rb"BLOCK_ready_(\d+)\r?\n", output))
+                    pid = int(blocked.group(1))
+                    started = time.monotonic()
+                    write_ws_frame(self.connection, 0x2, b"x" * (256 * 1024))
+                    wait_for_close("socket close after terminal backpressure", timeout=8)
+                    while os.path.exists(f"/proc/{pid}/stat"):
+                        if time.monotonic() - started > 10:
+                            raise AssertionError(f"terminal program {pid} survived backpressure")
+                        time.sleep(0.05)
+                    with state.lock:
+                        state.terminal_shell_pids[request_id] = pid
+                        state.terminal_done_at[request_id] = time.monotonic()
+                    return
+
+                if attempt == 1:
+                    wait_for_shell()
+                    # Markers are constructed by the shell, so terminal echo cannot satisfy them.
+                    control("input", input="export KOMARI_E2E_RESUME=retained; printf 'FIRST_%s_%s\\n' \"$KOMARI_E2E_RESUME\" \"$$\"\r")
+                    shell = wait_for("original shell state", lambda op, payload, output: re.search(rb"FIRST_retained_(\d+)\r?\n", output))
+                    with state.lock:
+                        state.terminal_shell_pids[request_id] = int(shell.group(1))
+                    if request_id == "term-recover":
+                        control("abort")
+                        # A WebSocket ping after abort proves the same connection is still live.
+                        write_ws_frame(self.connection, 0x9, b"after-abort")
+                        wait_for("pong after abort", lambda op, payload, output: op == 0xA and payload == b"after-abort")
+                        control("heartbeat", id="terminal-rtt")
+                        wait_for("heartbeat echo", lambda op, payload, output: op == 0x1 and
+                                 json.loads(payload) == {"type": "heartbeat", "id": "terminal-rtt"})
+                    # Drop the TCP connection, deliberately without a WebSocket close frame.
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    return
+
+                control("ready")
+                write_ws_frame(self.connection, 0x2, b"printf 'SECOND_%s_%s\\n' \"$KOMARI_E2E_RESUME\" \"$$\"\r")
+                resumed = wait_for("resumed shell state", lambda op, payload, output: re.search(rb"SECOND_([^_\r\n]*)_(\d+)\r?\n", output))
+                with state.lock:
+                    original_pid = state.terminal_shell_pids[request_id]
+                resumed_pid = int(resumed.group(2))
+                if resumed.group(1) != b"retained" or resumed_pid != original_pid:
+                    raise AssertionError(f"PTY did not resume original shell; before={original_pid}, "
+                                         f"after={resumed_pid}, value={resumed.group(1)!r}")
+                control("terminate")
+                wait_for_close("WebSocket close after terminate")
+                with state.lock:
+                    state.terminal_done_at[request_id] = time.monotonic()
+            except Exception as exc:
+                set_error(state, f"{request_id} attempt {attempt}: {exc}")
 
         def upgrade_ws(self):
             key = self.headers.get("Sec-WebSocket-Key")
@@ -362,33 +535,45 @@ def websocket_accept(key):
     return base64.b64encode(hashlib.sha1((key + magic).encode("ascii")).digest()).decode("ascii")
 
 
-def read_exact(sock, n):
-    out = bytearray()
-    while len(out) < n:
-        chunk = sock.recv(n - len(out))
-        if not chunk:
-            raise EOFError("socket closed")
-        out.extend(chunk)
-    return bytes(out)
-
-
-def read_ws_frame(sock, timeout):
+def read_ws_frame(sock, timeout, pending):
     old = sock.gettimeout()
-    sock.settimeout(timeout)
+    deadline = time.monotonic() + timeout
+    buffered = pending
+    offset = 0
+
+    def take(n):
+        nonlocal offset
+        end = offset + n
+        while len(buffered) < end:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            sock.settimeout(remaining)
+            chunk = sock.recv(end - len(buffered))
+            if not chunk:
+                raise EOFError()
+            buffered.extend(chunk)
+        result = bytes(buffered[offset:end])
+        offset = end
+        return result
+
     try:
-        first = read_exact(sock, 2)
+        first = take(2)
         opcode = first[0] & 0x0F
         masked = bool(first[1] & 0x80)
         length = first[1] & 0x7F
         if length == 126:
-            length = int.from_bytes(read_exact(sock, 2), "big")
+            length = int.from_bytes(take(2), "big")
         elif length == 127:
-            length = int.from_bytes(read_exact(sock, 8), "big")
-        mask = read_exact(sock, 4) if masked else b""
-        payload = bytearray(read_exact(sock, length))
+            length = int.from_bytes(take(8), "big")
+        mask = take(4) if masked else b""
+        payload = bytearray(take(length))
         if masked:
             for i in range(len(payload)):
                 payload[i] ^= mask[i % 4]
+        # Probe timeouts may leave a partial frame; commit consumption only
+        # once the entire frame is available.
+        del buffered[:offset]
         return opcode, bytes(payload)
     except socket.timeout as exc:
         raise TimeoutError() from exc
@@ -440,7 +625,9 @@ def wait_for_output_contains(proc, output, needle, deadline):
 
 def run_panel_e2e(args):
     exec_enabled = not args.no_exec
-    state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal, ping_tasks=[])
+    timeout = args.timeout if args.timeout is not None else (45 if args.terminal_reconnect else 35)
+    state = State(expect_cf=args.cf, exec_enabled=exec_enabled, terminal=args.terminal, ping_tasks=[],
+                  terminal_reconnect=args.terminal_reconnect)
     tcp = TcpAcceptServer(("127.0.0.1", 0), TcpAcceptHandler)
     threading.Thread(target=tcp.serve_forever, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
@@ -512,34 +699,55 @@ def run_panel_e2e(args):
         cmd += ["--cf-access-client-id", CF_ID, "--cf-access-client-secret", CF_SECRET]
 
     output = []
-    proc, deadline = run_agent(cmd, env, args.timeout, output)
+    terminal_home = tempfile.TemporaryDirectory(prefix="komari-terminal-e2e-") if args.terminal_reconnect else None
+    if terminal_home is not None:
+        env["HOME"] = terminal_home.name
+        env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
+    proc = None
     try:
+        proc, deadline = run_agent(cmd, env, timeout, output)
         while time.monotonic() < deadline:
             needed = [state.upload_seen, state.report_seen, state.ping_seen]
             if args.autodiscovery:
                 needed.append(state.register_seen)
             if exec_enabled:
                 needed.append(state.exec_seen)
-            if args.terminal:
+            if state.terminal_enabled:
                 needed.append(state.terminal_seen)
+            if args.terminal_reconnect:
+                # Observe longer than upstream's 15-second failed-dial retry.
+                with state.lock:
+                    done = state.terminal_done_at
+                    observed = ("term-recover", "term-reject", "term-backpressure")
+                    if len(done) == len(TERMINAL_RECONNECT_IDS) and time.monotonic() - max(done[key] for key in observed) >= 17:
+                        if sys.platform.startswith("linux"):
+                            for request_id, pid in state.terminal_shell_pids.items():
+                                if os.path.exists(f"/proc/{pid}/stat"):
+                                    raise AssertionError(f"{request_id} shell {pid} survived terminal teardown")
+                        state.terminal_seen.set()
+            if state.error:
+                raise RuntimeError(f"{state.error}\n{''.join(output[-120:])}")
             if all(e.is_set() for e in needed):
                 print("mock komari business e2e ok")
                 return 0
             if proc.poll() is not None:
                 raise RuntimeError(f"agent exited early: {proc.returncode}\n{''.join(output[-120:])}")
-            if state.error:
-                raise RuntimeError(f"{state.error}\n{''.join(output[-120:])}")
             time.sleep(0.05)
         missing = sorted(set(state.expected_ping) - set(state.ping_results))
         raise RuntimeError(
             f"timeout; uploads={state.uploads} reports={state.reports} task_sent={state.task_sent} "
-            f"ping_seen={len(state.ping_results)}/{len(state.expected_ping)} missing={missing}\n{''.join(output[-120:])}"
+            f"ping_seen={len(state.ping_results)}/{len(state.expected_ping)} missing={missing} "
+            f"terminal_attempts={state.terminal_attempts} terminal_done={list(state.terminal_done_at)}\n"
+            f"{''.join(output[-120:])}"
         )
     except Exception as exc:
         print(f"business e2e failed: {exc}", file=sys.stderr)
         return 1
     finally:
-        terminate(proc)
+        if proc is not None:
+            terminate(proc)
+        if terminal_home is not None:
+            terminal_home.cleanup()
         server.shutdown()
         server.server_close()
         tcp.shutdown()
@@ -689,9 +897,11 @@ def main():
     panel = sub.add_parser("panel")
     panel.add_argument("agent")
     panel.add_argument("--protocol-version", type=int, default=1)
-    panel.add_argument("--timeout", type=float, default=35)
+    panel.add_argument("--timeout", type=float)
     panel.add_argument("--no-exec", action="store_true")
-    panel.add_argument("--terminal", action="store_true")
+    terminal = panel.add_mutually_exclusive_group()
+    terminal.add_argument("--terminal", action="store_true")
+    terminal.add_argument("--terminal-reconnect", action="store_true")
     panel.add_argument("--autodiscovery", action="store_true")
     panel.add_argument("--proxy", action="store_true")
     panel.add_argument("--cf", action="store_true")

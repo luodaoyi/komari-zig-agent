@@ -200,6 +200,7 @@ jobs:
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --cf --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --terminal --no-exec
+          python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --terminal-reconnect --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --autodiscovery --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --proxy --no-exec
           python3 scripts/mock_komari_business_e2e.py panel zig-out/bin/komari-agent --custom-dns --no-exec

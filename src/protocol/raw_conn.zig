@@ -175,6 +175,11 @@ pub const RawConn = struct {
         net.close(self.stream);
     }
 
+    /// Wake the terminal reader/writer without releasing their live fd.
+    pub fn interrupt(self: *RawConn) void {
+        self.stream.shutdown(std.Options.debug_io, .both) catch {};
+    }
+
     pub fn close(self: *RawConn) void {
         self.shutdown();
         self.allocator.destroy(self);
@@ -285,6 +290,16 @@ pub fn resolveAddresses(
     custom_dns: []const u8,
 ) ![]net.Address {
     return dns.resolveHost(allocator, host, port, custom_dns);
+}
+
+pub fn resolveAddressesUntil(
+    allocator: std.mem.Allocator,
+    host: []const u8,
+    port: u16,
+    custom_dns: []const u8,
+    deadline_ms: i64,
+) ![]net.Address {
+    return dns.resolveHostUntil(allocator, host, port, custom_dns, deadline_ms);
 }
 
 pub fn familyMatches(addr: net.Address, family: AddressFamily) bool {
